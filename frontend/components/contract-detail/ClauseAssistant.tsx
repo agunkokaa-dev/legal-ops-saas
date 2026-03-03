@@ -77,10 +77,11 @@ export default function ClauseAssistant({
             }
 
             const data = await response.json();
+            const botReply = data?.reply || data?.response || data?.content || "Mohon maaf, terjadi kesalahan dalam memproses respons.";
             setMessages(prev => [...prev, {
                 id: Date.now().toString(),
                 role: 'ai',
-                content: data.reply || data.response || "No response received."
+                content: String(botReply)
             }]);
             setIsLoading(false);
 
@@ -121,7 +122,7 @@ export default function ClauseAssistant({
                                     <div className="w-1.5 h-1.5 rounded-full bg-lux-gold animate-bounce" style={{ animationDelay: '300ms' }} />
                                 </div>
                             ) : msg.role === 'ai' ? (
-                                <div className="prose prose-invert prose-sm max-w-none leading-relaxed">
+                                <div className="prose prose-invert prose-sm max-w-none leading-relaxed prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5">
                                     <ReactMarkdown>{msg.content}</ReactMarkdown>
                                 </div>
                             ) : (

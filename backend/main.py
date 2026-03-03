@@ -365,10 +365,34 @@ async def chat_clause_assistant(request: ClauseAssistantRequest):
 
         print(f"Clause Assistant Lineage Context: {contract_ids_to_search}")
 
-        # 2. Embed the User's Query
+        # 2a. Fetch Historical Context from Supabase (Agent Analysis)
+        historical_context = ""
+        try:
+            # Fetch AI extracted clauses analysis
+            clauses_resp = supabase.table("contract_clauses").select("*").in_("contract_id", contract_ids_to_search).execute()
+            if clauses_resp.data:
+                historical_context += "--- HISTORICAL AGENT ANALYSIS (CLAUSES) ---\n"
+                for clause in clauses_resp.data:
+                    c_type = clause.get('clause_type', 'Unknown')
+                    c_summary = clause.get('ai_summary', '')
+                    c_doc = clause.get('contract_id', 'Unknown')
+                    historical_context += f"- [Doc: {c_doc}] Type: {c_type} | AI Finding: {c_summary}\n"
+
+            # Fetch AI extracted obligations
+            obs_resp = supabase.table("contract_obligations").select("*").in_("contract_id", contract_ids_to_search).execute()
+            if obs_resp.data:
+                historical_context += "\n--- HISTORICAL AGENT ANALYSIS (OBLIGATIONS) ---\n"
+                for ob in obs_resp.data:
+                    desc = ob.get('description', '')
+                    status = ob.get('status', 'pending')
+                    historical_context += f"- Obligation: {desc} (Status: {status})\n"
+        except Exception as err:
+            print(f"Failed to fetch historical context: {err}")
+
+        # 3. Embed the User's Query
         question_vector = openai_client.embeddings.create(input=request.message, model="text-embedding-3-small").data[0].embedding
 
-        # 3. Filtered Vector Retrieval (Strict Genealogy Lineage)
+        # 4. Filtered Vector Retrieval (Strict Genealogy Lineage)
         search_results = qdrant.search(
             collection_name=COLLECTION_NAME,
             query_vector=question_vector,
@@ -386,7 +410,7 @@ async def chat_clause_assistant(request: ClauseAssistantRequest):
         if not search_results:
             context = "Context: This contract has no matching clauses for this specific query, please answer based on general Indonesian Law principles but state no exact match was found."
         else:
-            # 4. Compile Context
+            # Compile Context
             context_blocks = []
             for hit in search_results:
                 text_snippet = hit.payload.get('text', '')
@@ -396,17 +420,41 @@ async def chat_clause_assistant(request: ClauseAssistantRequest):
             
             context = "\n---\n".join(context_blocks)
 
-        # 5. Elite Indonesian Corporate Lawyer System Prompt
+        # 5. Elite Indonesian Corporate Lawyer System Prompt (with mandatory citations and historical data)
         system_prompt = f"""You are an elite Indonesian Corporate Lawyer and Contract Negotiator.
 You are assisting a user in analyzing and drafting contract clauses.
 
 CRITICAL INSTRUCTIONS:
-1. Always base your legal analysis on Indonesian Law, specifically the Indonesian Civil Code (KUHPerdata) and relevant corporate regulations.
-2. You will be provided with context from a Vector Database containing the current contract AND its entire lineage (e.g., Master Agreements, Amendments). 
+1. Always base your legal analysis on Indonesian Law (KUHPerdata, UU PT, and relevant corporate regulations).
+2. You will be provided with context from a Vector Database containing the current contract AND its entire lineage (e.g., Master Agreements, Amendments, SOWs).
 3. Always check for cross-references. If the user asks about liability in an SOW, check if the Master Agreement (MSA) context overrides it.
-4. Answer in clear, professional Indonesian (or English if the user asks in English), but always maintain Indonesian legal terminology where appropriate.
+4. CITATIONS ARE MANDATORY:
+    - When quoting or summarizing from the provided document context, ALWAYS cite the source document name, section, or page in parentheses (e.g., "Berdasarkan [Nama Dokumen SOW], Pasal 3...").
+    - When referencing general Indonesian Law, cite the specific code or law (e.g., "Menurut KUHPerdata Pasal 1320...").
+    - Never make legal claims without citing either the document context or applicable law.
+5. Format your response using clean Markdown: use **bold** for emphasis, bullet points for lists, and numbered lists for sequential steps.
+6. Answer in clear, professional Indonesian (or English if the user asks in English), but always maintain Indonesian legal terminology where appropriate.
 
-Context retrieved from the contract lineage:
+HISTORICAL AGENT DATA (Structured Analysis):
+{historical_context}
+- If the user asks for a 'Draft Revision' or 'Counter Proposal', you MUST check if a previous AI Agent has flagged risks or identified obligations in this area from the Historical Agent Data above.
+- Ensure your revision does not contradict the Master Agreement (MSA) logic found in the matter lineage.
+- If a specific obligation or clause was previously marked as 'High Risk', prioritize addressing that risk in your counter-proposal.
+
+DRAFTING/REVISING LOGIC:
+If the user intent is detected as drafting, revising, or proposing a counter-argument, your output MUST follow this specific format exactly:
+
+**THE ORIGINAL CLAUSE:**
+[Quote the original clause here if applicable]
+
+**THE PROPOSED REVISION:**
+[Your rewritten clause]
+*(Legal reasoning for the revision here)*
+
+**THE COUNTER-ARGUMENT:**
+*(Why this is better for the client, mitigating risks based on historical data or applicable law)*
+
+Context retrieved from the contract lineage (Vector DB):
 {context}
 """
 
