@@ -4,12 +4,14 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { OrganizationSwitcher, UserButton } from '@clerk/nextjs'
+import { ListTodo } from 'lucide-react'
 
 const navItems = [
-    { href: '/dashboard', icon: 'dashboard', label: 'Dashboard', exact: true },
-    { href: '/dashboard/matters', icon: 'briefcase_meal', label: 'Matters', exact: false },
-    { href: '/dashboard/documents', icon: 'description', label: 'Documents', exact: false },
-    { href: '/dashboard/calendar', icon: 'calendar_month', label: 'Calendar', exact: false },
+    { href: '/dashboard', icon: 'dashboard', label: 'Dashboard', exact: true, type: 'material' },
+    { href: '/dashboard/matters', icon: 'briefcase_meal', label: 'Matters', exact: false, type: 'material' },
+    { href: '/dashboard/tasks', icon: ListTodo, label: 'Task Management', exact: false, type: 'lucide' },
+    { href: '/dashboard/documents', icon: 'description', label: 'Documents', exact: false, type: 'material' },
+    { href: '/dashboard/calendar', icon: 'calendar_month', label: 'Calendar', exact: false, type: 'material' },
 ]
 
 const secondaryItems = [
@@ -51,7 +53,11 @@ export default function Sidebar() {
                                     : 'flex items-center gap-3 px-3 py-2 rounded hover:bg-white/5 text-text-muted hover:text-white transition-colors group'
                             }
                         >
-                            <span className="material-symbols-outlined">{item.icon}</span>
+                            {item.type === 'lucide' ? (
+                                <item.icon className="w-5 h-5 mx-0.5" />
+                            ) : (
+                                <span className="material-symbols-outlined">{item.icon as string}</span>
+                            )}
                             <span className="text-sm font-medium hidden lg:block">{item.label}</span>
                         </Link>
                     )

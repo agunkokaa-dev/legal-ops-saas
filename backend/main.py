@@ -4,6 +4,8 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import create_client, Client
 from pydantic import BaseModel
+from typing import List, Optional
+from datetime import datetime, timedelta
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 from qdrant_client import models
@@ -20,11 +22,7 @@ app = FastAPI(title="CLAUSE Intelligent Engine", version="1.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000", 
-        "http://127.0.0.1:3000",
-        "http://173.212.240.143"
-    ],
+    allow_origins=["*"], # Izinkan semua (buat dev), atau ["http://localhost:3000"]
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -72,6 +70,28 @@ class PlaybookRuleRequest(BaseModel):
 class ExtractObligationsRequest(BaseModel):
     contract_id: str
     user_id: str
+
+# --- SOP Template Engine Models ---
+class TemplateItemCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    days_offset: int = 0
+    position: int = 0
+
+class TemplateCreateRequest(BaseModel):
+    name: str
+    matter_type: Optional[str] = None
+    items: List[TemplateItemCreate]
+
+class ApplyTemplateRequest(BaseModel):
+    template_id: str
+    matter_id: str
+
+class TaskAssistantRequest(BaseModel):
+    tenant_id: str
+    matter_id: str
+    task_id: str
+    message: str
 
 @app.post("/api/playbook/vectorize")
 async def vectorize_playbook_rule(request: PlaybookRuleRequest):
@@ -657,3 +677,145 @@ Context retrieved from the DB:
         print(f"Clause Assistant Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+# =====================================================================
+# 4. SOP TEMPLATE ENGINE ENDPOINTS
+# =====================================================================
+@app.post("/api/v1/templates")
+async def create_template(request: TemplateCreateRequest, tenant_id: str):
+    """
+    Creates a new Task Template header and bulk inserts its items.
+    """
+    try:
+        if not tenant_id:
+            raise HTTPException(status_code=400, detail="tenant_id is required")
+
+        # 1. Insert Template Header
+        header_payload = {
+            "tenant_id": tenant_id,
+            "name": request.name,
+            "matter_type": request.matter_type
+        }
+        
+        header_res = supabase.table("task_templates").insert(header_payload).execute()
+        
+        if not header_res.data:
+            raise HTTPException(status_code=500, detail="Failed to create template header")
+            
+        template_id = header_res.data[0]["id"]
+        
+        # 2. Bulk Insert Template Items
+        if request.items:
+            items_payload = []
+            for item in request.items:
+                items_payload.append({
+                    "template_id": template_id,
+                    "title": item.title,
+                    "description": item.description,
+                    "days_offset": item.days_offset,
+                    "position": item.position
+                })
+                
+            items_res = supabase.table("task_template_items").insert(items_payload).execute()
+            
+            if not items_res.data:
+                 print("Warning: Template created but items failed to insert natively.")
+        
+        return {
+            "status": "success", 
+            "message": "Template created successfully", 
+            "template_id": template_id
+        }
+
+    except Exception as e:
+        print(f"API Create Template Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/tasks/from-template")
+async def apply_template(request: ApplyTemplateRequest, tenant_id: str):
+    """
+    Generates instances of tasks from a template and assigns them to a matter.
+    Logs activity for the action.
+    """
+    try:
+        if not tenant_id:
+            raise HTTPException(status_code=400, detail="tenant_id is required")
+            
+        # 1. Fetch Template Items
+        items_res = supabase.table("task_template_items")\
+            .select("*")\
+            .eq("template_id", request.template_id)\
+            .order("position")\
+            .execute()
+            
+        template_items = items_res.data
+        
+        if not template_items:
+            return {"status": "success", "message": "Template has no items", "count": 0}
+            
+        # 2. Generate Tasks Payload
+        tasks_payload = []
+        now = datetime.utcnow()
+        
+        for item in template_items:
+            due_date = now + timedelta(days=item.get("days_offset", 0))
+            
+            tasks_payload.append({
+                "tenant_id": tenant_id,
+                "matter_id": request.matter_id,
+                "title": item.get("title"),
+                "description": item.get("description"),
+                "status": "backlog",
+                # convert to ISO format string mapping for supabase date fields (assumed date or timestamp)
+                "due_date": due_date.isoformat(), 
+            })
+            
+        # 3. Bulk Insert Tasks
+        tasks_res = supabase.table("tasks").insert(tasks_payload).execute()
+        inserted_tasks = tasks_res.data
+        
+        if not inserted_tasks:
+            raise HTTPException(status_code=500, detail="Failed to insert tasks")
+            
+        # 4. Log Activity
+        first_task_id = inserted_tasks[0]["id"] if inserted_tasks and "id" in inserted_tasks[0] else None
+        
+        log_payload = {
+            "tenant_id": tenant_id,
+            "matter_id": request.matter_id,
+            "action": f"{len(template_items)} tasks created from SOP Template",
+            "actor_name": "System/User", # Placeholder if user info is minimal in backend
+        }
+        
+        # If activity_logs table has task_id column and it's allowed:
+        if first_task_id:
+            log_payload["task_id"] = first_task_id
+            
+        try:
+             supabase.table("activity_logs").insert(log_payload).execute()
+        except Exception as log_err:
+             print(f"Warning: Failed to insert activity log. {log_err}")
+             # Non-fatal error for the user request
+            
+        return {
+            "status": "success", 
+            "message": "Tasks successfully generated from template", 
+            "count": len(template_items)
+        }
+        
+    except Exception as e:
+        print(f"API Apply Template Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/ai/task-assistant")
+async def ask_clause_assistant(req: TaskAssistantRequest):
+    # Log to Docker console for debugging
+    print(f"🤖 [TASK AI] Request received for Task: {req.task_id}")
+    print(f"💬 User Message: {req.message}")
+
+    # Return a temporary mock response to satisfy the frontend and clear the 404
+    mock_reply = f"Connected! I am ready to assist with task {req.task_id}. Your message was: '{req.message}'. (RAG integration pending)."
+    
+    return {"reply": mock_reply}
