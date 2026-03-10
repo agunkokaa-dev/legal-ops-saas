@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { ListTodo } from 'lucide-react';
 
 export default function SettingsPage() {
     return (
@@ -44,6 +45,17 @@ export default function SettingsPage() {
                     <p className="text-sm text-neutral-600 leading-relaxed">Invite colleagues, assign roles, and manage permissions.</p>
                     <span className="mt-4 text-[10px] uppercase tracking-widest text-neutral-600 font-semibold">Coming Soon</span>
                 </div>
+
+                {/* 4. Task Templates (SOP) Card */}
+                <Link href="/dashboard/settings/templates" className="group block bg-white/5 border border-white/10 hover:border-clause-gold/50 p-6 rounded-xl transition-all duration-300 hover:bg-white/10 cursor-pointer">
+                    <div className="w-10 h-10 rounded-lg bg-clause-gold/10 flex items-center justify-center mb-4 group-hover:bg-clause-gold/20 transition-colors">
+                        <ListTodo className="text-clause-gold" size={20} />
+                    </div>
+                    <h3 className="text-lg font-semibold text-white mb-2 group-hover:text-clause-gold transition-colors">Task Templates (SOP)</h3>
+                    <p className="text-sm text-gray-400 leading-relaxed">
+                        Create and manage standardized task workflows and SOPs. Apply these templates to instantly populate your Kanban board.
+                    </p>
+                </Link>
 
             </div>
         </div>

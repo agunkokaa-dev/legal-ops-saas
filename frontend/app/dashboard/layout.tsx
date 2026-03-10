@@ -19,6 +19,7 @@ export default function DashboardLayout({
 
     const isContractDetailPage = pathname?.startsWith('/dashboard/contracts/');
     const isTaskPage = pathname?.includes('/dashboard/tasks');
+    const isSettingsPage = pathname?.includes('/dashboard/settings');
 
     const handleMouseDown = (e: React.MouseEvent) => {
         e.preventDefault();
@@ -73,7 +74,7 @@ export default function DashboardLayout({
             </div>
 
             {/* Native Resizer Handle */}
-            {!isContractDetailPage && !isCollapsed && (
+            {!isContractDetailPage && !isSettingsPage && !isCollapsed && (
                 <div
                     onMouseDown={handleMouseDown}
                     className="w-2 bg-background hover:bg-surface-border cursor-col-resize z-50 flex flex-col justify-center items-center relative group"
@@ -85,7 +86,7 @@ export default function DashboardLayout({
             )}
 
             {/* Assistant Panel */}
-            {!isContractDetailPage && !isTaskPage && (
+            {!isContractDetailPage && !isTaskPage && !isSettingsPage && (
                 <div
                     style={{ width: isCollapsed ? '0px' : `${sidebarWidth}px` }}
                     className={`flex flex-col h-full overflow-hidden border-l border-white/10 shrink-0 ${!isDragging ? 'transition-all duration-300 ease-in-out' : ''}`}
@@ -98,7 +99,7 @@ export default function DashboardLayout({
             )}
 
             {/* Programmatic Toggle Button Overlay */}
-            {!isContractDetailPage && !isTaskPage && (
+            {!isContractDetailPage && !isTaskPage && !isSettingsPage && (
                 <button
                     onClick={togglePanel}
                     className={`absolute top-1/2 -translate-y-1/2 z-[60] flex items-center justify-center w-6 h-8 bg-surface-border hover:bg-primary/80 text-text-muted hover:text-white rounded-l shadow-lg border border-surface-border transition-all duration-300 ${isCollapsed ? 'right-0' : ''}`}

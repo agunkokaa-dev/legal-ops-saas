@@ -77,6 +77,7 @@ class TemplateItemCreate(BaseModel):
     description: Optional[str] = None
     days_offset: int = 0
     position: int = 0
+    procedural_steps: Optional[list[str]] = []
 
 class TemplateCreateRequest(BaseModel):
     name: str
@@ -713,7 +714,8 @@ async def create_template(request: TemplateCreateRequest, tenant_id: str):
                     "title": item.title,
                     "description": item.description,
                     "days_offset": item.days_offset,
-                    "position": item.position
+                    "position": item.position,
+                    "procedural_steps": item.procedural_steps
                 })
                 
             items_res = supabase.table("task_template_items").insert(items_payload).execute()
@@ -733,62 +735,76 @@ async def create_template(request: TemplateCreateRequest, tenant_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/tasks/from-template")
-async def apply_template(request: ApplyTemplateRequest, tenant_id: str):
+async def create_tasks_from_template(req: ApplyTemplateRequest, tenant_id: str):
     """
     Generates instances of tasks from a template and assigns them to a matter.
-    Logs activity for the action.
+    Also parses JSONB procedural_steps and creates sub-tasks.
     """
     try:
         if not tenant_id:
             raise HTTPException(status_code=400, detail="tenant_id is required")
-            
-        # 1. Fetch Template Items
-        items_res = supabase.table("task_template_items")\
-            .select("*")\
-            .eq("template_id", request.template_id)\
-            .order("position")\
-            .execute()
-            
-        template_items = items_res.data
-        
+
+        # 1. Fetch Template Items (SOP sequence)
+        res = supabase.table("task_template_items").select("*").eq("template_id", req.template_id).order("position").execute()
+        template_items = res.data
+
         if not template_items:
-            return {"status": "success", "message": "Template has no items", "count": 0}
-            
-        # 2. Generate Tasks Payload
-        tasks_payload = []
+            raise HTTPException(status_code=404, detail="Template is empty or not found.")
+
+        # 2. Prepare payload for Kanbans Tasks
         now = datetime.utcnow()
+        new_tasks_payload = []
         
         for item in template_items:
-            due_date = now + timedelta(days=item.get("days_offset", 0))
+            days_offset = item.get('days_offset', 0)
+            due_date = now + timedelta(days=days_offset) if days_offset else None
             
-            tasks_payload.append({
+            new_tasks_payload.append({
                 "tenant_id": tenant_id,
-                "matter_id": request.matter_id,
-                "title": item.get("title"),
-                "description": item.get("description"),
+                "matter_id": req.matter_id,
+                "title": item.get('title', 'Untitled Task'),
+                "description": item.get('description', ''),
                 "status": "backlog",
-                # convert to ISO format string mapping for supabase date fields (assumed date or timestamp)
-                "due_date": due_date.isoformat(), 
+                "position": item.get('position', 0),
+                "due_date": due_date.isoformat() if due_date else None,
             })
-            
-        # 3. Bulk Insert Tasks
-        tasks_res = supabase.table("tasks").insert(tasks_payload).execute()
-        inserted_tasks = tasks_res.data
+
+        # 3. Execute BULK INSERT for Tasks and get the generated IDs back
+        tasks_res = supabase.table("tasks").insert(new_tasks_payload).execute()
+        created_tasks = tasks_res.data
+
+        # 4. Prepare payload for Sub-Tasks (Procedural Steps)
+        all_new_sub_tasks = []
         
-        if not inserted_tasks:
-            raise HTTPException(status_code=500, detail="Failed to insert tasks")
+        for created_task in created_tasks:
+            # Find the original template item matching this task (by title)
+            original_item = next((x for x in template_items if x['title'] == created_task['title']), None)
             
-        # 4. Log Activity
-        first_task_id = inserted_tasks[0]["id"] if inserted_tasks and "id" in inserted_tasks[0] else None
+            if original_item and original_item.get('procedural_steps'):
+                steps = original_item['procedural_steps']
+                # Ensure it's parsed as a list
+                if isinstance(steps, list):
+                    for step_title in steps:
+                        all_new_sub_tasks.append({
+                            "task_id": created_task['id'], # Link to the newly created Kanban Card
+                            "title": step_title,
+                            "is_completed": False
+                        })
+
+        # 5. Execute BULK INSERT for Sub-Tasks
+        if all_new_sub_tasks:
+            supabase.table("sub_tasks").insert(all_new_sub_tasks).execute()
+
+        # 6. Log Activity
+        first_task_id = created_tasks[0]["id"] if created_tasks and "id" in created_tasks[0] else None
         
         log_payload = {
             "tenant_id": tenant_id,
-            "matter_id": request.matter_id,
+            "matter_id": req.matter_id,
             "action": f"{len(template_items)} tasks created from SOP Template",
             "actor_name": "System/User", # Placeholder if user info is minimal in backend
         }
         
-        # If activity_logs table has task_id column and it's allowed:
         if first_task_id:
             log_payload["task_id"] = first_task_id
             
@@ -796,16 +812,15 @@ async def apply_template(request: ApplyTemplateRequest, tenant_id: str):
              supabase.table("activity_logs").insert(log_payload).execute()
         except Exception as log_err:
              print(f"Warning: Failed to insert activity log. {log_err}")
-             # Non-fatal error for the user request
-            
+
         return {
             "status": "success", 
-            "message": "Tasks successfully generated from template", 
-            "count": len(template_items)
+            "message": f"Successfully generated {len(created_tasks)} Tasks and {len(all_new_sub_tasks)} Checklists.",
+            "tasks": created_tasks
         }
-        
+
     except Exception as e:
-        print(f"API Apply Template Error: {e}")
+        print(f"Error generating tasks from template: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -896,6 +911,12 @@ CRITICAL INSTRUCTIONS (SILENT LUXURY FORMAT):
 - **Kewajiban:** [Brief, sharp description]
 - **Tenggat Waktu:** [If applicable, otherwise omit]
 - **Sumber:** [Exact Document Name, Pasal/Clause]
+
+[ 2] **[Obligation Category/Name]**
+- **Kewajiban:** [Brief, sharp description]
+- **Tenggat Waktu:** [If applicable, otherwise omit]
+- **Sumber:** [Exact Document Name, Pasal/Clause]
+
 
 ⚡ **RECOMMENDED NEXT STEPS (ACTIONABLE)**
 For EVERY recommended next step, you MUST format it strictly as a Markdown link with the exact href (#add-task)`. Do not use standard text.

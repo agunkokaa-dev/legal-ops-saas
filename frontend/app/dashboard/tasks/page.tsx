@@ -5,6 +5,7 @@ import { useAuth, useSession } from "@clerk/nextjs";
 import { createClient } from '@supabase/supabase-js';
 import { supabaseClient } from "@/lib/supabase";
 import ReactMarkdown from 'react-markdown';
+import { toast, Toaster } from 'sonner';
 import {
     Search,
     Plus,
@@ -22,8 +23,10 @@ import {
     UploadCloud,
     FilePlus,
     Gavel,
-    Trash2
+    Trash2,
+    FileWarning
 } from "lucide-react";
+import Link from "next/link";
 
 export default function TasksDashboardPage() {
     const [isTaskDetailOpen, setIsTaskDetailOpen] = useState(false);
@@ -42,12 +45,61 @@ export default function TasksDashboardPage() {
     const [inlineDraftMatterId, setInlineDraftMatterId] = useState<string | null>(null);
     const [inlineTitle, setInlineTitle] = useState("");
     const [taskDetails, setTaskDetails] = useState<{ checklists: any[]; attachments: any[]; logs: any[]; dependencies: any[] }>({ checklists: [], attachments: [], logs: [], dependencies: [] });
+    const [proceduralSteps, setProceduralSteps] = useState<any[]>([]);
     const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
     const [newSubTask, setNewSubTask] = useState('');
     const [activeAiTask, setActiveAiTask] = useState<any>(null);
     const [aiInput, setAiInput] = useState("");
     const [aiMessages, setAiMessages] = useState<{ role: 'user' | 'ai', content: string }[]>([]);
     const [isAiTyping, setIsAiTyping] = useState(false);
+    const [customTemplates, setCustomTemplates] = useState<any[]>([]);
+
+    const fetchCustomTemplates = async () => {
+        try {
+            const supabase = await getAuthenticatedSupabase();
+            if (!supabase) return;
+
+            // Fetch templates and count the related items in one query
+            const { data, error } = await supabase
+                .from('task_templates')
+                .select('*, task_template_items(count)')
+                .order('created_at', { ascending: false });
+
+            if (error) throw error;
+            setCustomTemplates(data || []);
+        } catch (error) {
+            console.error("Error fetching custom templates:", error);
+        }
+    };
+
+    useEffect(() => {
+        if (isSopModalOpen) {
+            fetchCustomTemplates();
+        }
+    }, [isSopModalOpen]);
+
+    const handleDeleteTemplate = async (templateId: string, e: React.MouseEvent) => {
+        e.stopPropagation(); // VERY IMPORTANT: Prevent clicking the card and selecting the template
+
+        if (!confirm("Delete this SOP Template? This action cannot be undone.")) return;
+
+        try {
+            const supabase = await getAuthenticatedSupabase();
+            if (!supabase) return;
+            const { error } = await supabase.from('task_templates').delete().eq('id', templateId);
+            if (error) throw error;
+
+            toast.success("Template Deleted", {
+                style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' }
+            });
+
+            // Refresh the list
+            fetchCustomTemplates();
+        } catch (error) {
+            console.error("Error deleting template:", error);
+            toast.error("Failed to delete template.");
+        }
+    };
 
     const handleSendAiMessage = async () => {
         if (!aiInput.trim() || !activeAiTask) return;
@@ -111,7 +163,7 @@ export default function TasksDashboardPage() {
 
         if (!taskId) {
             console.error("❌ [DEBUG] ERROR: taskId kosong/undefined! Cari tahu nama state task yang benar.");
-            alert("System Error: Task ID tidak ditemukan.");
+            toast.error('System Error', { description: 'Task ID tidak ditemukan.', style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' } });
             return;
         }
 
@@ -142,7 +194,11 @@ export default function TasksDashboardPage() {
             }
 
             console.log("✅ [DEBUG] Berhasil insert ke Supabase:", data);
-            alert(`⚡ Berhasil! Sub-task "${cleanTitle}" telah ditambahkan ke database.`);
+            toast.success('Sub-task Created', {
+                description: `⚡ ${cleanTitle} has been added to Procedural Steps.`,
+                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' },
+                icon: <span className="text-clause-gold">✦</span>
+            });
 
             // Refresh side panel if it's open for this task
             if (selectedTask?.id === taskId) {
@@ -156,7 +212,10 @@ export default function TasksDashboardPage() {
 
         } catch (error) {
             console.error("❌ [DEBUG] Catch Block Error:", error);
-            alert("Gagal menambahkan sub-task. Cek console log.");
+            toast.error('Operation Failed', {
+                description: 'Could not connect to database or add sub-task.',
+                style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' }
+            });
         }
     };
 
@@ -221,20 +280,42 @@ export default function TasksDashboardPage() {
     }, [tenantId]);
 
     // Fetch task details when a task is selected
-    useEffect(() => {
+    const fetchTaskDetails = async () => {
         if (!selectedTask || !session) return;
-        const fetchDetails = async () => {
-            const supabase = await getAuthenticatedSupabase();
-            if (!supabase) return;
-            const [chk, att, log] = await Promise.all([
-                supabase.from('task_checklists').select('*').eq('task_id', selectedTask.id).order('created_at'),
-                supabase.from('task_attachments').select('*').eq('task_id', selectedTask.id).order('created_at'),
-                supabase.from('activity_logs').select('*').eq('task_id', selectedTask.id).order('created_at', { ascending: false })
-            ]);
-            setTaskDetails({ checklists: chk.data || [], attachments: att.data || [], logs: log.data || [], dependencies: [] });
-        };
-        fetchDetails();
+        const supabase = await getAuthenticatedSupabase();
+        if (!supabase) return;
+
+        // Fetch traditional details (checklists, att, logs)
+        const [chk, att, log, subTasksRes] = await Promise.all([
+            supabase.from('task_checklists').select('*').eq('task_id', selectedTask.id).order('created_at'),
+            supabase.from('task_attachments').select('*').eq('task_id', selectedTask.id).order('created_at'),
+            supabase.from('activity_logs').select('*').eq('task_id', selectedTask.id).order('created_at', { ascending: false }),
+            supabase.from('sub_tasks').select('*').eq('task_id', selectedTask.id).order('created_at', { ascending: true })
+        ]);
+
+        setTaskDetails({ checklists: chk.data || [], attachments: att.data || [], logs: log.data || [], dependencies: [] });
+
+        // Also fetch the newer procedural steps templates
+        setProceduralSteps(subTasksRes.data || []);
+    };
+
+    useEffect(() => {
+        fetchTaskDetails();
     }, [selectedTask]);
+
+    const handleToggleStep = async (stepId: string, newState: boolean) => {
+        const supabase = await getAuthenticatedSupabase();
+        if (!supabase) return;
+        const { error } = await supabase
+            .from('sub_tasks')
+            .update({ is_completed: newState })
+            .eq('id', stepId);
+
+        if (!error) {
+            // Optimistic update
+            setProceduralSteps(prev => prev.map(s => s.id === stepId ? { ...s, is_completed: newState } : s));
+        }
+    };
 
     const handleApplySOPTemplate = async (templateId: string, matterId: string) => {
         if (!tenantId) return;
@@ -288,18 +369,7 @@ export default function TasksDashboardPage() {
         }
     };
 
-    // Refresh side panel details
-    const fetchTaskDetails = async () => {
-        if (!selectedTask || !session) return;
-        const supabase = await getAuthenticatedSupabase();
-        if (!supabase) return;
-        const [chk, att, log] = await Promise.all([
-            supabase.from('task_checklists').select('*').eq('task_id', selectedTask.id).order('created_at'),
-            supabase.from('task_attachments').select('*').eq('task_id', selectedTask.id).order('created_at'),
-            supabase.from('activity_logs').select('*').eq('task_id', selectedTask.id).order('created_at', { ascending: false })
-        ]);
-        setTaskDetails({ checklists: chk.data || [], attachments: att.data || [], logs: log.data || [], dependencies: [] });
-    };
+
 
     // DnD: Update task status when dropped in a new column
     const handleUpdateTaskStatus = async (id: string, newStatus: string) => {
@@ -805,9 +875,35 @@ export default function TasksDashboardPage() {
 
                         {/* Checklist */}
                         <div data-purpose="checklist">
+
+                            <div className="mb-6 border-b border-white/10 pb-4">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Procedural Steps</h4>
+                                    <span className="text-[10px] text-clause-gold">{proceduralSteps.filter(s => s.is_completed).length}/{proceduralSteps.length}</span>
+                                </div>
+
+                                {proceduralSteps.length > 0 ? (
+                                    <ul className="space-y-3 mb-4">
+                                        {proceduralSteps.map(step => (
+                                            <li key={step.id} className="flex items-start gap-3 text-sm text-gray-300">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={step.is_completed}
+                                                    className="mt-1 accent-clause-gold w-4 h-4 cursor-pointer"
+                                                    onChange={() => handleToggleStep(step.id, !step.is_completed)}
+                                                />
+                                                <span className={step.is_completed ? "line-through text-gray-600" : ""}>{step.title}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                ) : (
+                                    <p className="text-xs text-gray-500 mb-4">No procedural steps defined.</p>
+                                )}
+                            </div>
+
                             <div className="flex justify-between items-end mb-4">
                                 <p className="text-[10px] font-mono uppercase text-white/30 tracking-widest">
-                                    Procedural Steps
+                                    Ad-Hoc Checklists
                                 </p>
                                 <span className="text-[10px] font-mono text-clause-gold">
                                     {taskDetails.checklists.length > 0
@@ -1045,43 +1141,59 @@ export default function TasksDashboardPage() {
                                     SELECT TEMPLATE →
                                 </button>
                             </div>
-                            {/* Template Option */}
-                            <div className="glass-card p-5 rounded-md border-clause-gold/20 hover:border-clause-gold transition-all flex flex-col ring-1 ring-clause-gold/10 cursor-pointer">
-                                <div className="flex justify-between mb-4">
-                                    <Gavel className="w-6 h-6 text-clause-gold" />
-                                    <span className="text-[9px] font-mono px-2 py-1 bg-clause-gold/20 text-clause-gold rounded border border-clause-gold/20">
-                                        PREMIUM SOP
-                                    </span>
+
+                            {/* 2. DYNAMIC TEMPLATES OR EMPTY STATE */}
+                            {customTemplates.length > 0 ? (
+                                customTemplates.map((template) => {
+                                    // Extract the count from the Supabase relationship array
+                                    const itemCount = template.task_template_items?.[0]?.count || 0;
+
+                                    return (
+                                        <div key={template.id} onClick={() => {
+                                            if (!selectedMatterId) {
+                                                toast.error('Matter Required', { description: 'Please select a matter first.', style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' } });
+                                                return;
+                                            }
+                                            handleApplySOPTemplate(template.id, selectedMatterId);
+                                        }}
+                                            className="bg-white/5 border border-white/10 hover:border-clause-gold/50 p-5 rounded-xl transition-all duration-300 hover:bg-white/10 cursor-pointer flex flex-col h-full group"
+                                        >
+                                            <div className="flex justify-between items-start mb-4">
+                                                <div className="flex items-center gap-2">
+                                                    <div className="text-clause-gold"><Gavel size={20} /></div>
+                                                    <span className="text-[10px] font-bold tracking-wider uppercase px-2 py-1 bg-clause-gold/10 text-clause-gold rounded border border-clause-gold/20">Premium SOP</span>
+                                                </div>
+
+                                                <button
+                                                    onClick={(e) => handleDeleteTemplate(template.id, e)}
+                                                    className="text-gray-500 hover:text-red-400 hover:bg-red-400/10 p-1.5 rounded transition-colors"
+                                                    title="Delete Template"
+                                                >
+                                                    <Trash2 size={16} />
+                                                </button>
+                                            </div>
+                                            <h3 className="text-lg font-bold text-white mb-2">{template.name}</h3>
+                                            <p className="text-xs text-gray-400 leading-relaxed flex-grow">
+                                                {template.matter_type ? `Category: ${template.matter_type}` : 'Standardized legal workflow.'}
+                                            </p>
+                                            <div className="flex justify-between items-center mt-6 pt-4 border-t border-white/10">
+                                                <span className="text-[10px] font-bold text-gray-500 tracking-wider uppercase">{itemCount} SUB-TASKS • AI ASSISTED</span>
+                                                <span className="text-xs font-semibold text-clause-gold group-hover:translate-x-1 transition-transform">SELECT TEMPLATE →</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })
+                            ) : (
+                                /* EMPTY STATE: No Templates Found */
+                                <div className="bg-transparent border-2 border-dashed border-white/10 p-5 rounded-xl flex flex-col items-center justify-center text-center h-full">
+                                    <div className="text-gray-500 mb-3"><FileWarning size={28} /></div>
+                                    <h3 className="text-sm font-bold text-gray-300 mb-1">No Custom SOPs Found</h3>
+                                    <p className="text-xs text-gray-500 mb-4 px-4">Standardize your workflow by creating AI-assisted Task Templates.</p>
+                                    <Link href="/dashboard/settings/templates" onClick={() => setIsSopModalOpen(false)} className="text-xs font-semibold text-clause-gold border border-clause-gold/30 bg-clause-gold/10 px-4 py-2 rounded hover:bg-clause-gold/20 transition-colors">
+                                        + Create Template
+                                    </Link>
                                 </div>
-                                <h4 className="font-serif text-lg text-white mb-2">
-                                    Litigation Checklist
-                                </h4>
-                                <p className="text-[11px] opacity-40 leading-relaxed mb-4">
-                                    Complete 12-step legal workflow including evidentiary review, AI
-                                    discovery, and partner filing sign-off.
-                                </p>
-                                <div className="flex gap-2 mb-6">
-                                    <span className="text-[9px] font-mono opacity-60">
-                                        12 SUB-TASKS
-                                    </span>
-                                    <span className="text-[9px] font-mono opacity-60">•</span>
-                                    <span className="text-[9px] font-mono opacity-60 text-clause-gold">
-                                        AI ASSISTED
-                                    </span>
-                                </div>
-                                <button
-                                    className="mt-auto pt-4 text-xs font-mono text-clause-gold text-left cursor-pointer hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
-                                    onClick={() => {
-                                        if (!selectedMatterId) {
-                                            alert("Please select a matter first.");
-                                            return;
-                                        }
-                                        handleApplySOPTemplate('181bf05c-e5dd-4dc3-8745-f0e75dd579de', selectedMatterId);
-                                    }}
-                                >
-                                    SELECT TEMPLATE →
-                                </button>
-                            </div>
+                            )}
                         </div>
                     </div>
                 </div>
@@ -1199,6 +1311,8 @@ export default function TasksDashboardPage() {
             )
             }
             {/* END: Task-Specific AI Chat Modal */}
+
+            <Toaster position="top-right" expand={false} richColors theme="dark" />
         </div >
     );
 }
