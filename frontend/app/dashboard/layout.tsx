@@ -101,6 +101,7 @@ export default function DashboardLayout({
             {/* Programmatic Toggle Button Overlay */}
             {!isContractDetailPage && !isTaskPage && !isSettingsPage && (
                 <button
+                    suppressHydrationWarning
                     onClick={togglePanel}
                     className={`absolute top-1/2 -translate-y-1/2 z-[60] flex items-center justify-center w-6 h-8 bg-surface-border hover:bg-primary/80 text-text-muted hover:text-white rounded-l shadow-lg border border-surface-border transition-all duration-300 ${isCollapsed ? 'right-0' : ''}`}
                     style={{ right: isCollapsed ? '0px' : `${sidebarWidth}px` }}

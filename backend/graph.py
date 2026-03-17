@@ -1,9 +1,10 @@
 import os
 import json
-from typing import TypedDict, List, Dict, Any
+import operator
+from typing import TypedDict, Annotated, List, Dict, Any
 from dotenv import load_dotenv
 from openai import OpenAI
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, START, END
 
 # Load environment variables
 load_dotenv()
@@ -27,13 +28,13 @@ class ContractState(TypedDict):
     effective_date: str           # Date the agreement goes into effect
     jurisdiction: str             # Legal jurisdiction
     governing_law: str            # Governing law
-    compliance_issues: List[str]  # List of legal/compliance violations found
-    risk_flags: List[str]         # Specific risk warnings
+    compliance_issues: Annotated[list, operator.add]  # List of legal/compliance violations found
+    risk_flags: Annotated[list, operator.add]          # Specific risk warnings
     risk_score: float             # Calculated risk score (0-100)
     counter_proposal: str         # Negotiation strategy / BATNA reasoning
-    draft_revisions: List[Any]    # Revised neutral/fair clauses
-    extracted_obligations: List[Dict[str, Any]]  # Obligations mined from contract
-    classified_clauses: List[Dict[str, Any]]      # Key clauses classified by type
+    draft_revisions: Annotated[list, operator.add]     # Revised neutral/fair clauses
+    extracted_obligations: Annotated[list, operator.add]  # Obligations mined from contract
+    classified_clauses: Annotated[list, operator.add]     # Key clauses classified by type
 
 # ==========================================
 # 2. Agent 01: Ingestion Agent
@@ -61,16 +62,15 @@ def ingestion_agent(state: ContractState) -> ContractState:
     {state.get('raw_document', '')[:10000]} # Truncated for safety
     """
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": "You are a precise JSON legal extraction engine."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
     try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are a precise JSON legal extraction engine."},
+                {"role": "user", "content": prompt}
+            ]
+        )
         result = json.loads(response.choices[0].message.content)
         return {
             "contract_value": result.get("contract_value", "Unknown"),
@@ -106,16 +106,15 @@ def compliance_agent(state: ContractState) -> ContractState:
     {json.dumps(clauses)}
     """
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": "You are a legal compliance JSON generator."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
     try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are a legal compliance JSON generator."},
+                {"role": "user", "content": prompt}
+            ]
+        )
         result = json.loads(response.choices[0].message.content)
         return {"compliance_issues": result.get("compliance_issues", [])}
     except Exception as e:
@@ -148,16 +147,15 @@ def risk_agent(state: ContractState) -> ContractState:
     {json.dumps(issues)}
     """
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": "You are a risk assessment JSON generator."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
     try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are a risk assessment JSON generator."},
+                {"role": "user", "content": prompt}
+            ]
+        )
         result = json.loads(response.choices[0].message.content)
         return {
             "risk_score": float(result.get("risk_score", 0.0)),
@@ -193,16 +191,15 @@ def negotiation_agent(state: ContractState) -> ContractState:
     {json.dumps(flags)}
     """
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": "You are a strategic negotiation JSON generator."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
     try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are a strategic negotiation JSON generator."},
+                {"role": "user", "content": prompt}
+            ]
+        )
         result = json.loads(response.choices[0].message.content)
         return {"counter_proposal": result.get("counter_proposal", "No strategy formulated.")}
     except Exception as e:
@@ -233,16 +230,15 @@ def drafting_agent(state: ContractState) -> ContractState:
     {json.dumps(issues)}
     """
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": "You are a legal contract drafting JSON generator."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
     try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are a legal contract drafting JSON generator."},
+                {"role": "user", "content": prompt}
+            ]
+        )
         result = json.loads(response.choices[0].message.content)
         return {"draft_revisions": result.get("draft_revisions", [])}
     except Exception as e:
@@ -278,16 +274,15 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
     {state.get('raw_document', '')[:12000]}
     """
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": "You are a precise obligation extraction JSON engine."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
     try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are a precise obligation extraction JSON engine."},
+                {"role": "user", "content": prompt}
+            ]
+        )
         result = json.loads(response.choices[0].message.content)
         return {"extracted_obligations": result.get("obligations", [])}
     except Exception as e:
@@ -329,16 +324,15 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
     {json.dumps(clauses)}
     """
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": "You are a legal clause classification JSON engine."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
     try:
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are a legal clause classification JSON engine."},
+                {"role": "user", "content": prompt}
+            ]
+        )
         result = json.loads(response.choices[0].message.content)
         return {"classified_clauses": result.get("clauses", [])}
     except Exception as e:
@@ -361,7 +355,7 @@ workflow.add_node("obligation_miner", obligation_miner_agent)
 workflow.add_node("clause_classifier", clause_classifier_agent)
 
 # Define the sequential execution flow (7-Agent Pipeline)
-workflow.set_entry_point("ingestion")
+workflow.add_edge(START, "ingestion")
 workflow.add_edge("ingestion", "compliance")
 workflow.add_edge("compliance", "risk")
 workflow.add_edge("risk", "negotiation")
@@ -371,6 +365,9 @@ workflow.add_edge("obligation_miner", "clause_classifier")
 workflow.add_edge("clause_classifier", END)
 
 # Compile the graph into an executable application
-clm_graph = workflow.compile()
-
-print("LangGraph CLM 7-Agent Orchestration initialized successfully.")
+try:
+    clm_graph = workflow.compile()
+    print("LangGraph CLM 7-Agent Orchestration initialized successfully.")
+except Exception as e:
+    print(f"FATAL: Failed to compile LangGraph: {e}")
+    clm_graph = None

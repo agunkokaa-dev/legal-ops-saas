@@ -195,7 +195,7 @@ export default async function DashboardPage() {
                                     <h3 className="font-display text-xl text-white">Active Matters</h3>
                                     <p className="text-xs text-text-muted">By Practice Area</p>
                                 </div>
-                                <button className="text-xs text-primary border border-primary/30 px-2 py-1 rounded hover:bg-primary/10">View All</button>
+                                <button suppressHydrationWarning className="text-xs text-primary border border-primary/30 px-2 py-1 rounded hover:bg-primary/10">View All</button>
                             </div>
                             <div className="flex-1 flex items-end justify-between gap-4 px-2 pb-2">
                                 <div className="flex flex-col items-center gap-2 flex-1 group" title={`Corp: ${practiceAreas.CORP}`}>

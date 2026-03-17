@@ -44,7 +44,7 @@ export async function createNote(data: { contractId: string, quote: string, comm
                 contract_id: data.contractId,
                 quote: data.quote,
                 comment: data.comment,
-                position_data: data.positionData
+                position_data: data.positionData || { boundingRect: null, rects: [], pageNumber: 1 }
             })
             .select('*')
             .single()

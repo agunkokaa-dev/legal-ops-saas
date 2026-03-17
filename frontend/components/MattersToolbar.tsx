@@ -41,6 +41,7 @@ function MattersToolbarContent() {
                 <div className="relative">
                     <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-text-muted text-[18px]">search</span>
                     <input
+                        suppressHydrationWarning
                         type="text"
                         placeholder="Search ID, Client, or Keyword..."
                         value={query}
@@ -54,6 +55,7 @@ function MattersToolbarContent() {
 
                 {/* Filters */}
                 <select
+                    suppressHydrationWarning
                     className="bg-transparent border border-surface-border rounded-md px-3 py-1.5 text-sm text-text-muted hover:text-white focus:border-primary focus:outline-none appearance-none cursor-pointer"
                     onChange={(e) => handleFilter('client', e.target.value)}
                     value={searchParams.get('client') || ''}
@@ -63,6 +65,7 @@ function MattersToolbarContent() {
                     <option value="Wayne Enterprises">Wayne Enterprises</option>
                 </select>
                 <select
+                    suppressHydrationWarning
                     className="bg-transparent border border-surface-border rounded-md px-3 py-1.5 text-sm text-text-muted hover:text-white focus:border-primary focus:outline-none appearance-none cursor-pointer"
                     onChange={(e) => handleFilter('practice_area', e.target.value)}
                     value={searchParams.get('practice_area') || ''}
@@ -74,6 +77,7 @@ function MattersToolbarContent() {
                     <option value="Real Estate">Real Estate</option>
                 </select>
                 <select
+                    suppressHydrationWarning
                     className="bg-transparent border border-surface-border rounded-md px-3 py-1.5 text-sm text-text-muted hover:text-white focus:border-primary focus:outline-none appearance-none cursor-pointer"
                     onChange={(e) => handleFilter('status', e.target.value)}
                     value={searchParams.get('status') || ''}
@@ -84,6 +88,7 @@ function MattersToolbarContent() {
                     <option value="Critical">Critical</option>
                 </select>
                 <select
+                    suppressHydrationWarning
                     className="bg-transparent border border-surface-border rounded-md px-3 py-1.5 text-sm text-text-muted hover:text-white focus:border-primary focus:outline-none appearance-none cursor-pointer"
                     onChange={(e) => handleFilter('lead_lawyer', e.target.value)}
                     value={searchParams.get('lead_lawyer') || ''}

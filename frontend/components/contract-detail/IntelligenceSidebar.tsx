@@ -6,6 +6,7 @@ import { deleteNote } from '@/app/actions/noteActions'
 import GenealogyGraph from '../genealogy/GenealogyGraph'
 import ClauseAssistant from './ClauseAssistant'
 import ObligationsTab from './ObligationsTab'
+import ReactMarkdown from 'react-markdown'
 
 export default function IntelligenceSidebar({
     contract,
@@ -221,8 +222,16 @@ export default function IntelligenceSidebar({
                                             >
                                                 <span className="material-symbols-outlined text-[14px]">delete</span>
                                             </button>
-                                            <p className="text-text-muted text-[10px] italic mb-2 px-2 border-l-2 border-[#d4af37]/50 pr-6">"{note.quote}"</p>
-                                            <p className="text-white text-xs">{note.comment}</p>
+                                            
+                                            <div className="text-[11px] text-gray-300 leading-relaxed mb-2 px-2 border-l-2 border-[#d4af37]/50 pr-6 prose-invert prose-xs max-w-none prose-p:leading-relaxed prose-blockquote:border-l-lux-gold prose-blockquote:bg-white/5 prose-blockquote:py-1 prose-blockquote:px-3">
+                                                <ReactMarkdown>
+                                                    {note.quote}
+                                                </ReactMarkdown>
+                                            </div>
+
+                                            {note.comment && (
+                                                <p className="text-white text-xs mt-2 bg-white/5 p-2 rounded border border-white/5">{note.comment}</p>
+                                            )}
                                         </div>
                                     ))
                                 )}

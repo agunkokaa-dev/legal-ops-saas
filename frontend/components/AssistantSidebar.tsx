@@ -29,8 +29,16 @@ export default function AssistantSidebar() {
 
     const processContent = (text: string) => {
         if (!text) return '';
-        // Convert filenames into markdown links so ReactMarkdown parses them as `a` tags
-        return text.replace(/\[?([a-zA-Z0-9_.-]+\.(?:pdf|docx|txt))\]?(?!\()/gi, '[$1](/dashboard/documents/$1)');
+        // Find existing markdown links to avoid messing with them.
+        // We look for [text](url) or loose filenames like docs.pdf
+        return text.replace(/\[([^\]]+)\]\(([^)]+)\)|([a-zA-Z0-9_.-]+\.(?:pdf|docx|txt))/gi, (match, mdTitle, mdUrl, looseName) => {
+            if (looseName) {
+                // It's a loose filename, convert to dashboard/documents link
+                return `[${looseName}](/dashboard/documents/${looseName})`;
+            }
+            // It's already a markdown link, return as is
+            return match;
+        });
     };
 
     const scrollToBottom = () => {
@@ -52,12 +60,18 @@ export default function AssistantSidebar() {
         try {
             const result = await chatWithClause(userMessage.content)
 
+            // 🚨 CRITICAL FIX: Backend returns {"reply": "..."}, NOT {"answer": "..."}
+            const aiContent = typeof result === 'string'
+                ? result
+                : String(result.reply || result.answer || result.response || result.content || "Mohon maaf, terjadi kesalahan dalam memproses respons.");
+
             setMessages(prev => [...prev, {
                 id: Date.now().toString() + 'ai',
                 role: 'assistant',
-                content: result.answer,
-                citations: result.citations
+                content: aiContent,
+                citations: result?.citations || result?.sources || []
             }])
+
         } catch (error: any) {
             setMessages(prev => [...prev, {
                 id: Date.now().toString() + 'err',
@@ -93,15 +107,30 @@ export default function AssistantSidebar() {
                                                 li: ({node, ...props}) => <li className="leading-relaxed" {...props} />,
                                                 a: ({node, href, children, ...props}) => {
                                                     const linkText = String(children);
-                                                    if (linkText.match(/\.(?:pdf|docx|txt)$/i) || href?.includes('/dashboard/documents/')) {
+                                                    const hrefStr = href || '';
+                                                    
+                                                    // Check if it's a contract link (either by file extension or specific routing)
+                                                    if (linkText.match(/\.(?:pdf|docx|txt)$/i) || hrefStr.includes('/dashboard/documents/') || hrefStr.includes('/dashboard/contracts/')) {
+                                                        
+                                                        // 🚨 CRITICAL FIX: Extract UUID from href if it follows the enterprise routing pattern
+                                                        // We prioritize the ID from the href over the link text to prevent routing to filenames.
+                                                        let targetId = linkText; 
+                                                        
+                                                        if (hrefStr.includes('/dashboard/contracts/')) {
+                                                            targetId = hrefStr.split('/dashboard/contracts/')[1] || linkText;
+                                                        } else if (hrefStr.includes('/dashboard/documents/')) {
+                                                            targetId = hrefStr.split('/dashboard/documents/')[1] || linkText;
+                                                        }
+
                                                         const matchedSource = msg.citations?.find((cite: any) => 
-                                                            cite.file_name === linkText || cite.contract_id === linkText
+                                                            cite.file_name === linkText || cite.contract_id === targetId || cite.contract_id === linkText
                                                         );
-                                                        const targetId = matchedSource ? matchedSource.contract_id : linkText;
+                                                        
+                                                        const finalId = matchedSource ? matchedSource.contract_id : targetId;
 
                                                         return (
                                                             <span
-                                                                onClick={() => router.push(`/dashboard/contracts/${encodeURIComponent(targetId)}`)}
+                                                                onClick={() => router.push(`/dashboard/contracts/${encodeURIComponent(finalId)}`)}
                                                                 className="inline-flex items-center gap-1 bg-clause-gold/10 text-clause-gold border border-clause-gold/30 px-2 py-1 mx-1 rounded text-xs font-bold cursor-pointer hover:bg-clause-gold/20 hover:scale-105 transition-all shadow-sm shadow-clause-gold/10"
                                                                 title={`Open Document: ${linkText}`}
                                                             >
@@ -128,6 +157,7 @@ export default function AssistantSidebar() {
                                     {msg.citations.map((cite, idx) => {
                                         return (
                                             <button
+                                                suppressHydrationWarning
                                                 key={idx}
                                                 onClick={(e) => {
                                                     e.preventDefault();
@@ -164,6 +194,7 @@ export default function AssistantSidebar() {
             <div className="p-4 border-t border-surface-border bg-surface shrink-0">
                 <div className="relative">
                     <input
+                        suppressHydrationWarning
                         className="w-full bg-background-dark border border-surface-border rounded pl-4 pr-10 py-3 text-sm text-white placeholder-text-muted focus:outline-none focus:border-primary/50 transition-colors"
                         placeholder="Query your tenant vault..."
                         type="text"
@@ -175,6 +206,7 @@ export default function AssistantSidebar() {
                         disabled={isLoading}
                     />
                     <button
+                        suppressHydrationWarning
                         onClick={handleSend}
                         disabled={isLoading || !input.trim()}
                         className="absolute right-2 top-1/2 -translate-y-1/2 text-primary hover:text-white transition-colors p-1 disabled:opacity-30 disabled:hover:text-primary cursor-pointer flex items-center justify-center"

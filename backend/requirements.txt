@@ -1,9 +1,9 @@
-fastapi==0.104.1
-uvicorn==0.24.0
+fastapi>=0.104.1
+uvicorn>=0.24.0
 pydantic
 pydantic-settings
-qdrant-client==1.6.4
-supabase==2.0.2
+qdrant-client>=1.6.4
+supabase>=2.3.0
 openai
 python-dotenv==1.0.0
 python-multipart==0.0.6

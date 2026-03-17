@@ -7,7 +7,7 @@ const FASTAPI_URL = process.env.FASTAPI_URL || 'http://localhost:8000'
 
 // 1. Chat Action
 export async function chatWithClause(question: string) {
-    const { userId, orgId } = await auth()
+    const { userId, orgId, getToken } = await auth()
     const tenantId = orgId || userId
 
     if (!tenantId) {
@@ -15,18 +15,34 @@ export async function chatWithClause(question: string) {
     }
 
     try {
-        const formData = new FormData()
-        formData.append('question', question)
-        formData.append('tenant_id', tenantId)
-
-        const response = await fetch(`${FASTAPI_URL}/api/chat`, {
+        const token = await getToken()
+        
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://173.212.240.143:8000'}/api/v1/ai/task-assistant`, {
             method: 'POST',
-            body: formData,
-        })
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}` 
+            },
+            body: JSON.stringify({
+                message: question,
+                tenant_id: tenantId,
+                source_page: "dashboard", // 🚨 CRITICAL: Explicitly set the context!
+                matter_id: "general", // Required by Pydantic model
+                task_id: "dashboard_chat" // Required by Pydantic model
+            }),
+        });
 
+        // 2. Fix the error handling to prevent [object Object] crash:
         if (!response.ok) {
-            const errorData = await response.json().catch(() => ({}))
-            throw new Error(errorData.detail || 'Failed to chat with AI')
+            const errorData = await response.json().catch(() => ({}));
+            console.error("🔥 FASTAPI ERROR in Server Action:", errorData);
+            
+            // Safely extract the Pydantic error array
+            const errorMessage = Array.isArray(errorData.detail)
+                ? errorData.detail.map((e: any) => e.loc ? `${e.loc.join('.')}: ${e.msg}` : e.msg).join(" | ")
+                : (errorData.detail || `HTTP error! status: ${response.status}`);
+                
+            throw new Error(errorMessage);
         }
 
         return await response.json()

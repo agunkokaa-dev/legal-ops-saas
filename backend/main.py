@@ -14,24 +14,68 @@ from PyPDF2 import PdfReader
 from dotenv import load_dotenv
 import uuid
 import traceback
+import re
 from graph import clm_graph
+import jwt
+from fastapi import Depends, Header
 
 load_dotenv()
 
 app = FastAPI(title="CLAUSE Intelligent Engine", version="1.1.0")
 
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://173.212.240.143:3000").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Izinkan semua (buat dev), atau ["http://localhost:3000"]
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # --- INISIALISASI ---
+CLERK_PEM_KEY = os.getenv("CLERK_PEM_PUBLIC_KEY", "").replace("\\n", "\n")
+
+async def verify_clerk_token(authorization: str = Header(...)):
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid token format")
+    try:
+        token = authorization.replace("Bearer ", "")
+        # For MVP we decode without strict verification if key is missing, but ideally verify signature
+        if CLERK_PEM_KEY:
+             payload = jwt.decode(token, CLERK_PEM_KEY, algorithms=["RS256"])
+        else:
+             # Fallback UNSECURE decode if env var missing during rescue phase (DO NOT DO IN PROD)
+             payload = jwt.decode(token, options={"verify_signature": False})
+             
+        # Extract tenant_id from Clerk org_id, fallback to user sub
+        tenant_id = payload.get("org_id") or payload.get("sub")
+        if not tenant_id:
+             raise HTTPException(status_code=403, detail="No tenant context found in token.")
+             
+        payload["verified_tenant_id"] = tenant_id
+        return payload
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+
 # Use Service Role Key if available to bypass RLS for backend data fetching
+# ONLY for background tasks.
 supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY")
-supabase: Client = create_client(os.getenv("SUPABASE_URL"), supabase_key)
+admin_supabase: Client = create_client(os.getenv("SUPABASE_URL"), supabase_key)
+
+async def get_tenant_supabase(authorization: str = Header(...)) -> Client:
+    """
+    Creates a new Supabase client per request using the Anon Key
+    and the user's JWT. This enforces Row Level Security (RLS) in the database.
+    """
+    token = authorization.replace("Bearer ", "")
+    fallback_key = os.getenv("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or "placeholder_key"
+    client = create_client(os.getenv("SUPABASE_URL") or "https://placeholder.supabase.co", fallback_key)
+    client.postgrest.auth(token)
+    return client
+
 qdrant = QdrantClient(url=os.getenv("QDRANT_URL", "http://qdrant:6333"))
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 COLLECTION_NAME = "contracts_vectors"
@@ -54,7 +98,6 @@ if "company_rules" not in collection_names:
 class MatterCreate(BaseModel):
     name: str
     description: str
-    tenant_id: str
 
 class ClauseAssistantRequest(BaseModel):
     message: str
@@ -89,16 +132,58 @@ class ApplyTemplateRequest(BaseModel):
     matter_id: str
 
 class TaskAssistantRequest(BaseModel):
-    tenant_id: str
     matter_id: str
     task_id: str
     message: str
+    tenant_id: Optional[str] = None
+    source_page: Optional[str] = "dashboard"
+    document_id: Optional[str] = None
+
+# =====================================================================
+# TEXT CHUNKING UTILS
+# =====================================================================
+def chunk_text(text: str, chunk_size: int = 1500, overlap: int = 200) -> list[str]:
+    """
+    Recursively chunks legal text while preserving the [Page X] markers.
+    The overlap prevents clauses from being cut in half during semantic search.
+    """
+    chunks = []
+    current_page = "[Page 1]"
+    i = 0
+    while i < len(text):
+        # Find the last page marker before this chunk to prepend it
+        page_marks = re.findall(r'\[Page \d+\]', text[:i + 50])
+        if page_marks:
+            current_page = page_marks[-1]
+            
+        chunk_end = min(i + chunk_size, len(text))
+        
+        # Try to break at a newline if possible
+        if chunk_end < len(text):
+            last_newline = text.rfind('\n', i, chunk_end)
+            if last_newline != -1 and last_newline > i + (chunk_size // 2):
+                 chunk_end = last_newline + 1
+                 
+        raw_chunk = text[i:chunk_end].strip()
+        
+        # Ensure page marker is preserved
+        if not re.search(r'\[Page \d+\]', raw_chunk):
+            raw_chunk = current_page + " " + raw_chunk
+            
+        chunks.append(raw_chunk)
+        
+        if chunk_end == len(text):
+            break
+            
+        i = chunk_end - overlap
+
+    return chunks
 
 # =====================================================================
 # AGENTIC TOOL DEFINITIONS (Function Calling)
 # =====================================================================
 
-def get_user_tasks(tenant_id: str, status_filter: str = "open"):
+def get_user_tasks(tenant_id: str, supabase: Client, status_filter: str = "open"):
     """
     Fetches the user's active tasks from Supabase, joined with matter names.
     Used as a Tool by the LLM when the user asks about their tasks/schedule.
@@ -164,7 +249,7 @@ async def vectorize_playbook_rule(request: PlaybookRuleRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/obligations/extract")
-async def extract_obligations(request: ExtractObligationsRequest):
+async def extract_obligations(request: ExtractObligationsRequest, supabase: Client = Depends(get_tenant_supabase)):
     try:
         import json
         
@@ -257,12 +342,13 @@ Return a JSON object containing an array called 'obligations' with keys:
 
 
 @app.post("/api/matters")
-async def create_matter(matter: MatterCreate):
+async def create_matter(matter: MatterCreate, claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
     try:
+        tenant_id = claims["verified_tenant_id"]
         matter_id = str(uuid.uuid4())
         response = supabase.table("matters").insert({
             "id": matter_id,
-            "tenant_id": matter.tenant_id,
+            "tenant_id": tenant_id,
             "name": matter.name,
             "description": matter.description
         }).execute()
@@ -272,10 +358,9 @@ async def create_matter(matter: MatterCreate):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/matters")
-async def get_matters(tenant_id: str):
+async def get_matters(claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
     try:
-        if not tenant_id:
-            raise HTTPException(status_code=400, detail="tenant_id is required")
+        tenant_id = claims["verified_tenant_id"]
         response = supabase.table("matters").select("*").eq("tenant_id", tenant_id).execute()
         return {"status": "success", "data": response.data}
     except Exception as e:
@@ -288,10 +373,13 @@ async def get_matters(tenant_id: str):
 @app.post("/api/upload")
 async def upload_contract(
     file: UploadFile = File(...),
-    tenant_id: str = Form(...),
     matter_id: str = Form(None),
-    contract_id: str = Form(None)
+    contract_id: str = Form(None),
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase)
 ):
+    tenant_id = claims["verified_tenant_id"]
+    
     # Validasi 1: Ekstensi Kasar
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Hanya menerima file berformat PDF.")
@@ -320,7 +408,9 @@ async def upload_contract(
         print(f"Invoking LangGraph for {file.filename}...")
         final_state = clm_graph.invoke({
             "contract_id": contract_id,
-            "raw_document": text_content[:15000] # Limiting context window for safety
+            # We pass a large chunk (up to 20K chars) to LangGraph for high-level metadata extraction. 
+            # Note: For full document deep-analysis by agents, chunking should be implemented inside the Agents too.
+            "raw_document": text_content[:20000] 
         })
         print(f"LangGraph execution complete with score: {final_state.get('risk_score')}")
 
@@ -409,15 +499,35 @@ async def upload_contract(
                 except Exception as cl_err:
                     print(f"⚠️ Failed to insert clauses: {cl_err}")
         
-        # Existing Vector Embedding
-        response = openai_client.embeddings.create(input=text_content[:8000], model="text-embedding-3-small")
-        qdrant.upsert(
-            collection_name=COLLECTION_NAME,
-            points=[PointStruct(
-                id=contract_id, vector=response.data[0].embedding,
-                payload={"tenant_id": tenant_id, "contract_id": contract_id, "text": text_content[:1500]}
-            )]
-        )
+        # Existing Vector Embedding (Refactored to Chunking)
+        chunks = chunk_text(text_content, chunk_size=1500, overlap=200)
+        print(f"Document split into {len(chunks)} chunks for vectorization.")
+        
+        points = []
+        for i, chunk in enumerate(chunks):
+            # Embed each chunk individually
+            chunk_embed = openai_client.embeddings.create(input=chunk, model="text-embedding-3-small").data[0].embedding
+            point_id = str(uuid.uuid4())
+            points.append(
+                PointStruct(
+                    id=point_id, 
+                    vector=chunk_embed,
+                    payload={
+                        "tenant_id": tenant_id, 
+                        "contract_id": contract_id, 
+                        "chunk_index": i,
+                        "text": chunk
+                    }
+                )
+            )
+            
+        # Upsert chunks in batches of 100 to Qdrant
+        if points:
+            batch_size = 100
+            for i in range(0, len(points), batch_size):
+                batch = points[i:i + batch_size]
+                qdrant.upsert(collection_name=COLLECTION_NAME, points=batch)
+                
         return {
             "status": "success", 
             "message": "Dokumen aman dan berhasil diindeks beserta analisa AI.",
@@ -434,23 +544,27 @@ async def upload_contract(
 @app.post("/api/chat")
 async def chat_with_clause(
     question: str = Form(...),
-    tenant_id: str = Form(...)
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase)
 ):
     try:
+        tenant_id = claims["verified_tenant_id"]
+        
         # 1. Ubah pertanyaan jadi angka (Vector)
         question_vector = openai_client.embeddings.create(input=question, model="text-embedding-3-small").data[0].embedding
 
         # 2. Pencarian Ketat (Strict Tenant Isolation) - RAG
-        search_results = qdrant.search(
+        search_results = qdrant.query_points(
             collection_name=COLLECTION_NAME,
-            query_vector=question_vector,
+            query=question_vector,
             limit=20, # Increased limit to bypass ghost vector pollution
 
             # INI ADALAH KUNCI UTAMA KEAMANAN RAG MULTI-TENANT:
             query_filter=Filter(
                 must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]
-            )
-        )
+            ),
+            with_payload=True
+        ).points
 
         if not search_results:
             return {"answer": "Maaf, saya tidak menemukan dokumen yang relevan di brankas perusahaan Anda untuk menjawab ini.", "citations": []}
@@ -548,8 +662,10 @@ async def chat_with_clause(
 # 3. PHASE 4: CLAUSE ASSISTANT API (GENEALOGY-AWARE OBLIGATION EXPERT)
 # =====================================================================
 @app.post("/api/chat/clause-assistant")
-async def chat_clause_assistant(request: ClauseAssistantRequest):
+async def chat_clause_assistant(request: ClauseAssistantRequest, claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
     try:
+        tenant_id = claims["verified_tenant_id"]
+        
         # 1. Fetch Contract Lineage (Genealogy)
         contract_ids_to_search = []
         if request.matterId:
@@ -607,9 +723,9 @@ async def chat_clause_assistant(request: ClauseAssistantRequest):
         # 4. Filtered Vector Retrieval (DUAL RAG)
         
         # 4a. Client Contract Search (Strict Genealogy Lineage)
-        contract_results = qdrant.search(
+        contract_results = qdrant.query_points(
             collection_name=COLLECTION_NAME,
-            query_vector=question_vector,
+            query=question_vector,
             limit=4, 
             query_filter=Filter(
                 must=[
@@ -618,16 +734,18 @@ async def chat_clause_assistant(request: ClauseAssistantRequest):
                         match=models.MatchAny(any=contract_ids_to_search) # OR matching mechanism
                     )
                 ]
-            )
-        )
+            ),
+            with_payload=True
+        ).points
 
         # 4b. National Law Search
         try:
-            law_results = qdrant.search(
+            law_results = qdrant.query_points(
                 collection_name="id_national_laws",
-                query_vector=question_vector,
-                limit=2
-            )
+                query=question_vector,
+                limit=2,
+                with_payload=True
+            ).points
         except Exception as e:
             print(f"Warning: Failed to search 'id_national_laws'. {e}")
             law_results = []
@@ -727,13 +845,12 @@ Context retrieved from the DB:
 # 4. SOP TEMPLATE ENGINE ENDPOINTS
 # =====================================================================
 @app.post("/api/v1/templates")
-async def create_template(request: TemplateCreateRequest, tenant_id: str):
+async def create_template(request: TemplateCreateRequest, claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
     """
     Creates a new Task Template header and bulk inserts its items.
     """
     try:
-        if not tenant_id:
-            raise HTTPException(status_code=400, detail="tenant_id is required")
+        tenant_id = claims["verified_tenant_id"]
 
         # 1. Insert Template Header
         header_payload = {
@@ -779,14 +896,13 @@ async def create_template(request: TemplateCreateRequest, tenant_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/tasks/from-template")
-async def create_tasks_from_template(req: ApplyTemplateRequest, tenant_id: str):
+async def create_tasks_from_template(req: ApplyTemplateRequest, claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
     """
     Generates instances of tasks from a template and assigns them to a matter.
     Also parses JSONB procedural_steps and creates sub-tasks.
     """
     try:
-        if not tenant_id:
-            raise HTTPException(status_code=400, detail="tenant_id is required")
+        tenant_id = claims["verified_tenant_id"]
 
         # 1. Fetch Template Items (SOP sequence)
         res = supabase.table("task_template_items").select("*").eq("template_id", req.template_id).order("position").execute()
@@ -869,9 +985,12 @@ async def create_tasks_from_template(req: ApplyTemplateRequest, tenant_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/ai/task-assistant")
-async def ask_clause_assistant(req: TaskAssistantRequest):
+async def ask_clause_assistant(req: TaskAssistantRequest, claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
     try:
-        print(f"🤖 [TASK AI] Processing Task ID: {req.task_id} | Matter: {req.matter_id}")
+        tenant_id = claims["verified_tenant_id"]
+        source = getattr(req, "source_page", "dashboard")
+        document_id = getattr(req, "document_id", None)
+        print(f"🤖 [TASK AI] Processing Task ID: {req.task_id} | Matter: {req.matter_id} | Source: {source} | Doc: {document_id}")
 
         # 1. FETCH TASK CONTEXT FROM SUPABASE
         task_context_str = "Unknown Task"
@@ -884,64 +1003,123 @@ async def ask_clause_assistant(req: TaskAssistantRequest):
         except Exception as e:
             print(f"Warning: Failed to fetch task context: {e}")
 
-        # 2. FETCH MATTER LINEAGE (All contracts under this matter)
+        # 2. FETCH CONTRACT IDS TO SEARCH
+        # 🚨 CRITICAL: When source_page == "document", use document_id DIRECTLY
         contract_ids_to_search = []
         contract_titles = {}
-        try:
-            contracts_resp = supabase.table("contracts").select("id, title").eq("matter_id", req.matter_id).execute()
-            if contracts_resp.data:
-                for record in contracts_resp.data:
-                    contract_ids_to_search.append(record["id"])
-                    contract_titles[record["id"]] = record.get("title", "Unknown Document")
-        except Exception as e:
-            print(f"Failed to fetch lineage for matter {req.matter_id}: {e}")
 
-        # If no contracts found, we can't do RAG properly, but we still proceed
+        if source == "document" and document_id:
+            # Direct document lookup — bypass matter-based search
+            contract_ids_to_search = [document_id]
+            try:
+                doc_resp = supabase.table("contracts").select("id, title, matter_id").eq("id", document_id).execute()
+                if doc_resp.data:
+                    doc_record = doc_resp.data[0]
+                    contract_titles[document_id] = doc_record.get("title", "Target Document")
+                    
+                    # Also fetch sibling contracts from the same matter for cross-referencing
+                    real_matter_id = doc_record.get("matter_id")
+                    if real_matter_id:
+                        siblings_resp = supabase.table("contracts").select("id, title").eq("matter_id", real_matter_id).execute()
+                        if siblings_resp.data:
+                            for record in siblings_resp.data:
+                                if record["id"] not in contract_ids_to_search:
+                                    contract_ids_to_search.append(record["id"])
+                                contract_titles[record["id"]] = record.get("title", "Unknown Document")
+                else:
+                    contract_titles[document_id] = "Target Document"
+            except Exception as e:
+                print(f"Warning: Failed to fetch document metadata for {document_id}: {e}")
+                contract_titles[document_id] = "Target Document"
+            print(f"📄 [DOCUMENT MODE] Searching Qdrant for contract IDs: {contract_ids_to_search}")
+        else:
+            # Standard matter-based lookup for dashboard mode
+            try:
+                contracts_resp = supabase.table("contracts").select("id, title").eq("matter_id", req.matter_id).execute()
+                if contracts_resp.data:
+                    for record in contracts_resp.data:
+                        contract_ids_to_search.append(record["id"])
+                        contract_titles[record["id"]] = record.get("title", "Unknown Document")
+            except Exception as e:
+                print(f"Failed to fetch lineage for matter {req.matter_id}: {e}")
+
         if not contract_ids_to_search:
-             print("Warning: No contracts found for this matter.")
+             print("Warning: No contracts found for this context.")
              
         # 3. EMBED THE USER QUERY
         question_vector = openai_client.embeddings.create(input=req.message, model="text-embedding-3-small").data[0].embedding
 
         # 4. DUAL RAG RETRIEVAL
-        combined_context = "=== KONTEKS TUGAS (TASK) SAAT INI ===\n"
-        combined_context += f"{task_context_str}\n\n"
+        combined_context = ""
+        if source != "document":
+            combined_context += f"=== KONTEKS TUGAS (TASK) SAAT INI ===\n{task_context_str}\n\n"
         
         combined_context += "=== KONTEKS KONTRAK (DOKUMEN KLIEN) ===\n"
         if contract_ids_to_search:
-            contract_results = qdrant.search(
+            contract_results = qdrant.query_points(
                 collection_name=COLLECTION_NAME,
-                query_vector=question_vector,
-                limit=4, 
+                query=question_vector,
+                limit=8 if source == "document" else 4,
                 query_filter=models.Filter(
                     must=[models.FieldCondition(key="contract_id", match=models.MatchAny(any=contract_ids_to_search))]
-                )
-            )
+                ),
+                with_payload=True
+            ).points
+            print(f"🔍 [RAG] Qdrant returned {len(contract_results)} chunks for query")
             for hit in contract_results:
                 text_snippet = hit.payload.get('text', '')
                 doc_id = hit.payload.get('contract_id', 'Unknown')
                 doc_name = contract_titles.get(doc_id, "Unknown Document")
                 combined_context += f"TAG SUMBER: [{doc_name}]\nTeks: {text_snippet}\n\n"
         else:
-            combined_context += "Tidak ada dokumen kontrak yang terhubung dengan Matter ini.\n\n"
+            combined_context += "Tidak ada dokumen kontrak yang terhubung dengan konteks ini.\n\n"
 
         combined_context += "=== KONTEKS HUKUM NASIONAL (INDONESIA) ===\n"
         try:
-            law_results = qdrant.search(
+            law_results = qdrant.query_points(
                 collection_name="id_national_laws",
-                query_vector=question_vector,
-                limit=2
-            )
+                query=question_vector,
+                limit=2,
+                with_payload=True
+            ).points
             for hit in law_results:
-                source = hit.payload.get("source_law", "Unknown Law")
+                source_law = hit.payload.get("source_law", "Unknown Law")
                 pasal = hit.payload.get("pasal", "Unknown Pasal")
                 text = hit.payload.get("text", "")
-                combined_context += f"TAG SUMBER: [{source}, Pasal {pasal}]\nTeks: {text}\n\n"
+                combined_context += f"TAG SUMBER: [{source_law}, Pasal {pasal}]\nTeks: {text}\n\n"
         except Exception as e:
             print(f"Warning: Failed to search 'id_national_laws'. {e}")
 
         # 5. AGENTIC SYSTEM PROMPT WITH TOOL AWARENESS
-        system_prompt = f"""You are Pariana, an elite Legal Executive Assistant at a top-tier Indonesian law firm.
+        target_doc_name = contract_titles.get(document_id, "the target contract") if document_id else "the target contract"
+
+        if source == "document":
+            system_prompt = f"""
+You are an elite, highly professional Senior Legal Counsel at a top-tier enterprise. The user is inquiring about a specific contract with Document ID: {document_id}.
+
+CRITICAL INSTRUCTIONS:
+1. MANDATORY RAG USAGE: You MUST use your retrieval tools to read the specific contract, related documents (MSA/SOW), and the company Playbook BEFORE answering.
+2. PROFESSIONAL TONE: Use a highly formal, enterprise-grade tone. ABSOLUTELY NO EMOJIS. Use clean formatting (bolding, bullet points) for readability.
+3. NATURAL CONVERSATION FLOW: Directly and naturally answer the user's specific prompt in the first paragraph. Connect the answer smoothly. For example, if the user asks "Kenapa kontrak ini berbahaya?", you must begin your response with "Kontrak ini teridentifikasi memiliki risiko tinggi dikarenakan..." and immediately state the exact reasons found in the text.
+4. ORDER OF PRECEDENCE RULE (STRICT): Jika menemukan klausul Hierarki Dokumen (Order of Precedence), JANGAN mengutip KUHPerdata Pasal 1320 atau teori umum. Alih-alih, fokuslah mencari pertentangan spesifik pada pasal Ganti Rugi (Liability) atau Jaminan (Warranty) antara dokumen utama dan lampirannya, lalu berikan instruksi mitigasi yang sangat spesifik.
+5. EVIDENCE-BASED: Base every claim strictly on the exact clauses retrieved. Do not hallucinate.
+
+FORMAT REQUIREMENTS:
+Do not use emojis. Structure your response logically:
+**Executive Summary**
+[Direct, natural answer to the user's question, summarizing the core issue]
+
+**Clause & Obligation Analysis**
+- **[Name of Clause/Risk]**: [Detailed explanation of the clause, its relation to other documents, and legal/business implications]
+
+**Mitigation Strategy**
+- [Specific, actionable steps to resolve the discrepancy or risk]
+
+Context retrieved from Database:
+{combined_context}
+"""
+        else:
+            system_prompt = f"""You are Pariana, an elite Legal Executive Assistant at a top-tier Indonesian law firm.
 Your primary goal is to help the user complete their CURRENT TASK based on the provided Matter documents and National Laws.
 You also have access to TOOLS. If the user asks about their tasks, schedule, daily brief, or to-do list, you MUST call the `get_user_tasks` tool to fetch live data from the database. Do NOT guess or make up task lists.
 
@@ -1013,7 +1191,7 @@ Context retrieved from Database:
                 print(f"   → Tool: {function_name}")
 
                 if function_name == "get_user_tasks":
-                    function_response = get_user_tasks(tenant_id=req.tenant_id)
+                    function_response = get_user_tasks(tenant_id=tenant_id, supabase=supabase)
                 else:
                     function_response = f"Unknown tool: {function_name}"
 

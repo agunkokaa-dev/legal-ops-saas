@@ -79,16 +79,17 @@ export default function NewMatterModal() {
                         <h2 className="text-xl font-display text-white">Create New Matter</h2>
                         <p className="text-xs text-text-muted mt-1">Initialize a new case file and run compliance checks.</p>
                     </div>
-                    <button onClick={() => setIsOpen(false)} className="text-text-muted hover:text-white transition-colors">
+                    <button suppressHydrationWarning onClick={() => setIsOpen(false)} className="text-text-muted hover:text-white transition-colors">
                         <span className="material-symbols-outlined">close</span>
                     </button>
                 </div>
 
-                <form onSubmit={handleSubmit} className="flex flex-col gap-6 p-6">
+                <form suppressHydrationWarning onSubmit={handleSubmit} className="flex flex-col gap-6 p-6">
                     <div className="grid grid-cols-2 gap-4">
                         <div className="flex flex-col gap-2">
                             <label className="text-xs font-medium text-text-muted uppercase tracking-wider">Client Name</label>
                             <input
+                                suppressHydrationWarning
                                 type="text"
                                 name="client_name"
                                 required
@@ -102,6 +103,7 @@ export default function NewMatterModal() {
                         <div className="flex flex-col gap-2">
                             <label className="text-xs font-medium text-text-muted uppercase tracking-wider">Practice Area</label>
                             <select
+                                suppressHydrationWarning
                                 name="practice_area"
                                 className="bg-[#0a0a0a] border border-surface-border rounded p-2 text-white text-sm focus:border-primary focus:outline-none transition-colors appearance-none"
                             >
@@ -119,6 +121,7 @@ export default function NewMatterModal() {
                         <div className="flex flex-col gap-2">
                             <label className="text-xs font-medium text-text-muted uppercase tracking-wider">Matter Title</label>
                             <input
+                                suppressHydrationWarning
                                 type="text"
                                 name="title"
                                 required
@@ -131,6 +134,7 @@ export default function NewMatterModal() {
                         <div className="flex flex-col gap-2">
                             <label className="text-xs font-medium text-text-muted uppercase tracking-wider">Case Summary</label>
                             <textarea
+                                suppressHydrationWarning
                                 name="description"
                                 className="bg-[#0a0a0a] border border-surface-border rounded p-2 text-white text-sm focus:border-primary focus:outline-none transition-colors min-h-[80px]"
                                 placeholder="Brief description of the legal matter, key objectives, or background..."
@@ -148,6 +152,7 @@ export default function NewMatterModal() {
                                 <span className="text-sm font-medium text-white">Compliance Shield™</span>
                             </div>
                             <button
+                                suppressHydrationWarning
                                 type="button"
                                 onClick={handleShieldCheck}
                                 disabled={isChecking || !clientName}
@@ -185,6 +190,7 @@ export default function NewMatterModal() {
 
                     <div className="flex items-center justify-end gap-3 pt-4 border-t border-surface-border">
                         <button
+                            suppressHydrationWarning
                             type="button"
                             onClick={() => setIsOpen(false)}
                             className="px-4 py-2 text-sm text-text-muted hover:text-white transition-colors"
@@ -192,6 +198,7 @@ export default function NewMatterModal() {
                             Cancel
                         </button>
                         <button
+                            suppressHydrationWarning
                             type="submit"
                             disabled={isSubmitting}
                             className="bg-primary px-6 py-2 rounded text-sm text-black font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2 shadow-[0_0_15px_rgba(var(--primary),0.3)]"
@@ -207,6 +214,7 @@ export default function NewMatterModal() {
     return (
         <>
             <button
+                suppressHydrationWarning
                 onClick={() => setIsOpen(true)}
                 className="flex items-center gap-2 bg-primary px-4 py-2 rounded text-sm text-black font-medium hover:bg-primary/90 transition-colors shadow-[0_0_15px_rgba(var(--primary),0.3)]"
             >

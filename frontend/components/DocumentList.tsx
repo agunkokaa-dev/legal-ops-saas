@@ -18,7 +18,7 @@ export default function DocumentList({ documents }: { documents: any[] }) {
             <div className="bg-surface border border-surface-border rounded overflow-hidden">
                 <div className="px-6 py-4 border-b border-surface-border flex justify-between items-center bg-background-dark/30">
                     <h3 className="font-display text-xl text-white">Document Intelligence</h3>
-                    <button className="text-sm text-primary hover:text-white transition-colors">View All Documents</button>
+                    <button suppressHydrationWarning className="text-sm text-primary hover:text-white transition-colors">View All Documents</button>
                 </div>
                 <div className="overflow-x-auto">
                     <table className="w-full text-left">
@@ -73,7 +73,7 @@ export default function DocumentList({ documents }: { documents: any[] }) {
                                 <h2 className="font-display text-2xl text-white mb-1.5">{selectedDoc.title}</h2>
                                 <p className="text-[10px] text-text-muted font-mono uppercase tracking-wider">Doc ID: {selectedDoc.id}</p>
                             </div>
-                            <button onClick={() => setSelectedDoc(null)} className="text-text-muted hover:text-white transition-colors bg-surface-border/50 hover:bg-surface-border p-1.5 rounded-full flex items-center justify-center">
+                            <button suppressHydrationWarning onClick={() => setSelectedDoc(null)} className="text-text-muted hover:text-white transition-colors bg-surface-border/50 hover:bg-surface-border p-1.5 rounded-full flex items-center justify-center">
                                 <span className="material-symbols-outlined text-sm">close</span>
                             </button>
                         </div>
