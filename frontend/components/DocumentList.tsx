@@ -13,6 +13,16 @@ export default function DocumentList({ documents }: { documents: any[] }) {
         }
     }
 
+    const formatDateStrict = (dateString: string | Date) => {
+        if (!dateString) return "N/A";
+        const d = new Date(dateString);
+        if (isNaN(d.getTime())) return "Invalid Date";
+        const day = String(d.getDate()).padStart(2, '0');
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const year = d.getFullYear();
+        return `${day}/${month}/${year}`;
+    };
+
     return (
         <>
             <div className="bg-surface border border-surface-border rounded overflow-hidden">
@@ -46,7 +56,7 @@ export default function DocumentList({ documents }: { documents: any[] }) {
                                             {doc.title || 'Unknown Document'}
                                         </td>
                                         <td className="px-6 py-4 text-text-muted whitespace-nowrap font-mono text-xs">
-                                            {new Date(doc.created_at).toLocaleDateString()}
+                                            {formatDateStrict(doc.created_at)}
                                         </td>
                                         <td className="px-6 py-4 text-right">
                                             <span className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide uppercase ${getRiskColor(doc.risk_level)}`}>

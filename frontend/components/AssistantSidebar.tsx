@@ -6,6 +6,7 @@ import { Sparkles, Command, User, Send, FileText } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useRouter } from 'next/navigation'
+import { LuxuryThinkingStepper } from '@/components/ui/LuxuryThinkingStepper'
 
 interface Message {
     id: string
@@ -179,12 +180,16 @@ export default function AssistantSidebar() {
 
                 {isLoading && (
                     <div className="flex justify-start">
-                        <div className="flex flex-col max-w-[90%]">
-                            <div className="bg-surface/50 p-4 rounded-2xl border border-surface-border flex items-center gap-1.5 w-fit">
-                                <span className="w-1.5 h-1.5 bg-primary/80 rounded-full animate-bounce"></span>
-                                <span className="w-1.5 h-1.5 bg-primary/80 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                                <span className="w-1.5 h-1.5 bg-primary/80 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                            </div>
+                        <div className="max-w-[90%] w-full bg-surface/50 p-4 rounded-2xl border border-surface-border">
+                            <LuxuryThinkingStepper 
+                                isLoading={true} 
+                                steps={[
+                                    "Initializing Dashboard AI...",
+                                    "Scanning Global Portfolio...",
+                                    "Cross-referencing high-risk contracts...",
+                                    "Synthesizing executive summary..."
+                                ]} 
+                            />
                         </div>
                     </div>
                 )}

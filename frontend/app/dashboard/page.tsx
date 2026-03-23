@@ -18,8 +18,8 @@ export default async function DashboardPage() {
     const email = user?.primaryEmailAddress?.emailAddress
 
     let documents: any[] = []
-    let totalPortfolioValue = 0
     let totalContracts = 0
+    let portfolioValues: Record<string, number> = {}
     let highRiskCount = 0
     let mediumRiskCount = 0
     let lowRiskCount = 0
@@ -28,13 +28,6 @@ export default async function DashboardPage() {
     const practiceAreas = { CORP: 0, IP: 0, LITIG: 0, RE: 0, OTHER: 0 }
     let maxPracticeAreaCount = 0;
 
-    const parseContractValue = (valStr: string | null): number => {
-        if (!valStr || valStr.toLowerCase().includes("tidak")) return 0
-        // Strip everything except digits
-        const cleanString = valStr.replace(/[^0-9]/g, '')
-        const parsed = parseInt(cleanString, 10)
-        return isNaN(parsed) ? 0 : parsed
-    }
 
     if (orgId && token && email) {
         // Sync profile to Supabase silently in the background
@@ -53,7 +46,7 @@ export default async function DashboardPage() {
                 const tenantId = orgId || userId
                 const { data, error } = await supabaseAdmin
                     .from('contracts')
-                    .select('id, title, status, contract_value, end_date, risk_level')
+                    .select('id, title, status, contract_value, currency, created_at, end_date, risk_level')
                     .eq('tenant_id', tenantId)
                     .order('created_at', { ascending: false })
 
@@ -64,8 +57,10 @@ export default async function DashboardPage() {
                     totalContracts = data.length
 
                     data.forEach(doc => {
-                        // Parse contract_value securely
-                        totalPortfolioValue += parseContractValue(doc.contract_value)
+                        // Defensive Mapping: Fallback to 0 and IDR
+                        const val = Number(doc.contract_value) || 0
+                        const curr = (doc.currency || 'IDR').toUpperCase()
+                        portfolioValues[curr] = (portfolioValues[curr] || 0) + val
 
                         // Count risk levels
                         const risk = doc.risk_level?.toLowerCase()
@@ -87,7 +82,7 @@ export default async function DashboardPage() {
                 if (!mattersError && mattersData) {
                     mattersData.forEach(matter => {
                         const area = matter.practice_area ? matter.practice_area.toUpperCase().trim() : 'OTHER'
-                        
+
                         // Map specific keys or dump to OTHER if not matched
                         if (area.includes('CORP')) practiceAreas.CORP++
                         else if (area.includes('IP') || area.includes('INTELLECTUAL')) practiceAreas.IP++
@@ -108,11 +103,18 @@ export default async function DashboardPage() {
             console.error("Exception fetching data:", e.message || JSON.stringify(e))
         }
     }
-    const formattedPortfolioValue = new Intl.NumberFormat('en-US', {
-        style: 'currency',
-        currency: 'USD',
-        maximumFractionDigits: 0
-    }).format(totalPortfolioValue)
+    const formatCurrency = (amount: number, currencyCode: string = 'IDR') => {
+        return new Intl.NumberFormat(currencyCode === 'IDR' ? 'id-ID' : 'en-US', {
+            style: 'currency',
+            currency: currencyCode,
+            maximumFractionDigits: 0,
+        }).format(amount);
+    };
+
+    const sortedCurrencies = Object.keys(portfolioValues).sort((a, b) => portfolioValues[b] - portfolioValues[a]);
+    const primaryCurrency = sortedCurrencies[0] || 'IDR';
+    const primaryValueFormatted = formatCurrency(portfolioValues[primaryCurrency] || 0, primaryCurrency);
+    const hasMultipleCurrencies = sortedCurrencies.length > 1;
 
     // Getting current date for the header
     const today = new Date().toLocaleDateString('en-US', {
@@ -121,10 +123,15 @@ export default async function DashboardPage() {
 
     return (
         <>
-            <header className="h-16 border-b border-surface-border bg-surface/50 backdrop-blur-sm flex items-center justify-between px-8 shrink-0">
-                <h1 className="font-display text-2xl text-white font-light tracking-tight">
-                    Hello, {user?.firstName || 'Partner'}!
-                </h1>
+            <header className="py-4 border-b border-surface-border bg-surface/50 backdrop-blur-sm flex items-center justify-between px-8 shrink-0">
+                <div className="flex flex-col items-center md:items-start pl-2">
+                    <h1 className="font-display text-2xl text-white tracking-tight uppercase">
+                        HELLO, {user?.firstName?.toUpperCase() || 'AGUGOKA'}!
+                    </h1>
+                    <p className="text-[10px] text-primary uppercase tracking-[0.3em] font-display mt-0.5 text-center md:text-left">
+                        YOUR AGREEMENT INTELLIGENCE HUB
+                    </p>
+                </div>
                 <div className="flex items-center gap-4">
                     <div className="relative">
                         <span className="material-symbols-outlined text-text-muted hover:text-white cursor-pointer">notifications</span>
@@ -146,7 +153,12 @@ export default async function DashboardPage() {
                                 <span className="material-symbols-outlined text-primary">account_balance</span>
                             </div>
                             <div className="flex items-baseline gap-2">
-                                <span className="font-display text-4xl text-white font-light">{formattedPortfolioValue}</span>
+                                <span className="font-display text-4xl text-white font-light">{primaryValueFormatted}</span>
+                                {hasMultipleCurrencies && (
+                                    <span className="text-xs text-text-muted font-medium bg-surface-border/50 px-1.5 py-0.5 rounded" title={sortedCurrencies.slice(1).map(c => formatCurrency(portfolioValues[c], c)).join(', ')}>
+                                        +{sortedCurrencies.length - 1} more
+                                    </span>
+                                )}
                             </div>
                             <div className="mt-4 h-1 w-full bg-surface-border rounded-full overflow-hidden">
                                 <div className="h-full bg-primary w-[100%]"></div>
@@ -200,7 +212,7 @@ export default async function DashboardPage() {
                             <div className="flex-1 flex items-end justify-between gap-4 px-2 pb-2">
                                 <div className="flex flex-col items-center gap-2 flex-1 group" title={`Corp: ${practiceAreas.CORP}`}>
                                     <div className="w-full bg-surface-border relative h-40 rounded-t-sm overflow-hidden">
-                                        <div 
+                                        <div
                                             className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-primary/80 to-primary/40 group-hover:to-primary/60 transition-all duration-1000"
                                             style={{ height: `${(practiceAreas.CORP / maxPracticeAreaCount) * 100}%` }}
                                         ></div>
@@ -209,7 +221,7 @@ export default async function DashboardPage() {
                                 </div>
                                 <div className="flex flex-col items-center gap-2 flex-1 group" title={`IP: ${practiceAreas.IP}`}>
                                     <div className="w-full bg-surface-border relative h-40 rounded-t-sm overflow-hidden">
-                                        <div 
+                                        <div
                                             className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-primary/80 to-primary/40 group-hover:to-primary/60 transition-all duration-1000"
                                             style={{ height: `${(practiceAreas.IP / maxPracticeAreaCount) * 100}%` }}
                                         ></div>
@@ -218,7 +230,7 @@ export default async function DashboardPage() {
                                 </div>
                                 <div className="flex flex-col items-center gap-2 flex-1 group" title={`Litigation: ${practiceAreas.LITIG}`}>
                                     <div className="w-full bg-surface-border relative h-40 rounded-t-sm overflow-hidden">
-                                        <div 
+                                        <div
                                             className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-primary/80 to-primary/40 group-hover:to-primary/60 transition-all duration-1000"
                                             style={{ height: `${(practiceAreas.LITIG / maxPracticeAreaCount) * 100}%` }}
                                         ></div>
@@ -227,7 +239,7 @@ export default async function DashboardPage() {
                                 </div>
                                 <div className="flex flex-col items-center gap-2 flex-1 group" title={`Real Estate: ${practiceAreas.RE}`}>
                                     <div className="w-full bg-surface-border relative h-40 rounded-t-sm overflow-hidden">
-                                        <div 
+                                        <div
                                             className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-primary/80 to-primary/40 group-hover:to-primary/60 transition-all duration-1000"
                                             style={{ height: `${(practiceAreas.RE / maxPracticeAreaCount) * 100}%` }}
                                         ></div>

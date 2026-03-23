@@ -2,12 +2,14 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { useUser, useAuth } from '@clerk/nextjs'
+import { useUser } from '@clerk/nextjs'
 import ReactMarkdown from 'react-markdown'
 import { useRouter } from 'next/navigation'
 import { FileText, Bookmark } from 'lucide-react'
 import { createNote } from '@/app/actions/noteActions'
+import { chatWithClauseRAG } from '@/app/actions/backend'
 import { toast } from 'sonner'
+import { LuxuryThinkingStepper } from '@/components/ui/LuxuryThinkingStepper'
 
 interface Message {
     id: string;
@@ -24,7 +26,6 @@ export default function ClauseAssistant({
     matterId: string | null
 }) {
     const { user } = useUser();
-    const { getToken } = useAuth();
     const [messages, setMessages] = useState<Message[]>([
         {
             id: 'system-init',
@@ -34,8 +35,17 @@ export default function ClauseAssistant({
     ]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const router = useRouter();
+
+    const clauseSteps = [
+        "Initializing Clause Assistant...",
+        "Extracting contract & matter context...",
+        "Analyzing with Indonesian Civil Code...",
+        "Cross-referencing Portfolio Playbook...",
+        "Synthesizing World-Class Legal response..."
+    ];
 
     const processContent = (text: string) => {
         if (!text) return '';
@@ -63,7 +73,12 @@ export default function ClauseAssistant({
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
-        if (!input.trim() || isLoading) return;
+        console.log("💬 ROUTING MESSAGE VIA SERVER ACTION:", input);
+
+        if (!input.trim() || isLoading) {
+            console.warn("⚠️ SUBMIT BLOCKED: Input is empty OR isLoading is true.");
+            return;
+        }
 
         const userMsg = input.trim();
         setInput('');
@@ -74,49 +89,21 @@ export default function ClauseAssistant({
         setIsLoading(true);
 
         try {
+            console.log("⚙️ Appending loading UI and invoking Server Action...");
             // Add temporary AI loading message
             setMessages(prev => [...prev, { id: 'loading', role: 'ai', content: '...' }]);
 
-            // 🎟️ Strict Clerk Token Retrieval
-            const token = await getToken();
-            console.log("🎟️ AUTH TOKEN STATUS:", token ? "Exists (Ready to send)" : "NULL/MISSING!");
-
-            if (!token) {
-                console.error("🚨 HALT: Cannot send request because Clerk token is null!");
-                throw new Error("Authentication token is missing. Please refresh the page.");
-            }
-
-            const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://173.212.240.143:8000';
-            const response = await fetch(`${backendUrl}/api/v1/ai/task-assistant`, {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${token}`
-                },
-                body: JSON.stringify({
-                    tenant_id: user?.id || "unknown_tenant",
-                    matter_id: matterId || "general",
-                    task_id: "general_chat",
-                    message: userMsg,
-                    source_page: "document",
-                    document_id: contractId
-                })
+            // 🚨 CRITICAL FIX: Direct Server Action Call. No client-side token code needed!
+            const data = await chatWithClauseRAG({
+                contractId: contractId,
+                matterId: matterId || "general",
+                message: userMsg
             });
 
+            console.log("✅ SERVER ACTION SUCCESS! Response:", data);
+            
             setMessages(prev => prev.filter(m => m.id !== 'loading'));
-
-            if (!response.ok) {
-                const errorData = await response.json().catch(() => ({}));
-                console.error("🔥 BACKEND ERROR:", JSON.stringify(errorData, null, 2));
-
-                const errorMessage = Array.isArray(errorData.detail)
-                    ? errorData.detail.map((e: any) => e.msg || e.type || JSON.stringify(e)).join(", ")
-                    : (errorData.detail || `HTTP error! status: ${response.status}`);
-
-                throw new Error(`Backend Error: ${errorMessage}`);
-            }
-
-            const data = await response.json();
+            
             const botReply = data?.reply || data?.response || data?.content || "Mohon maaf, terjadi kesalahan dalam memproses respons.";
             setMessages(prev => [...prev, {
                 id: Date.now().toString(),
@@ -124,16 +111,20 @@ export default function ClauseAssistant({
                 content: String(botReply),
                 citations: data?.citations || data?.sources || []
             }]);
-            setIsLoading(false);
 
-        } catch (error) {
-            console.error("Chat error:", error);
+        } catch (error: any) {
+            console.error("🚨 CHAT SERVER ACTION ERROR:", error);
+            const errorMessage = error instanceof Error ? error.message : "Terjadi kesalahan saat menghubungi asisten AI.";
+            toast.error(errorMessage);
+            
             setMessages(prev => prev.filter(m => m.id !== 'loading'));
             setMessages(prev => [...prev, {
                 id: Date.now().toString(),
                 role: 'ai',
-                content: "I encountered an error trying to process that request."
+                content: `Mohon maaf, terjadi gangguan: ${errorMessage}`
             }]);
+        } finally {
+            console.log("🏁 SUBMIT FINISHED. Resetting isLoading state.");
             setIsLoading(false);
         }
     };
@@ -178,11 +169,7 @@ export default function ClauseAssistant({
                             }
                         `}>
                             {msg.role === 'ai' && msg.id === 'loading' ? (
-                                <div className="flex gap-1 items-center h-5">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-lux-gold animate-bounce" style={{ animationDelay: '0ms' }} />
-                                    <div className="w-1.5 h-1.5 rounded-full bg-lux-gold animate-bounce" style={{ animationDelay: '150ms' }} />
-                                    <div className="w-1.5 h-1.5 rounded-full bg-lux-gold animate-bounce" style={{ animationDelay: '300ms' }} />
-                                </div>
+                                <LuxuryThinkingStepper isLoading={true} steps={clauseSteps} />
                             ) : msg.role === 'ai' ? (
                                 <>
                                     <div className="text-sm text-gray-200 leading-relaxed space-y-3">

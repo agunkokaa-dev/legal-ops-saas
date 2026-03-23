@@ -21,7 +21,11 @@ class ClauseAssistantRequest(BaseModel):
 class PlaybookRuleRequest(BaseModel):
     rule_id: str
     user_id: str
-    rule_text: str
+    category: str
+    standard_position: str
+    fallback_position: Optional[str] = None
+    redline: Optional[str] = None
+    risk_severity: str
 
 
 class ExtractObligationsRequest(BaseModel):
@@ -56,3 +60,7 @@ class TaskAssistantRequest(BaseModel):
     tenant_id: Optional[str] = None
     source_page: Optional[str] = "dashboard"
     document_id: Optional[str] = None
+
+
+class ArchiveContractRequest(BaseModel):
+    archive_reason: str

@@ -15,7 +15,7 @@ export async function chatWithClause(question: string) {
     }
 
     try {
-        const token = await getToken()
+        const token = await getToken({ template: 'supabase' })
         
         const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://173.212.240.143:8000'}/api/v1/ai/task-assistant`, {
             method: 'POST',
@@ -52,9 +52,69 @@ export async function chatWithClause(question: string) {
     }
 }
 
+// 1.b Clause Assistant RAG Action (Document Detail)
+export async function chatWithClauseRAG({ 
+    contractId, 
+    matterId, 
+    message 
+}: { 
+    contractId: string, 
+    matterId?: string, 
+    message: string 
+}) {
+    const { userId, orgId, getToken } = await auth();
+    const tenantId = orgId || userId;
+
+    if (!tenantId) {
+        throw new Error("Unauthorized: No tenant or user ID found.");
+    }
+
+    try {
+        const token = await getToken({ template: 'supabase' });
+        if (!token) {
+            throw new Error("Authentication failed: Could not retrieve Supabase JWT");
+        }
+        
+        const backendUrl = process.env.NEXT_PUBLIC_API_URL || process.env.FASTAPI_URL || 'http://173.212.240.143:8000';
+        const targetEndpoint = `${backendUrl}/api/chat/clause-assistant`;
+        
+        console.log(`📡 [SERVER ACTION] Sending RAG request to: ${targetEndpoint}`);
+
+        const response = await fetch(targetEndpoint, {
+            method: 'POST',
+            headers: { 
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}` 
+            },
+            body: JSON.stringify({
+                message: message,
+                contractId: contractId,
+                matterId: matterId || "general",
+                userId: userId || null
+            }),
+        });
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            console.error("🔥 FASTAPI ERROR in chatWithClauseRAG:", response.status, errorData);
+            
+            const errorMessage = Array.isArray(errorData.detail)
+                ? errorData.detail.map((e: any) => e.loc ? `${e.loc.join('.')}: ${e.msg}` : e.msg).join(" | ")
+                : (errorData.detail || `HTTP error! status: ${response.status}`);
+                
+            throw new Error(errorMessage);
+        }
+
+        return await response.json();
+    } catch (error: any) {
+        console.error("🚨 chatWithClauseRAG Error:", error);
+        throw new Error(error.message || "Internal server error");
+    }
+}
+
 // 2. Upload Action
 export async function uploadDocument(formData: FormData) {
-    const { userId, orgId } = await auth()
+    const { userId, orgId, getToken } = await auth()
     const tenantId = orgId || userId
 
     if (!tenantId) {
@@ -67,12 +127,16 @@ export async function uploadDocument(formData: FormData) {
     }
 
     try {
+        const token = await getToken({ template: 'supabase' })
         const backendFormData = new FormData()
         backendFormData.append('file', file)
         backendFormData.append('tenant_id', tenantId)
 
         const response = await fetch(`${FASTAPI_URL}/api/upload`, {
             method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
             body: backendFormData,
         })
 
@@ -92,7 +156,7 @@ export async function uploadDocument(formData: FormData) {
 
 // 3. Smart Ingestion Background Action
 export async function triggerSmartIngestion(formData: FormData, matterId: string, contractId: string) {
-    const { userId, orgId } = await auth()
+    const { userId, orgId, getToken } = await auth()
     const tenantId = orgId || userId
 
     if (!tenantId) {
@@ -105,6 +169,7 @@ export async function triggerSmartIngestion(formData: FormData, matterId: string
     }
 
     try {
+        const token = await getToken({ template: 'supabase' })
         const backendFormData = new FormData()
         backendFormData.append('file', file)
         backendFormData.append('tenant_id', tenantId)
@@ -113,6 +178,9 @@ export async function triggerSmartIngestion(formData: FormData, matterId: string
 
         const response = await fetch(`${FASTAPI_URL}/api/upload`, {
             method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
             body: backendFormData,
         })
 

@@ -30,6 +30,7 @@ import {
     Loader2
 } from "lucide-react";
 import Link from "next/link";
+import { LuxuryThinkingStepper } from '@/components/ui/LuxuryThinkingStepper';
 
 export default function TasksDashboardPage() {
     const [isTaskDetailOpen, setIsTaskDetailOpen] = useState(false);
@@ -183,11 +184,11 @@ export default function TasksDashboardPage() {
             }
 
             const { data, error } = await supabase
-                .from('task_checklists')
+                .from('sub_tasks')
                 .insert({
                     task_id: taskId,
-                    item: cleanTitle,
-                    is_done: false
+                    title: cleanTitle,
+                    is_completed: false
                 })
                 .select()
                 .single();
@@ -260,8 +261,9 @@ export default function TasksDashboardPage() {
             console.log("❌ SUPABASE ERROR (IF ANY):", mattersError);
 
             setMatters(mattersData || []);
-        } catch (error) {
-            console.error("Error fetching tasks:", error);
+        } catch (error: any) {
+            console.error("Error fetching tasks:", JSON.stringify(error, null, 2));
+            setTasks([]);
         } finally {
             setIsLoading(false);
         }
@@ -301,7 +303,7 @@ export default function TasksDashboardPage() {
 
         // Fetch traditional details (checklists, att, logs)
         const [chk, att, log, subTasksRes] = await Promise.all([
-            supabase.from('task_checklists').select('*').eq('task_id', selectedTask.id).order('created_at'),
+            supabase.from('sub_tasks').select('*').eq('task_id', selectedTask.id).order('created_at'),
             supabase.from('task_attachments').select('*').eq('task_id', selectedTask.id).order('created_at'),
             supabase.from('activity_logs').select('*').eq('task_id', selectedTask.id).order('created_at', { ascending: false }),
             supabase.from('sub_tasks').select('*').eq('task_id', selectedTask.id).order('created_at', { ascending: true })
@@ -444,7 +446,7 @@ export default function TasksDashboardPage() {
     const handleToggleChecklist = async (chkId: string, currentState: boolean) => {
         const supabase = await getAuthenticatedSupabase();
         if (!supabase) return;
-        await supabase.from('task_checklists').update({ is_done: !currentState }).eq('id', chkId);
+        await supabase.from('sub_tasks').update({ is_completed: !currentState }).eq('id', chkId);
         // The useEffect for selectedTask will handle the refresh
     };
 
@@ -488,13 +490,52 @@ export default function TasksDashboardPage() {
         return Math.round((completedTasks.length / matterTasks.length) * 100);
     };
 
+    // --- AI Chat State & Logic ---
+    const [isAiMode, setIsAiMode] = useState(false);
+    const [chatInput, setChatInput] = useState("");
+    const [messages, setMessages] = useState([{ role: "ai", content: "Hello! I am your Clause Assistant. I have context on this task and matter. How can I help?" }]);
+
+    const handleSendMessage = async () => {
+        if (!chatInput.trim()) return;
+
+        const userMessage = chatInput;
+        setMessages(prev => [...prev, { role: "user", content: userMessage }]);
+        setChatInput("");
+        setIsAiTyping(true);
+
+        try {
+            const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+            const token = await session?.getToken({ template: 'supabase' });
+            const res = await fetch(`${backendUrl}/api/v1/ai/task-assistant`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ message: userMessage, task_id: selectedTask?.id || "current_task_id", matter_id: selectedTask?.matter_id || "current_matter_id" })
+            });
+
+            if (!res.ok) throw new Error("Failed to fetch AI response");
+
+            const data = await res.json();
+            const reply = data.reply || data.response || "I couldn't process that request at this moment.";
+            setMessages(prev => [...prev, { role: "ai", content: reply }]);
+        } catch (error) {
+            console.error("AI Assistant Error:", error);
+            setMessages(prev => [...prev, { role: "ai", content: "Sorry, I encountered an error connecting to the server." }]);
+        } finally {
+            setIsAiTyping(false);
+        }
+    };
+    // -----------------------------
+
     return (
-        <div className="flex-1 flex overflow-hidden bg-clause-black text-slate-300 font-sans h-full">
+        <div className="flex-1 flex overflow-hidden bg-[#0a0a0a] text-slate-300 font-sans h-full">
             {/* BEGIN: Main Dashboard Area */}
             <main className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
                 {/* BEGIN: Topbar */}
                 <header
-                    className="h-16 flex-shrink-0 flex items-center justify-between px-8 border-b border-white/5 bg-black/20"
+                    className="h-16 flex-shrink-0 flex items-center justify-between px-8 border-b border-[#2A2A2A] bg-[#0a0a0a]"
                     data-purpose="main-topbar"
                 >
                     <h2 className="font-serif text-lg text-white">Task Management</h2>
@@ -502,7 +543,7 @@ export default function TasksDashboardPage() {
                         <div className="relative w-64">
                             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 opacity-40" />
                             <input
-                                className="bg-white/5 border-none text-xs rounded-full pl-10 pr-4 py-2 w-full focus:ring-1 focus:ring-clause-gold/50 placeholder:opacity-40"
+                                className="bg-[#111111] border border-[#2A2A2A] text-xs justify-center rounded-sm pl-10 pr-4 py-2 w-full focus:ring-1 focus:ring-[#525252] placeholder-[#525252] text-[#D4D4D4] outline-none transition-all"
                                 placeholder="Search case law, tasks, matters..."
                                 type="text"
                             />
@@ -589,7 +630,7 @@ export default function TasksDashboardPage() {
                                             <p className="text-sm font-semibold text-white mb-4 truncate" title={matter.title}>
                                                 {matter.title}
                                             </p>
-                                            <div className="w-full bg-white/5 h-1 rounded-full overflow-hidden">
+                                            <div className="w-full bg-[#1E1E1E] h-1 rounded-full overflow-hidden">
                                                 <div className={`${barColor} h-full transition-all duration-500 ease-out`} style={{ width: `${getMatterProgress(matter.id)}%` }}></div>
                                             </div>
                                             <div className="mt-2 flex justify-between text-[10px]">
@@ -607,238 +648,355 @@ export default function TasksDashboardPage() {
                     {/* BEGIN: Kanban Board */}
                     <section className="flex-1 min-h-0" data-purpose="legal-workflow">
                         <div className="flex gap-4 overflow-x-auto custom-scrollbar pb-4 h-full">
+
                             {/* Column: Backlog */}
-                            <div className="flex-1 flex flex-col gap-3 min-h-[600px] bg-white/[0.02] border border-white/5 rounded-xl p-3 transition-colors duration-200" onDragOver={(e) => e.preventDefault()} onDrop={async (e) => { e.preventDefault(); if (draggedTaskId) { await handleUpdateTaskStatus(draggedTaskId, 'backlog'); setDraggedTaskId(null); } }}>
-                                <div className="flex items-center justify-between px-1">
-                                    <h5 className="text-[10px] font-mono uppercase tracking-tighter text-white/40">
-                                        Backlog ({getTasksByStatus('backlog').length})
+                            <div className="flex-1 flex flex-col gap-3 min-h-[600px] min-w-[320px] bg-[#1A1A1A] rounded-[16px] p-3 transition-colors duration-200" onDragOver={(e) => e.preventDefault()} onDrop={async (e) => { e.preventDefault(); if (draggedTaskId) { await handleUpdateTaskStatus(draggedTaskId, 'backlog'); setDraggedTaskId(null); } }}>
+                                <div className="flex items-center justify-between px-2 pt-1 pb-2">
+                                    <h5 className="text-[15px] font-semibold text-[#D6D3D1]">
+                                        Backlog <span className="text-[#A8A29E] font-medium ml-1.5 opacity-80">({getTasksByStatus('backlog').length})</span>
                                     </h5>
-                                    <MoreHorizontal className="w-3 h-3 opacity-40" />
+                                    <MoreHorizontal className="w-5 h-5 text-[#A8A29E] hover:text-[#D6D3D1] cursor-pointer transition-colors" />
                                 </div>
-                                <div className="space-y-3">
-                                    {inlineDraftMatterId && (
-                                        <div className="glass-card p-3 rounded text-xs space-y-2 border-clause-gold/50">
-                                            <input
-                                                autoFocus
-                                                type="text"
-                                                className="w-full bg-transparent border-none text-white focus:ring-0 p-0 text-xs placeholder:opacity-40"
-                                                placeholder="Type task name and press Enter..."
-                                                value={inlineTitle}
-                                                onChange={(e) => setInlineTitle(e.target.value)}
-                                                onKeyDown={async (e) => {
-                                                    if (e.key === 'Enter' && inlineTitle.trim() !== '') {
-                                                        await submitInlineTask();
-                                                    } else if (e.key === 'Escape') {
-                                                        setInlineDraftMatterId(null);
-                                                        setInlineTitle("");
-                                                    }
-                                                }}
-                                            />
-                                        </div>
-                                    )}
-                                    {isLoading ? (
-                                        <div className="text-[10px] text-white/40 font-mono text-center py-4">Loading...</div>
-                                    ) : (
-                                        getTasksByStatus('backlog').map(task => (
-                                            <div
-                                                key={task.id}
-                                                draggable={true}
-                                                onDragStart={() => setDraggedTaskId(task.id)}
-                                                onClick={() => { setSelectedTask(task); setIsTaskDetailOpen(true); }}
-                                                className={`relative flex gap-2 p-3 rounded-lg border border-white/10 bg-white/5 backdrop-blur-md cursor-grab active:cursor-grabbing hover:border-white/20 hover:bg-white/10 transition-all duration-200 ${draggedTaskId === task.id ? 'rotate-2 scale-105 shadow-2xl opacity-80 z-50 ring-1 ring-clause-gold' : ''}`}
-                                            >
-                                                {/* Drag Handle */}
-                                                <div className="flex flex-col justify-center opacity-20 hover:opacity-100 cursor-grab text-white transition-opacity">
-                                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 9h2v2H8V9zm0 4h2v2H8v-2zm6-4h2v2h-2V9zm0 4h2v2h-2v-2z"></path></svg>
-                                                </div>
 
-                                                {/* Card Content */}
-                                                <div className="flex-1 overflow-hidden">
-                                                    {/* Matter Name Badge */}
-                                                    <p className="text-[9px] font-semibold text-clause-gold/80 uppercase tracking-wider mb-1 truncate">
-                                                        {task.matters?.title || "Unknown Matter"}
-                                                    </p>
+                                <div className="space-y-4 flex-1 overflow-y-auto custom-scrollbar px-1">
+                                    {/* Task Cards */}
+                                    {getTasksByStatus('backlog').map(task => (
+                                        <div
+                                            key={task.id}
+                                            draggable={true}
+                                            onDragStart={() => setDraggedTaskId(task.id)}
+                                            onClick={() => { setSelectedTask(task); setIsTaskDetailOpen(true); }}
+                                            className={`bg-[#262626] rounded-[12px] border border-[#333333] shadow-[0_8px_16px_rgba(0,0,0,0.5)] p-4 hover:brightness-110 transition-all cursor-pointer relative group ${draggedTaskId === task.id ? 'opacity-50 ring-2 ring-[#D6D3D1] scale-[0.98]' : ''}`}
+                                        >
+                                            {/* Priority Dash */}
+                                            <div className={`w-8 h-1.5 rounded-full mb-3 ${task.priority === 'urgent' ? 'bg-rose-500' : task.priority === 'high' ? 'bg-amber-500' : 'bg-emerald-500'}`}></div>
 
-                                                    {/* Task Title */}
-                                                    <h4 className="text-sm text-white font-medium truncate mb-2">{task.title}</h4>
+                                            {/* Title */}
+                                            <h4 className="text-[#F5F5F4] text-sm font-medium tracking-wide mb-1 leading-snug">
+                                                {task.title}
+                                            </h4>
 
-                                                    {/* Meta (ID, AI, Attachments) */}
-                                                    <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/5">
-                                                        <span className="text-[10px] text-white/40 font-mono">#{task.id?.substring(0, 5).toUpperCase()}</span>
-                                                        <button
-                                                            onClick={(e) => { e.stopPropagation(); setActiveAiTask(task); }}
-                                                            className="flex items-center gap-1.5 px-2 py-1 rounded bg-clause-gold/10 text-clause-gold border border-clause-gold/20 hover:bg-clause-gold/20 hover:scale-105 transition-all text-[9px] font-bold uppercase tracking-wider cursor-pointer"
-                                                        >
-                                                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                                                            Ask AI
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        ))
-                                    )}
-                                </div>
-                            </div>
-
-                            {/* Column: Research */}
-                            <div className="flex-1 flex flex-col gap-3 min-h-[600px] bg-white/[0.02] border border-white/5 rounded-xl p-3 transition-colors duration-200" onDragOver={(e) => e.preventDefault()} onDrop={async (e) => { e.preventDefault(); if (draggedTaskId) { await handleUpdateTaskStatus(draggedTaskId, 'this_week'); setDraggedTaskId(null); } }}>
-                                <div className="flex items-center justify-between px-1">
-                                    <h5 className="text-[10px] font-mono uppercase tracking-tighter text-white/40">
-                                        This Week ({getTasksByStatus('this_week').length})
-                                    </h5>
-                                </div>
-                                {getTasksByStatus('this_week').map(task => (
-                                    <div
-                                        key={task.id}
-                                        draggable={true}
-                                        onDragStart={() => setDraggedTaskId(task.id)}
-                                        onClick={() => { setSelectedTask(task); setIsTaskDetailOpen(true); }}
-                                        className={`relative flex gap-2 p-3 rounded-lg border border-red-500/30 bg-white/5 backdrop-blur-md cursor-grab active:cursor-grabbing hover:border-red-500/50 hover:bg-white/10 transition-all duration-200 ${draggedTaskId === task.id ? 'rotate-2 scale-105 shadow-2xl opacity-80 z-50 ring-1 ring-clause-gold' : ''}`}
-                                    >
-                                        <div className="flex flex-col justify-center opacity-20 hover:opacity-100 cursor-grab text-white transition-opacity">
-                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 9h2v2H8V9zm0 4h2v2H8v-2zm6-4h2v2h-2V9zm0 4h2v2h-2v-2z"></path></svg>
-                                        </div>
-                                        <div className="flex-1 overflow-hidden">
-                                            <div className="flex justify-between items-start mb-1">
-                                                <p className="text-[9px] font-semibold text-clause-gold/80 uppercase tracking-wider truncate mr-2">
-                                                    {task.matters?.title || "Unknown Matter"}
-                                                </p>
-                                                <span className="shrink-0 px-1.5 py-0.5 bg-red-500/10 text-red-500 font-mono text-[8px] rounded border border-red-500/20">URGENT</span>
-                                            </div>
-                                            <h4 className="text-sm text-white font-medium truncate mb-2">{task.title}</h4>
-                                            <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/5">
-                                                <span className="text-[10px] text-white/40 font-mono">#{task.id?.substring(0, 5).toUpperCase()}</span>
-                                                <button
-                                                    onClick={(e) => { e.stopPropagation(); setActiveAiTask(task); }}
-                                                    className="flex items-center gap-1.5 px-2 py-1 rounded bg-clause-gold/10 text-clause-gold border border-clause-gold/20 hover:bg-clause-gold/20 hover:scale-105 transition-all text-[9px] font-bold uppercase tracking-wider cursor-pointer"
-                                                >
-                                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                                                    Ask AI
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-
-                            {/* Column: Draft */}
-                            <div className="flex-1 flex flex-col gap-3 min-h-[600px] bg-white/[0.02] border border-white/5 rounded-xl p-3 transition-colors duration-200" onDragOver={(e) => e.preventDefault()} onDrop={async (e) => { e.preventDefault(); if (draggedTaskId) { await handleUpdateTaskStatus(draggedTaskId, 'in_progress'); setDraggedTaskId(null); } }}>
-                                <div className="flex items-center justify-between px-1">
-                                    <h5 className="text-[10px] font-mono uppercase tracking-tighter text-white/40">
-                                        In Progress ({getTasksByStatus('in_progress').length})
-                                    </h5>
-                                </div>
-                                {getTasksByStatus('in_progress').map(task => (
-                                    <div
-                                        key={task.id}
-                                        draggable={true}
-                                        onDragStart={() => setDraggedTaskId(task.id)}
-                                        onClick={() => { setSelectedTask(task); setIsTaskDetailOpen(true); }}
-                                        className={`relative flex gap-2 p-3 rounded-lg border border-orange-500/30 bg-white/5 backdrop-blur-md cursor-grab active:cursor-grabbing hover:border-orange-500/50 hover:bg-white/10 transition-all duration-200 ${draggedTaskId === task.id ? 'rotate-2 scale-105 shadow-2xl opacity-80 z-50 ring-1 ring-clause-gold' : ''}`}
-                                    >
-                                        <div className="flex flex-col justify-center opacity-20 hover:opacity-100 cursor-grab text-white transition-opacity">
-                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 9h2v2H8V9zm0 4h2v2H8v-2zm6-4h2v2h-2V9zm0 4h2v2h-2v-2z"></path></svg>
-                                        </div>
-                                        <div className="flex-1 overflow-hidden">
-                                            <div className="flex justify-between items-start mb-1">
-                                                <p className="text-[9px] font-semibold text-clause-gold/80 uppercase tracking-wider truncate mr-2">
-                                                    {task.matters?.title || "Unknown Matter"}
-                                                </p>
-                                                <span className="shrink-0 px-1.5 py-0.5 bg-orange-500/10 text-orange-500 font-mono text-[8px] rounded border border-orange-500/20">DUE SOON</span>
-                                            </div>
-                                            <h4 className="text-sm text-white font-medium truncate mb-2">{task.title}</h4>
-                                            <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/5">
-                                                <span className="text-[10px] text-white/40 font-mono">#{task.id?.substring(0, 5).toUpperCase()}</span>
-                                                <button
-                                                    onClick={(e) => { e.stopPropagation(); setActiveAiTask(task); }}
-                                                    className="flex items-center gap-1.5 px-2 py-1 rounded bg-clause-gold/10 text-clause-gold border border-clause-gold/20 hover:bg-clause-gold/20 hover:scale-105 transition-all text-[9px] font-bold uppercase tracking-wider cursor-pointer"
-                                                >
-                                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                                                    Ask AI
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-
-                            {/* Column: Review */}
-                            <div className="flex-1 flex flex-col gap-3 min-h-[600px] bg-white/[0.02] border border-white/5 rounded-xl p-3 transition-colors duration-200" onDragOver={(e) => e.preventDefault()} onDrop={async (e) => { e.preventDefault(); if (draggedTaskId) { await handleUpdateTaskStatus(draggedTaskId, 'waiting'); setDraggedTaskId(null); } }}>
-                                <div className="flex items-center justify-between px-1">
-                                    <h5 className="text-[10px] font-mono uppercase tracking-tighter text-white/40">
-                                        Waiting ({getTasksByStatus('waiting').length})
-                                    </h5>
-                                </div>
-                                {getTasksByStatus('waiting').map(task => (
-                                    <div
-                                        key={task.id}
-                                        draggable={true}
-                                        onDragStart={() => setDraggedTaskId(task.id)}
-                                        onClick={() => { setSelectedTask(task); setIsTaskDetailOpen(true); }}
-                                        className={`relative flex gap-2 p-3 rounded-lg border border-white/10 border-dashed bg-white/5 backdrop-blur-md cursor-grab active:cursor-grabbing hover:border-white/20 hover:bg-white/10 transition-all duration-200 opacity-70 ${draggedTaskId === task.id ? 'rotate-2 scale-105 shadow-2xl opacity-80 z-50 ring-1 ring-clause-gold' : ''}`}
-                                    >
-                                        <div className="flex flex-col justify-center opacity-20 hover:opacity-100 cursor-grab text-white transition-opacity">
-                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 9h2v2H8V9zm0 4h2v2H8v-2zm6-4h2v2h-2V9zm0 4h2v2h-2v-2z"></path></svg>
-                                        </div>
-                                        <div className="flex-1 overflow-hidden">
-                                            <div className="flex justify-between items-start mb-1">
-                                                <p className="text-[9px] font-semibold text-clause-gold/80 uppercase tracking-wider truncate mr-2">
-                                                    {task.matters?.title || "Unknown Matter"}
-                                                </p>
-                                                <span className="shrink-0 px-1.5 py-0.5 bg-white/10 text-white font-mono text-[8px] rounded uppercase tracking-wider">Blocked</span>
-                                            </div>
-                                            <h4 className="text-sm text-white/60 font-medium truncate mb-2">{task.title}</h4>
-                                            <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/5">
-                                                <span className="text-[10px] text-white/40 font-mono">#{task.id?.substring(0, 5).toUpperCase()}</span>
-                                                <button
-                                                    onClick={(e) => { e.stopPropagation(); setActiveAiTask(task); }}
-                                                    className="flex items-center gap-1.5 px-2 py-1 rounded bg-clause-gold/10 text-clause-gold border border-clause-gold/20 hover:bg-clause-gold/20 hover:scale-105 transition-all text-[9px] font-bold uppercase tracking-wider cursor-pointer"
-                                                >
-                                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                                                    Ask AI
-                                                </button>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-
-                            {/* Column: Filed */}
-                            <div className="flex-1 flex flex-col gap-3 min-h-[600px] bg-white/[0.02] border border-white/5 rounded-xl p-3 transition-colors duration-200" onDragOver={(e) => e.preventDefault()} onDrop={async (e) => { e.preventDefault(); if (draggedTaskId) { await handleUpdateTaskStatus(draggedTaskId, 'done'); setDraggedTaskId(null); } }}>
-                                <div className="flex items-center justify-between px-1">
-                                    <h5 className="text-[10px] font-mono uppercase tracking-tighter text-white/40">
-                                        Done ({getTasksByStatus('done').length})
-                                    </h5>
-                                </div>
-                                {getTasksByStatus('done').map(task => (
-                                    <div
-                                        key={task.id}
-                                        draggable={true}
-                                        onDragStart={() => setDraggedTaskId(task.id)}
-                                        onClick={() => { setSelectedTask(task); setIsTaskDetailOpen(true); }}
-                                        className={`relative flex gap-2 p-3 rounded-lg border border-emerald-500/20 bg-white/5 backdrop-blur-md cursor-grab active:cursor-grabbing hover:border-emerald-500/30 hover:bg-white/10 transition-all duration-200 opacity-50 ${draggedTaskId === task.id ? 'rotate-2 scale-105 shadow-2xl opacity-80 z-50 ring-1 ring-clause-gold' : ''}`}
-                                    >
-                                        <div className="flex flex-col justify-center opacity-20 hover:opacity-100 cursor-grab text-white transition-opacity">
-                                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 9h2v2H8V9zm0 4h2v2H8v-2zm6-4h2v2h-2V9zm0 4h2v2h-2v-2z"></path></svg>
-                                        </div>
-                                        <div className="flex-1 overflow-hidden">
-                                            <p className="text-[9px] font-semibold text-clause-gold/80 uppercase tracking-wider mb-1 truncate">
+                                            {/* Description */}
+                                            <p className="text-[#D6D3D1] opacity-70 text-xs mt-2 line-clamp-2 leading-relaxed">
                                                 {task.matters?.title || "Unknown Matter"}
                                             </p>
-                                            <h4 className="text-sm text-white font-medium line-through truncate mb-2">{task.title}</h4>
-                                            <div className="flex items-center justify-between mt-3 pt-2 border-t border-white/5">
-                                                <span className="text-[10px] text-white/40 font-mono">#{task.id?.substring(0, 5).toUpperCase()}</span>
-                                                <button
-                                                    onClick={(e) => { e.stopPropagation(); setActiveAiTask(task); }}
-                                                    className="flex items-center gap-1.5 px-2 py-1 rounded bg-clause-gold/10 text-clause-gold border border-clause-gold/20 hover:bg-clause-gold/20 hover:scale-105 transition-all text-[9px] font-bold uppercase tracking-wider cursor-pointer"
-                                                >
-                                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
-                                                    Ask AI
-                                                </button>
+
+                                            {/* Footer */}
+                                            <div className="flex justify-between items-center mt-4 pt-3 border-t border-[#57534E]/50">
+                                                <div className="flex items-center gap-3 text-[#A8A29E]">
+                                                    <div className="flex items-center gap-1.5" title="Task ID">
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                                        <span className="text-[11px] font-medium uppercase">#{task.id?.substring(0, 4)}</span>
+                                                    </div>
+                                                    {task.source_note_id && (
+                                                        <div
+                                                            className="flex items-center gap-1 text-emerald-400 hover:text-emerald-300 cursor-pointer transition-colors"
+                                                            onClick={(e) => { e.stopPropagation(); window.location.href = `/dashboard/contracts/${task.contract_notes?.contract_id || task.matter_id}?noteId=${task.source_note_id}`; }}
+                                                            title="View Source Note"
+                                                        >
+                                                            <LinkIcon className="w-3.5 h-3.5" />
+                                                            <span className="text-[10px] font-medium uppercase tracking-wider">Note</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                {/* Avatars */}
+                                                <div className="flex -space-x-1.5 shrink-0">
+                                                    <div className="w-6 h-6 rounded-full bg-stone-700 ring-2 ring-[#44403C] flex items-center justify-center text-[10px] text-stone-200 font-medium">JD</div>
+                                                    <div className="w-6 h-6 rounded-full bg-stone-600 ring-2 ring-[#44403C] flex items-center justify-center text-[10px] text-stone-100 font-medium">AL</div>
+                                                </div>
                                             </div>
                                         </div>
-                                    </div>
-                                ))}
+                                    ))}
+                                </div>
+
+                                {/* Add Task Button */}
+                                <button
+                                    onClick={() => setIsSopModalOpen(true)}
+                                    className="text-[#A8A29E] text-xs font-semibold hover:bg-[#44403C]/40 rounded-xl py-3 mt-2 transition-colors flex justify-center items-center w-full"
+                                >
+                                    + Add Task
+                                </button>
+                            </div>
+
+                            {/* Column: This Week */}
+                            <div className="flex-1 flex flex-col gap-3 min-h-[600px] min-w-[320px] bg-[#1A1A1A] rounded-[16px] p-3 transition-colors duration-200" onDragOver={(e) => e.preventDefault()} onDrop={async (e) => { e.preventDefault(); if (draggedTaskId) { await handleUpdateTaskStatus(draggedTaskId, 'this_week'); setDraggedTaskId(null); } }}>
+                                <div className="flex items-center justify-between px-2 pt-1 pb-2">
+                                    <h5 className="text-[15px] font-semibold text-[#D6D3D1]">
+                                        This Week <span className="text-[#A8A29E] font-medium ml-1.5 opacity-80">({getTasksByStatus('this_week').length})</span>
+                                    </h5>
+                                    <MoreHorizontal className="w-5 h-5 text-[#A8A29E] hover:text-[#D6D3D1] cursor-pointer transition-colors" />
+                                </div>
+
+                                <div className="space-y-4 flex-1 overflow-y-auto custom-scrollbar px-1">
+                                    {/* Task Cards */}
+                                    {getTasksByStatus('this_week').map(task => (
+                                        <div
+                                            key={task.id}
+                                            draggable={true}
+                                            onDragStart={() => setDraggedTaskId(task.id)}
+                                            onClick={() => { setSelectedTask(task); setIsTaskDetailOpen(true); }}
+                                            className={`bg-[#262626] rounded-[12px] border border-[#333333] shadow-[0_8px_16px_rgba(0,0,0,0.5)] p-4 hover:brightness-110 transition-all cursor-pointer relative group ${draggedTaskId === task.id ? 'opacity-50 ring-2 ring-[#D6D3D1] scale-[0.98]' : ''}`}
+                                        >
+                                            {/* Priority Dash */}
+                                            <div className={`w-8 h-1.5 rounded-full mb-3 ${task.priority === 'urgent' ? 'bg-rose-500' : task.priority === 'high' ? 'bg-amber-500' : 'bg-emerald-500'}`}></div>
+
+                                            {/* Title */}
+                                            <h4 className="text-[#F5F5F4] text-sm font-medium tracking-wide mb-1 leading-snug">
+                                                {task.title}
+                                            </h4>
+
+                                            {/* Description */}
+                                            <p className="text-[#D6D3D1] opacity-70 text-xs mt-2 line-clamp-2 leading-relaxed">
+                                                {task.matters?.title || "Unknown Matter"}
+                                            </p>
+
+                                            {/* Footer */}
+                                            <div className="flex justify-between items-center mt-4 pt-3 border-t border-[#57534E]/50">
+                                                <div className="flex items-center gap-3 text-[#A8A29E]">
+                                                    <div className="flex items-center gap-1.5" title="Task ID">
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                                        <span className="text-[11px] font-medium uppercase">#{task.id?.substring(0, 4)}</span>
+                                                    </div>
+                                                    {task.source_note_id && (
+                                                        <div
+                                                            className="flex items-center gap-1 text-emerald-400 hover:text-emerald-300 cursor-pointer transition-colors"
+                                                            onClick={(e) => { e.stopPropagation(); window.location.href = `/dashboard/contracts/${task.contract_notes?.contract_id || task.matter_id}?noteId=${task.source_note_id}`; }}
+                                                            title="View Source Note"
+                                                        >
+                                                            <LinkIcon className="w-3.5 h-3.5" />
+                                                            <span className="text-[10px] font-medium uppercase tracking-wider">Note</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                {/* Avatars */}
+                                                <div className="flex -space-x-1.5 shrink-0">
+                                                    <div className="w-6 h-6 rounded-full bg-stone-700 ring-2 ring-[#44403C] flex items-center justify-center text-[10px] text-stone-200 font-medium">JD</div>
+                                                    <div className="w-6 h-6 rounded-full bg-stone-600 ring-2 ring-[#44403C] flex items-center justify-center text-[10px] text-stone-100 font-medium">AL</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Add Task Button */}
+                                <button
+                                    onClick={() => setIsSopModalOpen(true)}
+                                    className="text-[#A8A29E] text-xs font-semibold hover:bg-[#44403C]/40 rounded-xl py-3 mt-2 transition-colors flex justify-center items-center w-full"
+                                >
+                                    + Add Task
+                                </button>
+                            </div>
+
+                            {/* Column: In Progress */}
+                            <div className="flex-1 flex flex-col gap-3 min-h-[600px] min-w-[320px] bg-[#1A1A1A] rounded-[16px] p-3 transition-colors duration-200" onDragOver={(e) => e.preventDefault()} onDrop={async (e) => { e.preventDefault(); if (draggedTaskId) { await handleUpdateTaskStatus(draggedTaskId, 'in_progress'); setDraggedTaskId(null); } }}>
+                                <div className="flex items-center justify-between px-2 pt-1 pb-2">
+                                    <h5 className="text-[15px] font-semibold text-[#D6D3D1]">
+                                        In Progress <span className="text-[#A8A29E] font-medium ml-1.5 opacity-80">({getTasksByStatus('in_progress').length})</span>
+                                    </h5>
+                                    <MoreHorizontal className="w-5 h-5 text-[#A8A29E] hover:text-[#D6D3D1] cursor-pointer transition-colors" />
+                                </div>
+
+                                <div className="space-y-4 flex-1 overflow-y-auto custom-scrollbar px-1">
+                                    {/* Task Cards */}
+                                    {getTasksByStatus('in_progress').map(task => (
+                                        <div
+                                            key={task.id}
+                                            draggable={true}
+                                            onDragStart={() => setDraggedTaskId(task.id)}
+                                            onClick={() => { setSelectedTask(task); setIsTaskDetailOpen(true); }}
+                                            className={`bg-[#262626] rounded-[12px] border border-[#333333] shadow-[0_8px_16px_rgba(0,0,0,0.5)] p-4 hover:brightness-110 transition-all cursor-pointer relative group ${draggedTaskId === task.id ? 'opacity-50 ring-2 ring-[#D6D3D1] scale-[0.98]' : ''}`}
+                                        >
+                                            {/* Priority Dash */}
+                                            <div className={`w-8 h-1.5 rounded-full mb-3 ${task.priority === 'urgent' ? 'bg-rose-500' : task.priority === 'high' ? 'bg-amber-500' : 'bg-emerald-500'}`}></div>
+
+                                            {/* Title */}
+                                            <h4 className="text-[#F5F5F4] text-sm font-medium tracking-wide mb-1 leading-snug">
+                                                {task.title}
+                                            </h4>
+
+                                            {/* Description */}
+                                            <p className="text-[#D6D3D1] opacity-70 text-xs mt-2 line-clamp-2 leading-relaxed">
+                                                {task.matters?.title || "Unknown Matter"}
+                                            </p>
+
+                                            {/* Footer */}
+                                            <div className="flex justify-between items-center mt-4 pt-3 border-t border-[#57534E]/50">
+                                                <div className="flex items-center gap-3 text-[#A8A29E]">
+                                                    <div className="flex items-center gap-1.5" title="Task ID">
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                                        <span className="text-[11px] font-medium uppercase">#{task.id?.substring(0, 4)}</span>
+                                                    </div>
+                                                    {task.source_note_id && (
+                                                        <div
+                                                            className="flex items-center gap-1 text-emerald-400 hover:text-emerald-300 cursor-pointer transition-colors"
+                                                            onClick={(e) => { e.stopPropagation(); window.location.href = `/dashboard/contracts/${task.contract_notes?.contract_id || task.matter_id}?noteId=${task.source_note_id}`; }}
+                                                            title="View Source Note"
+                                                        >
+                                                            <LinkIcon className="w-3.5 h-3.5" />
+                                                            <span className="text-[10px] font-medium uppercase tracking-wider">Note</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                {/* Avatars */}
+                                                <div className="flex -space-x-1.5 shrink-0">
+                                                    <div className="w-6 h-6 rounded-full bg-stone-700 ring-2 ring-[#44403C] flex items-center justify-center text-[10px] text-stone-200 font-medium">JD</div>
+                                                    <div className="w-6 h-6 rounded-full bg-stone-600 ring-2 ring-[#44403C] flex items-center justify-center text-[10px] text-stone-100 font-medium">AL</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Add Task Button */}
+                                <button
+                                    onClick={() => setIsSopModalOpen(true)}
+                                    className="text-[#A8A29E] text-xs font-semibold hover:bg-[#44403C]/40 rounded-xl py-3 mt-2 transition-colors flex justify-center items-center w-full"
+                                >
+                                    + Add Task
+                                </button>
+                            </div>
+
+                            {/* Column: Waiting */}
+                            <div className="flex-1 flex flex-col gap-3 min-h-[600px] min-w-[320px] bg-[#1A1A1A] rounded-[16px] p-3 transition-colors duration-200" onDragOver={(e) => e.preventDefault()} onDrop={async (e) => { e.preventDefault(); if (draggedTaskId) { await handleUpdateTaskStatus(draggedTaskId, 'waiting'); setDraggedTaskId(null); } }}>
+                                <div className="flex items-center justify-between px-2 pt-1 pb-2">
+                                    <h5 className="text-[15px] font-semibold text-[#D6D3D1]">
+                                        Waiting <span className="text-[#A8A29E] font-medium ml-1.5 opacity-80">({getTasksByStatus('waiting').length})</span>
+                                    </h5>
+                                    <MoreHorizontal className="w-5 h-5 text-[#A8A29E] hover:text-[#D6D3D1] cursor-pointer transition-colors" />
+                                </div>
+
+                                <div className="space-y-4 flex-1 overflow-y-auto custom-scrollbar px-1">
+                                    {/* Task Cards */}
+                                    {getTasksByStatus('waiting').map(task => (
+                                        <div
+                                            key={task.id}
+                                            draggable={true}
+                                            onDragStart={() => setDraggedTaskId(task.id)}
+                                            onClick={() => { setSelectedTask(task); setIsTaskDetailOpen(true); }}
+                                            className={`bg-[#262626] rounded-[12px] border border-[#333333] shadow-[0_8px_16px_rgba(0,0,0,0.5)] p-4 hover:brightness-110 transition-all cursor-pointer relative group ${draggedTaskId === task.id ? 'opacity-50 ring-2 ring-[#D6D3D1] scale-[0.98]' : 'opacity-70'}`}
+                                        >
+                                            {/* Priority Dash */}
+                                            <div className={`w-8 h-1.5 rounded-full mb-3 ${task.priority === 'urgent' ? 'bg-rose-500' : task.priority === 'high' ? 'bg-amber-500' : 'bg-emerald-500'}`}></div>
+
+                                            {/* Title */}
+                                            <h4 className="text-[#F5F5F4] text-sm font-medium tracking-wide mb-1 leading-snug">
+                                                {task.title}
+                                            </h4>
+
+                                            {/* Description */}
+                                            <p className="text-[#D6D3D1] opacity-70 text-xs mt-2 line-clamp-2 leading-relaxed">
+                                                {task.matters?.title || "Unknown Matter"}
+                                            </p>
+
+                                            {/* Footer */}
+                                            <div className="flex justify-between items-center mt-4 pt-3 border-t border-[#57534E]/50">
+                                                <div className="flex items-center gap-3 text-[#A8A29E]">
+                                                    <div className="flex items-center gap-1.5" title="Task ID">
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                                        <span className="text-[11px] font-medium uppercase">#{task.id?.substring(0, 4)}</span>
+                                                    </div>
+                                                    {task.source_note_id && (
+                                                        <div
+                                                            className="flex items-center gap-1 text-emerald-400 hover:text-emerald-300 cursor-pointer transition-colors"
+                                                            onClick={(e) => { e.stopPropagation(); window.location.href = `/dashboard/contracts/${task.contract_notes?.contract_id || task.matter_id}?noteId=${task.source_note_id}`; }}
+                                                            title="View Source Note"
+                                                        >
+                                                            <LinkIcon className="w-3.5 h-3.5" />
+                                                            <span className="text-[10px] font-medium uppercase tracking-wider">Note</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                {/* Avatars */}
+                                                <div className="flex -space-x-1.5 shrink-0">
+                                                    <div className="w-6 h-6 rounded-full bg-stone-700 ring-2 ring-[#44403C] flex items-center justify-center text-[10px] text-stone-200 font-medium">JD</div>
+                                                    <div className="w-6 h-6 rounded-full bg-stone-600 ring-2 ring-[#44403C] flex items-center justify-center text-[10px] text-stone-100 font-medium">AL</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Add Task Button */}
+                                <button
+                                    onClick={() => setIsSopModalOpen(true)}
+                                    className="text-[#A8A29E] text-xs font-semibold hover:bg-[#44403C]/40 rounded-xl py-3 mt-2 transition-colors flex justify-center items-center w-full"
+                                >
+                                    + Add Task
+                                </button>
+                            </div>
+
+                            {/* Column: Done */}
+                            <div className="flex-1 flex flex-col gap-3 min-h-[600px] min-w-[320px] bg-[#1A1A1A] rounded-[16px] p-3 transition-colors duration-200" onDragOver={(e) => e.preventDefault()} onDrop={async (e) => { e.preventDefault(); if (draggedTaskId) { await handleUpdateTaskStatus(draggedTaskId, 'done'); setDraggedTaskId(null); } }}>
+                                <div className="flex items-center justify-between px-2 pt-1 pb-2">
+                                    <h5 className="text-[15px] font-semibold text-[#D6D3D1]">
+                                        Done <span className="text-[#A8A29E] font-medium ml-1.5 opacity-80">({getTasksByStatus('done').length})</span>
+                                    </h5>
+                                    <MoreHorizontal className="w-5 h-5 text-[#A8A29E] hover:text-[#D6D3D1] cursor-pointer transition-colors" />
+                                </div>
+
+                                <div className="space-y-4 flex-1 overflow-y-auto custom-scrollbar px-1">
+                                    {/* Task Cards */}
+                                    {getTasksByStatus('done').map(task => (
+                                        <div
+                                            key={task.id}
+                                            draggable={true}
+                                            onDragStart={() => setDraggedTaskId(task.id)}
+                                            onClick={() => { setSelectedTask(task); setIsTaskDetailOpen(true); }}
+                                            className={`bg-[#262626] rounded-[12px] border border-[#333333] shadow-[0_8px_16px_rgba(0,0,0,0.5)] p-4 hover:brightness-110 transition-all cursor-pointer relative group ${draggedTaskId === task.id ? 'opacity-50 ring-2 ring-[#D6D3D1] scale-[0.98]' : 'opacity-50'}`}
+                                        >
+                                            {/* Priority Dash */}
+                                            <div className={`w-8 h-1.5 rounded-full mb-3 ${task.priority === 'urgent' ? 'bg-rose-500' : task.priority === 'high' ? 'bg-amber-500' : 'bg-emerald-500'}`}></div>
+
+                                            {/* Title */}
+                                            <h4 className="text-[#F5F5F4] text-sm font-medium tracking-wide mb-1 leading-snug">
+                                                {task.title}
+                                            </h4>
+
+                                            {/* Description */}
+                                            <p className="text-[#D6D3D1] opacity-70 text-xs mt-2 line-clamp-2 leading-relaxed">
+                                                {task.matters?.title || "Unknown Matter"}
+                                            </p>
+
+                                            {/* Footer */}
+                                            <div className="flex justify-between items-center mt-4 pt-3 border-t border-[#57534E]/50">
+                                                <div className="flex items-center gap-3 text-[#A8A29E]">
+                                                    <div className="flex items-center gap-1.5" title="Task ID">
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                                                        <span className="text-[11px] font-medium uppercase">#{task.id?.substring(0, 4)}</span>
+                                                    </div>
+                                                    {task.source_note_id && (
+                                                        <div
+                                                            className="flex items-center gap-1 text-emerald-400 hover:text-emerald-300 cursor-pointer transition-colors"
+                                                            onClick={(e) => { e.stopPropagation(); window.location.href = `/dashboard/contracts/${task.contract_notes?.contract_id || task.matter_id}?noteId=${task.source_note_id}`; }}
+                                                            title="View Source Note"
+                                                        >
+                                                            <LinkIcon className="w-3.5 h-3.5" />
+                                                            <span className="text-[10px] font-medium uppercase tracking-wider">Note</span>
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                {/* Avatars */}
+                                                <div className="flex -space-x-1.5 shrink-0">
+                                                    <div className="w-6 h-6 rounded-full bg-stone-700 ring-2 ring-[#44403C] flex items-center justify-center text-[10px] text-stone-200 font-medium">JD</div>
+                                                    <div className="w-6 h-6 rounded-full bg-stone-600 ring-2 ring-[#44403C] flex items-center justify-center text-[10px] text-stone-100 font-medium">AL</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+
+                                {/* Add Task Button */}
+                                <button
+                                    onClick={() => setIsSopModalOpen(true)}
+                                    className="text-[#A8A29E] text-xs font-semibold hover:bg-[#44403C]/40 rounded-xl py-3 mt-2 transition-colors flex justify-center items-center w-full"
+                                >
+                                    + Add Task
+                                </button>
                             </div>
                         </div>
                     </section>
@@ -903,6 +1061,21 @@ export default function TasksDashboardPage() {
                                     <span>Manual Entry</span>
                                 </div>
                             )}
+
+                            {/* Source Note Deep Link Pill */}
+                            {selectedTask?.source_note_id && (
+                                <>
+                                    <span className="text-gray-600">•</span>
+                                    <Link
+                                        href={`/dashboard/contracts/${selectedTask.contract_notes?.contract_id || selectedTask.matter_id}?noteId=${selectedTask.source_note_id}`}
+                                        className="flex items-center gap-1.5 text-blue-400 bg-blue-500/10 px-2 py-1 rounded border border-blue-500/20 hover:bg-blue-500/20 hover:text-blue-300 transition-colors"
+                                        title="View the original AI insight that generated this task"
+                                    >
+                                        <LinkIcon className="w-3 h-3" />
+                                        <span>Source Note</span>
+                                    </Link>
+                                </>
+                            )}
                         </div>
 
                         <h3 className="font-serif text-xl text-white leading-snug">
@@ -956,184 +1129,249 @@ export default function TasksDashboardPage() {
                             </div>
                         </div>
 
-                        {/* Checklist */}
-                        <div data-purpose="checklist">
-                            <div className="mb-6 border-b border-white/10 pb-6 min-h-[150px]">
-                                {/* TITLE & PERCENTAGE TEXT */}
-                                <div className="flex justify-between items-center mb-4">
-                                    <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Procedural Steps & Checklists</h4>
-                                    <span className="text-[10px] font-bold text-clause-gold">
-                                        {proceduralSteps.length === 0 ? 0 : Math.round((proceduralSteps.filter(s => s.is_completed).length / proceduralSteps.length) * 100)}%
-                                    </span>
+                        {/* AI Assistant Toggle */}
+                        <div className="flex p-1 bg-[#18181B] rounded-lg border border-zinc-800/80 mb-6">
+                            <button
+                                onClick={() => setIsAiMode(false)}
+                                className={!isAiMode
+                                    ? "bg-[#0a0a0a] text-white shadow-sm rounded-md flex-1 py-2 text-xs font-semibold tracking-wide transition-all cursor-pointer"
+                                    : "text-zinc-500 hover:text-zinc-300 flex-1 py-2 text-xs font-semibold tracking-wide transition-all cursor-pointer"}
+                            >
+                                Task Details
+                            </button>
+                            <button
+                                onClick={() => setIsAiMode(true)}
+                                className={isAiMode
+                                    ? "bg-[#0a0a0a] text-[#D4AF37] border border-[#D4AF37]/20 shadow-sm rounded-md flex-1 py-2 text-xs font-semibold tracking-wide transition-all cursor-pointer"
+                                    : "text-zinc-500 hover:text-zinc-300 flex-1 py-2 text-xs font-semibold tracking-wide transition-all cursor-pointer"}
+                            >
+                                Clause Assistant
+                            </button>
+                        </div>
+
+                        {isAiMode ? (
+                            <div className="flex flex-col h-[500px] bg-[#0a0a0a] border border-zinc-800/50 rounded-xl p-4">
+                                <div className="flex-1 overflow-y-auto flex flex-col gap-4 pr-2 custom-scrollbar">
+                                    {messages.map((msg, idx) => (
+                                        <div key={idx} className={msg.role === "ai" ? "bg-[#0a0a0a] border border-zinc-700/50 text-zinc-300 text-xs p-3.5 rounded-2xl rounded-tl-sm leading-relaxed self-start w-[85%]" : "bg-[#D4AF37]/10 border border-[#D4AF37]/20 text-[#e5e5e5] text-xs p-3.5 rounded-2xl rounded-tr-sm self-end w-[85%]"}>
+                                            {msg.content}
+                                        </div>
+                                    ))}
+                                    {isAiTyping && (
+                                        <div className="bg-[#0a0a0a] border border-zinc-700/50 text-zinc-300 text-xs p-3.5 rounded-2xl rounded-tl-sm self-start w-[85%]">
+                                            <LuxuryThinkingStepper 
+                                                isLoading={true} 
+                                                steps={[
+                                                    "Initializing Task Assistant...",
+                                                    "Fetching active Kanban board...",
+                                                    "Analyzing task deadlines & priorities...",
+                                                    "Generating workflow recommendations..."
+                                                ]} 
+                                            />
+                                        </div>
+                                    )}
                                 </div>
-
-                                {/* THE SLEEK PROGRESS BAR */}
-                                <div className="w-full h-0.5 bg-white/10 rounded-full mb-4 overflow-hidden">
-                                    <div
-                                        className="h-full bg-clause-gold transition-all duration-500 ease-out"
-                                        style={{ width: `${proceduralSteps.length === 0 ? 0 : Math.round((proceduralSteps.filter(s => s.is_completed).length / proceduralSteps.length) * 100)}%` }}
-                                    ></div>
-                                </div>
-
-                                {/* Dynamic List Rendering */}
-                                {proceduralSteps.length > 0 ? (
-                                    <ul className="space-y-3 mb-4 animate-in fade-in duration-300">
-                                        {proceduralSteps.map(step => (
-                                            <li key={step.id} className="flex items-start gap-3 group relative py-1">
-                                                <input
-                                                    type="checkbox"
-                                                    checked={step.is_completed}
-                                                    onChange={async () => await handleToggleStep(step.id, !step.is_completed)}
-                                                    className="mt-1 accent-clause-gold w-4 h-4 cursor-pointer rounded border-white/10 bg-white/5 shrink-0"
-                                                />
-                                                <span className={`text-sm tracking-wide flex-1 transition-colors ${step.is_completed ? "line-through text-gray-600" : "text-gray-300"}`}>
-                                                    {step.title}
-                                                </span>
-
-                                                {/* DELETE BUTTON - Visible on hover */}
-                                                <button
-                                                    onClick={async () => await handleDeleteSubTask(step.id)}
-                                                    className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 transition-all cursor-pointer"
-                                                    title="Delete sub-task"
-                                                >
-                                                    <Trash2 size={14} />
-                                                </button>
-                                            </li>
-                                        ))}
-                                    </ul>
-                                ) : (
-                                    <p className="text-xs text-gray-500 mb-4 italic animate-in fade-in duration-300">No procedural steps defined.</p>
-                                )}
-
-                                {/* Ad-Hoc Input placed directly below the list */}
-                                <div className="relative mt-2">
+                                <div className="mt-4 relative">
                                     <input
                                         type="text"
-                                        placeholder="+ Add ad-hoc sub-task and press Enter"
-                                        value={newSubTask}
-                                        onChange={(e) => setNewSubTask(e.target.value)}
-                                        className="w-full bg-black/50 border border-white/10 rounded-lg p-2.5 text-xs text-white outline-none focus:border-clause-gold transition-colors placeholder:text-gray-600 placeholder:italic"
-                                        onKeyDown={async (e) => {
-                                            if (e.key === 'Enter' && newSubTask.trim() !== '') {
-                                                const supabase = await getAuthenticatedSupabase();
-                                                if (!supabase) return;
-                                                const { error } = await supabase
-                                                    .from('sub_tasks')
-                                                    .insert({
-                                                        task_id: selectedTask.id,
-                                                        title: newSubTask.trim(),
-                                                        is_completed: false
-                                                    });
-
-                                                if (error) {
-                                                    console.error("❌ ERROR INSERTING SUB-TASK:", error);
-                                                    toast.error("Failed to add ad-hoc checklist");
-                                                } else {
-                                                    setNewSubTask(''); // Clear input
-                                                }
-                                            }
+                                        value={chatInput}
+                                        onChange={(e) => setChatInput(e.target.value)}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') handleSendMessage();
                                         }}
+                                        className="w-full bg-[#18181B] border border-zinc-700/60 rounded-xl pl-4 pr-12 py-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-[#D4AF37]/50 focus:ring-1 focus:ring-[#D4AF37]/50 transition-all"
+                                        placeholder="Ask a question or request drafting assistance..."
                                     />
+                                    <button
+                                        onClick={handleSendMessage}
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[#D4AF37] hover:text-[#b08d2b] transition-colors cursor-pointer"
+                                    >
+                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
+                                    </button>
                                 </div>
                             </div>
-                        </div>
+                        ) : (
+                            <>
+                                {/* Checklist */}
+                                <div data-purpose="checklist">
+                                    <div className="mb-6 border-b border-white/10 pb-6 min-h-[150px]">
+                                        {/* TITLE & PERCENTAGE TEXT */}
+                                        <div className="flex justify-between items-center mb-4">
+                                            <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Procedural Steps & Checklists</h4>
+                                            <span className="text-[10px] font-bold text-clause-gold">
+                                                {proceduralSteps.length === 0 ? 0 : Math.round((proceduralSteps.filter(s => s.is_completed).length / proceduralSteps.length) * 100)}%
+                                            </span>
+                                        </div>
 
-                        {/* Attachments */}
-                        <div data-purpose="attachments">
-                            <p className="text-[10px] font-mono uppercase text-white/30 mb-3 tracking-widest">
-                                Evidence & Briefs
-                            </p>
-                            <div className="grid grid-cols-2 gap-3 mb-3">
-                                {taskDetails.attachments.length === 0 ? (
-                                    <p className="text-xs opacity-40 col-span-2">No attachments yet.</p>
-                                ) : (
-                                    taskDetails.attachments.map((file: any) => (
-                                        <div key={file.id} className="flex items-center gap-3 p-3 border border-white/10 rounded-md bg-white/5 relative group">
-                                            <div className="text-clause-gold shrink-0">
-                                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
-                                            </div>
-                                            <div className="overflow-hidden">
-                                                <p className="text-[10px] text-white truncate w-full">{file.file_name}</p>
-                                                <p className="text-[8px] font-mono text-clause-gold/60 mt-0.5">{file.source?.toUpperCase() || 'UPLOADED'}</p>
-                                            </div>
-                                            {/* Delete Button for files */}
-                                            <button
-                                                onClick={async () => {
-                                                    const supabase = await getAuthenticatedSupabase();
-                                                    if (!supabase) return;
-                                                    await supabase.from('task_attachments').delete().eq('id', file.id);
-                                                    await fetchTaskDetails();
+                                        {/* THE SLEEK PROGRESS BAR */}
+                                        <div className="w-full h-0.5 bg-white/10 rounded-full mb-4 overflow-hidden">
+                                            <div
+                                                className="h-full bg-clause-gold transition-all duration-500 ease-out"
+                                                style={{ width: `${proceduralSteps.length === 0 ? 0 : Math.round((proceduralSteps.filter(s => s.is_completed).length / proceduralSteps.length) * 100)}%` }}
+                                            ></div>
+                                        </div>
+
+                                        {/* Dynamic List Rendering */}
+                                        {proceduralSteps.length > 0 ? (
+                                            <ul className="space-y-3 mb-4 animate-in fade-in duration-300">
+                                                {proceduralSteps.map(step => (
+                                                    <li key={step.id} className="flex items-start gap-3 group relative py-1">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={step.is_completed}
+                                                            onChange={async () => await handleToggleStep(step.id, !step.is_completed)}
+                                                            className="mt-1 accent-clause-gold w-4 h-4 cursor-pointer rounded border-white/10 bg-white/5 shrink-0"
+                                                        />
+                                                        <span className={`text-sm tracking-wide flex-1 transition-colors ${step.is_completed ? "line-through text-gray-600" : "text-gray-300"}`}>
+                                                            {step.title}
+                                                        </span>
+
+                                                        {/* DELETE BUTTON - Visible on hover */}
+                                                        <button
+                                                            onClick={async () => await handleDeleteSubTask(step.id)}
+                                                            className="opacity-0 group-hover:opacity-100 p-1 text-gray-500 hover:text-red-400 transition-all cursor-pointer"
+                                                            title="Delete sub-task"
+                                                        >
+                                                            <Trash2 size={14} />
+                                                        </button>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        ) : (
+                                            <p className="text-xs text-gray-500 mb-4 italic animate-in fade-in duration-300">No procedural steps defined.</p>
+                                        )}
+
+                                        {/* Ad-Hoc Input placed directly below the list */}
+                                        <div className="relative mt-2">
+                                            <input
+                                                type="text"
+                                                placeholder="+ Add ad-hoc sub-task and press Enter"
+                                                value={newSubTask}
+                                                onChange={(e) => setNewSubTask(e.target.value)}
+                                                className="w-full bg-black/50 border border-white/10 rounded-lg p-2.5 text-xs text-white outline-none focus:border-clause-gold transition-colors placeholder:text-gray-600 placeholder:italic"
+                                                onKeyDown={async (e) => {
+                                                    if (e.key === 'Enter' && newSubTask.trim() !== '') {
+                                                        const supabase = await getAuthenticatedSupabase();
+                                                        if (!supabase) return;
+                                                        const { error } = await supabase
+                                                            .from('sub_tasks')
+                                                            .insert({
+                                                                task_id: selectedTask.id,
+                                                                title: newSubTask.trim(),
+                                                                is_completed: false
+                                                            });
+
+                                                        if (error) {
+                                                            console.error("❌ ERROR INSERTING SUB-TASK:", error);
+                                                            toast.error("Failed to add ad-hoc checklist");
+                                                        } else {
+                                                            setNewSubTask(''); // Clear input
+                                                        }
+                                                    }
                                                 }}
-                                                className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-400 text-xs cursor-pointer z-10"
-                                            >
-                                                ✕
-                                            </button>
+                                            />
                                         </div>
-                                    ))
-                                )}
-                            </div>
-                            <label className="mt-3 border border-dashed border-white/10 rounded-lg p-4 flex flex-col items-center justify-center gap-2 hover:border-clause-gold/30 transition-all cursor-pointer">
-                                <UploadCloud className="w-5 h-5 opacity-20" />
-                                <span className="text-[10px] opacity-40 font-mono">
-                                    CLICK OR DRAG TO UPLOAD
-                                </span>
-                                <input type="file" className="hidden" onChange={handleFileUpload} />
-                            </label>
-                        </div>
-
-                        {/* Dependencies */}
-                        <div data-purpose="dependencies">
-                            <p className="text-[10px] font-mono uppercase text-white/30 mb-3 tracking-widest">
-                                Dependencies
-                            </p>
-                            <div className="space-y-2">
-                                <div className="flex items-center gap-2 text-[10px]">
-                                    <span className="text-red-400 font-bold uppercase tracking-tighter">
-                                        Blocked by
-                                    </span>
-                                    <span className="text-white/60 hover:text-clause-gold cursor-pointer">
-                                        T-1088 (Evidence Audit)
-                                    </span>
+                                    </div>
                                 </div>
-                                <div className="flex items-center gap-2 text-[10px]">
-                                    <span className="text-emerald-400 font-bold uppercase tracking-tighter">
-                                        Blocking
-                                    </span>
-                                    <span className="text-white/60 hover:text-clause-gold cursor-pointer">
-                                        T-1104 (Final Partner Approval)
-                                    </span>
-                                </div>
-                            </div>
-                        </div>
 
-                        {/* Activity Log */}
-                        <div data-purpose="activity-log">
-                            <p className="text-[10px] font-mono uppercase text-white/30 mb-4 tracking-widest">
-                                Activity Log
-                            </p>
-                            <div className="space-y-4 relative">
-                                <div className="absolute w-[1px] bg-white/5 left-[7px] top-1 bottom-1"></div>
-                                {taskDetails.logs.length === 0 ? (
-                                    <p className="text-xs opacity-40 pl-8">No activity recorded yet.</p>
-                                ) : (
-                                    taskDetails.logs.map((log: any, idx: number) => (
-                                        <div key={log.id} className="flex gap-4 relative">
-                                            <div className={`w-4 h-4 rounded-full ${idx === 0 ? 'bg-clause-gold/20' : 'bg-white/10'} flex items-center justify-center shrink-0 z-10`}>
-                                                <div className={`w-1.5 h-1.5 ${idx === 0 ? 'bg-clause-gold' : 'bg-white/40'} rounded-full`}></div>
-                                            </div>
-                                            <div>
-                                                <p className="text-xs text-white/80">
-                                                    {log.message || log.action || 'Activity recorded'}
-                                                </p>
-                                                <p className="text-[9px] font-mono opacity-30 mt-1">
-                                                    {log.created_at ? new Date(log.created_at).toLocaleString() : ''}
-                                                </p>
-                                            </div>
+                                {/* Attachments */}
+                                <div data-purpose="attachments">
+                                    <p className="text-[10px] font-mono uppercase text-white/30 mb-3 tracking-widest">
+                                        Evidence & Briefs
+                                    </p>
+                                    <div className="grid grid-cols-2 gap-3 mb-3">
+                                        {taskDetails.attachments.length === 0 ? (
+                                            <p className="text-xs opacity-40 col-span-2">No attachments yet.</p>
+                                        ) : (
+                                            taskDetails.attachments.map((file: any) => (
+                                                <div key={file.id} className="flex items-center gap-3 p-3 border border-white/10 rounded-md bg-white/5 relative group">
+                                                    <div className="text-clause-gold shrink-0">
+                                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                                                    </div>
+                                                    <div className="overflow-hidden">
+                                                        <p className="text-[10px] text-white truncate w-full">{file.file_name}</p>
+                                                        <p className="text-[8px] font-mono text-clause-gold/60 mt-0.5">{file.source?.toUpperCase() || 'UPLOADED'}</p>
+                                                    </div>
+                                                    {/* Delete Button for files */}
+                                                    <button
+                                                        onClick={async () => {
+                                                            const supabase = await getAuthenticatedSupabase();
+                                                            if (!supabase) return;
+                                                            await supabase.from('task_attachments').delete().eq('id', file.id);
+                                                            await fetchTaskDetails();
+                                                        }}
+                                                        className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-400 text-xs cursor-pointer z-10"
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+                                    <label className="mt-3 border border-dashed border-white/10 rounded-lg p-4 flex flex-col items-center justify-center gap-2 hover:border-clause-gold/30 transition-all cursor-pointer">
+                                        <UploadCloud className="w-5 h-5 opacity-20" />
+                                        <span className="text-[10px] opacity-40 font-mono">
+                                            CLICK OR DRAG TO UPLOAD
+                                        </span>
+                                        <input type="file" className="hidden" onChange={handleFileUpload} />
+                                    </label>
+                                </div>
+
+                                {/* Dependencies */}
+                                <div data-purpose="dependencies">
+                                    <p className="text-[10px] font-mono uppercase text-white/30 mb-3 tracking-widest">
+                                        Dependencies
+                                    </p>
+                                    <div className="space-y-2">
+                                        <div className="flex items-center gap-2 text-[10px]">
+                                            <span className="text-red-400 font-bold uppercase tracking-tighter">
+                                                Blocked by
+                                            </span>
+                                            <span className="text-white/60 hover:text-clause-gold cursor-pointer">
+                                                T-1088 (Evidence Audit)
+                                            </span>
                                         </div>
-                                    ))
-                                )}
-                            </div>
-                        </div>
+                                        <div className="flex items-center gap-2 text-[10px]">
+                                            <span className="text-emerald-400 font-bold uppercase tracking-tighter">
+                                                Blocking
+                                            </span>
+                                            <span className="text-white/60 hover:text-clause-gold cursor-pointer">
+                                                T-1104 (Final Partner Approval)
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Activity Log */}
+                                <div data-purpose="activity-log">
+                                    <p className="text-[10px] font-mono uppercase text-white/30 mb-4 tracking-widest">
+                                        Activity Log
+                                    </p>
+                                    <div className="space-y-4 relative">
+                                        <div className="absolute w-[1px] bg-white/5 left-[7px] top-1 bottom-1"></div>
+                                        {taskDetails.logs.length === 0 ? (
+                                            <p className="text-xs opacity-40 pl-8">No activity recorded yet.</p>
+                                        ) : (
+                                            taskDetails.logs.map((log: any, idx: number) => (
+                                                <div key={log.id} className="flex gap-4 relative">
+                                                    <div className={`w-4 h-4 rounded-full ${idx === 0 ? 'bg-clause-gold/20' : 'bg-white/10'} flex items-center justify-center shrink-0 z-10`}>
+                                                        <div className={`w-1.5 h-1.5 ${idx === 0 ? 'bg-clause-gold' : 'bg-white/40'} rounded-full`}></div>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-xs text-white/80">
+                                                            {log.message || log.action || 'Activity recorded'}
+                                                        </p>
+                                                        <p className="text-[9px] font-mono opacity-30 mt-1">
+                                                            {log.created_at ? new Date(log.created_at).toLocaleString() : ''}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            ))
+                                        )}
+                                    </div>
+                                </div>
+                            </>
+                        )}
                     </div>
                 </aside>
             )}
@@ -1339,10 +1577,16 @@ export default function TasksDashboardPage() {
 
                             {/* Premium Typing Indicator */}
                             {isAiTyping && (
-                                <div className="bg-white/5 border border-white/10 self-start p-4 rounded-xl max-w-[85%] flex items-center gap-1.5 shadow-lg w-fit">
-                                    <div className="w-1.5 h-1.5 bg-clause-gold rounded-full animate-bounce [animation-delay:-0.3s]"></div>
-                                    <div className="w-1.5 h-1.5 bg-clause-gold rounded-full animate-bounce [animation-delay:-0.15s]"></div>
-                                    <div className="w-1.5 h-1.5 bg-clause-gold rounded-full animate-bounce"></div>
+                                <div className="bg-white/5 border border-white/10 self-start p-4 rounded-xl max-w-[85%] shadow-lg w-full">
+                                    <LuxuryThinkingStepper 
+                                        isLoading={true} 
+                                        steps={[
+                                            "Initializing Task Assistant...",
+                                            "Fetching active Kanban board...",
+                                            "Analyzing task deadlines & priorities...",
+                                            "Generating workflow recommendations..."
+                                        ]} 
+                                    />
                                 </div>
                             )}
                         </div>

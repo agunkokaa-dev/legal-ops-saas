@@ -43,5 +43,11 @@ async def get_tenant_supabase(authorization: str = Header(...)) -> Client:
     """
     token = authorization.replace("Bearer ", "")
     client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-    client.postgrest.auth(token) # Inject JWT for RLS
+    
+    try:
+        client.postgrest.auth(token) # Inject JWT for RLS
+    except Exception as e:
+        print(f"Supabase Auth Injection Error: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed: PostgREST rejected the JWT token.")
+        
     return client

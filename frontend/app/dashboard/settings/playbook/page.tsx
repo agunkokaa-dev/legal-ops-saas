@@ -10,7 +10,14 @@ export default function CompanyPlaybookPage() {
     const { getToken } = useAuth()
 
     const [rules, setRules] = useState<any[]>([])
-    const [newRuleText, setNewRuleText] = useState('')
+    
+    // Structured form state
+    const [category, setCategory] = useState('Governing Law')
+    const [standardPosition, setStandardPosition] = useState('')
+    const [fallbackPosition, setFallbackPosition] = useState('')
+    const [redline, setRedline] = useState('')
+    const [riskSeverity, setRiskSeverity] = useState('Medium Risk')
+
     const [isLoading, setIsLoading] = useState(true)
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -58,7 +65,7 @@ export default function CompanyPlaybookPage() {
 
     const handleAddRule = async (e: React.FormEvent) => {
         e.preventDefault()
-        if (!newRuleText.trim() || !user) return
+        if (!standardPosition.trim() || !user) return
 
         setIsSubmitting(true)
         setError(null)
@@ -69,9 +76,21 @@ export default function CompanyPlaybookPage() {
             const supabase = await supabaseClient(token || '')
 
             // 1. Insert into Supabase
+            const fallbackStr = fallbackPosition.trim() || null
+            const redlineStr = redline.trim() || null
+            const ruleTextFallback = `[${category}] ${standardPosition.trim()}`
+
             const { data: newRule, error: supaError } = await supabase
                 .from('company_playbooks')
-                .insert([{ user_id: user.id, rule_text: newRuleText.trim() }])
+                .insert([{ 
+                    user_id: user.id, 
+                    category,
+                    standard_position: standardPosition.trim(),
+                    fallback_position: fallbackStr,
+                    redline: redlineStr,
+                    risk_severity: riskSeverity,
+                    rule_text: ruleTextFallback
+                }])
                 .select()
                 .single()
 
@@ -79,7 +98,11 @@ export default function CompanyPlaybookPage() {
 
             // Update UI optimistically
             setRules([{ ...newRule }, ...rules])
-            setNewRuleText('')
+            setCategory('Governing Law')
+            setStandardPosition('')
+            setFallbackPosition('')
+            setRedline('')
+            setRiskSeverity('Medium Risk')
 
             // 2. Send to Backend Vectorizer
             const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
@@ -89,7 +112,11 @@ export default function CompanyPlaybookPage() {
                 body: JSON.stringify({
                     rule_id: newRule.id,
                     user_id: user.id,
-                    rule_text: newRule.rule_text
+                    category: newRule.category,
+                    standard_position: newRule.standard_position,
+                    fallback_position: newRule.fallback_position,
+                    redline: newRule.redline,
+                    risk_severity: newRule.risk_severity
                 })
             })
 
@@ -135,14 +162,73 @@ export default function CompanyPlaybookPage() {
                     <h2 className="text-lg font-medium text-white mb-4">Add New Rule</h2>
                     <form onSubmit={handleAddRule}>
                         <div className="space-y-4">
-                            <textarea
-                                value={newRuleText}
-                                onChange={(e) => setNewRuleText(e.target.value)}
-                                placeholder="E.g., All counter-proposals regarding governing law must strictly enforce Indonesian jurisdiction (Jakarta)."
-                                className="w-full h-32 bg-[#1a1a1a] border border-neutral-700 text-white placeholder:text-neutral-500 rounded-lg p-4 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-none transition-all"
-                                disabled={isSubmitting}
-                                required
-                            />
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                    <label className="text-sm text-neutral-400">Category</label>
+                                    <select 
+                                        value={category} 
+                                        onChange={(e) => setCategory(e.target.value)}
+                                        disabled={isSubmitting}
+                                        className="w-full bg-[#1a1a1a] border border-neutral-700 text-white rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-primary"
+                                    >
+                                        <option>Governing Law</option>
+                                        <option>Liability Cap</option>
+                                        <option>Payment Terms</option>
+                                        <option>Confidentiality</option>
+                                        <option>Termination</option>
+                                        <option>Warranties</option>
+                                        <option>Other</option>
+                                    </select>
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-sm text-neutral-400">Risk Severity</label>
+                                    <select 
+                                        value={riskSeverity} 
+                                        onChange={(e) => setRiskSeverity(e.target.value)}
+                                        disabled={isSubmitting}
+                                        className="w-full bg-[#1a1a1a] border border-neutral-700 text-white rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-primary"
+                                    >
+                                        <option>High Risk</option>
+                                        <option>Medium Risk</option>
+                                        <option>Low Risk</option>
+                                    </select>
+                                </div>
+                            </div>
+                           
+                            <div className="space-y-1">
+                                <label className="text-sm text-neutral-400">Standard Position <span className="text-red-500">*</span></label>
+                                <textarea
+                                    value={standardPosition}
+                                    onChange={(e) => setStandardPosition(e.target.value)}
+                                    placeholder="The required gold-standard clause..."
+                                    className="w-full h-24 bg-[#1a1a1a] border border-neutral-700 text-white placeholder:text-neutral-500 rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-none transition-all"
+                                    disabled={isSubmitting}
+                                    required
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                    <label className="text-sm text-neutral-400">Fallback (Compromise)</label>
+                                    <textarea
+                                        value={fallbackPosition}
+                                        onChange={(e) => setFallbackPosition(e.target.value)}
+                                        placeholder="Acceptable fallbacks if standard is rejected..."
+                                        className="w-full h-24 bg-[#1a1a1a] border border-neutral-700 text-white placeholder:text-neutral-500 rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-none transition-all"
+                                        disabled={isSubmitting}
+                                    />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-sm text-neutral-400">Redline (Walk-away)</label>
+                                    <textarea
+                                        value={redline}
+                                        onChange={(e) => setRedline(e.target.value)}
+                                        placeholder="Unacceptable terms to reject completely..."
+                                        className="w-full h-24 bg-[#1a1a1a] border border-neutral-700 text-white placeholder:text-neutral-500 rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-none transition-all"
+                                        disabled={isSubmitting}
+                                    />
+                                </div>
+                            </div>
 
                             {error && (
                                 <div className="flex items-center gap-2 text-sm text-red-400 bg-red-400/10 p-3 rounded-lg border border-red-500/20">
@@ -161,7 +247,7 @@ export default function CompanyPlaybookPage() {
                             <div className="flex justify-end">
                                 <button
                                     type="submit"
-                                    disabled={!newRuleText.trim() || isSubmitting}
+                                    disabled={!standardPosition.trim() || isSubmitting}
                                     className="flex items-center gap-2 px-6 py-2.5 bg-[#d4af37] hover:bg-[#c4a137] text-black font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
                                     {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin text-black" /> : <Plus className="w-4 h-4 text-black" />}
@@ -198,10 +284,49 @@ export default function CompanyPlaybookPage() {
                                     <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#d4af37]"></div>
                                     <div className="flex gap-4 pl-3">
                                         <div className="flex-1">
-                                            <p className="text-neutral-200 leading-relaxed text-sm">
-                                                {rule.rule_text}
-                                            </p>
-                                            <p className="text-[10px] text-neutral-500 mt-3 font-mono">
+                                            {rule.standard_position ? (
+                                                <div className="space-y-3">
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="px-2 py-0.5 bg-neutral-800 text-neutral-300 text-xs rounded-md font-medium border border-neutral-700">
+                                                            {rule.category}
+                                                        </span>
+                                                        <span className={`px-2 py-0.5 text-xs rounded-md font-medium border ${
+                                                            rule.risk_severity === 'High Risk' ? 'bg-red-500/10 text-red-400 border-red-500/20' :
+                                                            rule.risk_severity === 'Medium Risk' ? 'bg-orange-500/10 text-orange-400 border-orange-500/20' :
+                                                            'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                                        }`}>
+                                                            {rule.risk_severity}
+                                                        </span>
+                                                    </div>
+                                                    
+                                                    <div>
+                                                        <p className="text-xs text-neutral-500 mb-1">Standard Position</p>
+                                                        <p className="text-neutral-200 text-sm leading-relaxed">{rule.standard_position}</p>
+                                                    </div>
+                                                    
+                                                    {(rule.fallback_position || rule.redline) && (
+                                                        <div className="grid grid-cols-2 gap-4 pt-2 border-t border-neutral-800 border-dashed">
+                                                            {rule.fallback_position && (
+                                                                <div>
+                                                                    <p className="text-xs text-emerald-500/70 mb-1 flex items-center gap-1"><CheckCircle2 className="w-3 h-3"/> Fallback</p>
+                                                                    <p className="text-neutral-400 text-xs leading-relaxed">{rule.fallback_position}</p>
+                                                                </div>
+                                                            )}
+                                                            {rule.redline && (
+                                                                <div>
+                                                                    <p className="text-xs text-red-500/70 mb-1 flex items-center gap-1"><AlertCircle className="w-3 h-3"/> Redline</p>
+                                                                    <p className="text-neutral-400 text-xs leading-relaxed">{rule.redline}</p>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <p className="text-neutral-200 leading-relaxed text-sm">
+                                                    {rule.rule_text}
+                                                </p>
+                                            )}
+                                            <p className="text-[10px] text-neutral-500 mt-4 font-mono">
                                                 ID: {rule.id} | Added: {new Date(rule.created_at).toLocaleDateString()}
                                             </p>
                                         </div>

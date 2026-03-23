@@ -30,8 +30,17 @@ async def async_qdrant_upsert(collection: str, points: list):
 @router.post("/playbook/vectorize")
 async def vectorize_playbook_rule(request: PlaybookRuleRequest):
     try:
+        # Create chunk_text for embedding
+        chunk_text = (
+            f"Category: {request.category}\\n"
+            f"Standard Position: {request.standard_position}\\n"
+            f"Fallback (Compromise): {request.fallback_position or 'None'}\\n"
+            f"Redline (Walk-away): {request.redline or 'None'}\\n"
+            f"Severity if Violated: {request.risk_severity}"
+        )
+        
         # NON-BLOCKING Vector Generation
-        vector = await async_embed(request.rule_text)
+        vector = await async_embed(chunk_text)
         
         # NON-BLOCKING Upsert
         await async_qdrant_upsert(
@@ -41,7 +50,12 @@ async def vectorize_playbook_rule(request: PlaybookRuleRequest):
                 vector=vector,
                 payload={
                     "user_id": request.user_id, 
-                    "rule_text": request.rule_text, 
+                    "category": request.category,
+                    "standard_position": request.standard_position,
+                    "fallback_position": request.fallback_position,
+                    "redline": request.redline,
+                    "risk_severity": request.risk_severity,
+                    "rule_text": chunk_text, 
                     "rule_id": request.rule_id
                 }
             )]

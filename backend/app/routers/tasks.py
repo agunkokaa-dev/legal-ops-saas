@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, Depends
 from supabase import Client
 from qdrant_client.http.models import Filter, FieldCondition, MatchAny
+import json
 
 from app.config import openai_client, qdrant, COLLECTION_NAME, admin_supabase
 from app.dependencies import verify_clerk_token, get_tenant_supabase
@@ -94,27 +95,21 @@ def get_high_risk_contracts_tool_logic(tenant_id: str, supabase: Client) -> str:
         if not high_risk_docs:
             return "Status Portofolio: Aman. Tidak ada kontrak dengan eksposur Risiko Tinggi (HIGH RISK) yang teridentifikasi."
             
-        # 🚨 CRITICAL: Format as Enterprise-Grade Markdown with EXACT relative URL paths
-        formatted_list = []
+        # Return a dictionary/JSON so the LLM gets the id and title explicitly
+        import json
+        result = []
         for d in high_risk_docs:
-            # 1. Sanitize the ID and Title aggressively
-            doc_id = str(d.get('id', '')).strip()
-            raw_title = str(d.get('title') or "Untitled Document")
-            clean_title = raw_title.replace('\n', '').replace('\r', '').replace('[', '').replace(']', '').strip()
+            result.append({
+                "id": str(d.get('id', '')).strip(),
+                "title": str(d.get('title') or "Untitled Document").replace('\\n', '').replace('\\r', '').strip(),
+                "risk_level": "HIGH RISK",
+                "created_at": d.get('created_at')[:10] if d.get('created_at') else "N/A"
+            })
             
-            date = d.get('created_at')[:10] if d.get('created_at') else "N/A"
-            
-            # 2. BULLETPROOF MARKDOWN: Absolutely NO bold tags near the brackets!
-            # Format: - [Clean Title](/dashboard/contracts/doc_id) | Status: HIGH RISK
-            formatted_list.append(f"- [{clean_title}](/dashboard/contracts/{doc_id}) | Terdaftar: {date} | Status: HIGH RISK")
-            
-        final_output = (
-            "**TINJAUAN RISIKO PORTOFOLIO**\n\n"
-            "Berdasarkan hasil pemindaian sistem terhadap database, ditemukan dokumen dengan tingkat risiko tinggi yang memerlukan mitigasi segera:\n\n"
-            + "\n".join(formatted_list) +
-            "\n\n*Silakan klik nama dokumen di atas untuk masuk ke Ruang RAG Terisolasi dan melakukan analisis klausul lebih lanjut.*"
-        )
-        return final_output
+        return json.dumps({
+            "status": "Found high risk contracts", 
+            "contracts": result
+        })
         
     except Exception as e:
         error_trace = traceback.format_exc()
@@ -183,7 +178,7 @@ async def async_chat_completion(messages: list, tools=None) -> any:
         kwargs["tool_choice"] = "auto"
     return await asyncio.to_thread(openai_client.chat.completions.create, **kwargs)
 
-async def async_qdrant_search(collection: str, query_vector: list, limit: int, query_filter=None):
+async def async_qdrant_search(collection: str, query_vector: list, limit: int, query_filter=None) -> list:
     """Async wrapper for qdrant-client v1.17+ query_points API."""
     try:
         kwargs = {
@@ -396,9 +391,7 @@ If they ask about their tasks, schedule, or to-do list, you MUST invoke the `get
 DO NOT use emojis. Output EXACTLY the string returned by the tool without adding conversational filler.
 
 🚨 CRITICAL LINKING RULE:
-When a tool returns a markdown link (e.g., [Title](/dashboard/contracts/UUID)), you MUST output that EXACT link without any modification. 
-DO NOT ever replace the UUID in the URL with the document's name, title, or filename. The routing will break if you do not use the exact UUID provided by the tool.
-You MUST output the exact markdown links provided by the tools. DO NOT reformat the links. DO NOT add bold tags to the links.
+When listing contracts or documents, you MUST format the document name as a clickable Markdown link using this exact format: `[Nama Dokumen](/dashboard/contracts/{id})`. Replace {id} with the actual UUID of the contract provided by the tool. DO NOT invent URLs.
 
 Context:
 {combined_context}
@@ -428,10 +421,16 @@ Context:
                 # Loop continues to call LLM again with tool result
             else:
                 # No more tool calls, return final text
-                return {"reply": response_message.content}
+                return {
+                    "reply": response_message.content,
+                    "answer": response_message.content
+                }
         
         # Fallback if loop exceeded
-        return {"reply": "I apologize, but I encountered an issue processing your request after several attempts."}
+        return {
+            "reply": "I apologize, but I encountered an issue processing your request after several attempts.",
+            "answer": "I apologize, but I encountered an issue processing your request after several attempts."
+        }
 
     except Exception as e:
         traceback.print_exc()

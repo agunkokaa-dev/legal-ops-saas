@@ -12,6 +12,22 @@ load_dotenv()
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+from pydantic import BaseModel, Field
+from typing import Optional, Dict
+
+class ExtractedClause(BaseModel):
+    clause_name: str = Field(description="The name of the clause (e.g., 'Indemnity', 'Liability', 'Payment').")
+    clause_text: str = Field(description="The exact text or summary of this clause.")
+
+class ContractMetadata(BaseModel):
+    contract_value: float = Field(default=0.0, description="The monetary value of the contract. Remove formatting and output raw number.")
+    currency: str = Field(default="IDR", description="3-letter currency code (e.g., IDR, USD).")
+    end_date: str = Field(default="Unknown", description="The termination date or duration.")
+    effective_date: Optional[str] = Field(default=None, description="The date the agreement goes into effect.")
+    jurisdiction: Optional[str] = Field(default=None, description="The legal jurisdiction.")
+    governing_law: Optional[str] = Field(default=None, description="The governing law.")
+    extracted_clauses: list[ExtractedClause] = Field(default_factory=list, description="A list of key clauses extracted from the contract.")
+
 # ==========================================
 # 1. State Definition (ContractState)
 # ==========================================
@@ -23,7 +39,7 @@ class ContractState(TypedDict):
     contract_id: str
     raw_document: str             # The raw text extracted from the PDF
     extracted_clauses: Dict[str, Any] # Structured dictionary of key clauses
-    contract_value: str           # Financial value or consideration found
+    contract_value: float         # Financial value or consideration found
     end_date: str                 # Termination or expiry date
     effective_date: str           # Date the agreement goes into effect
     jurisdiction: str             # Legal jurisdiction
@@ -31,10 +47,12 @@ class ContractState(TypedDict):
     compliance_issues: Annotated[list, operator.add]  # List of legal/compliance violations found
     risk_flags: Annotated[list, operator.add]          # Specific risk warnings
     risk_score: float             # Calculated risk score (0-100)
+    risk_level: str               # Categorical risk: 'High', 'Medium', 'Low', or 'Safe'
     counter_proposal: str         # Negotiation strategy / BATNA reasoning
     draft_revisions: Annotated[list, operator.add]     # Revised neutral/fair clauses
     extracted_obligations: Annotated[list, operator.add]  # Obligations mined from contract
     classified_clauses: Annotated[list, operator.add]     # Key clauses classified by type
+    currency: str                 # ISO 4217 Currency Code (e.g., USD, IDR)
 
 # ==========================================
 # 2. Agent 01: Ingestion Agent
@@ -42,47 +60,52 @@ class ContractState(TypedDict):
 def ingestion_agent(state: ContractState) -> ContractState:
     """
     AGENT 01: Parses the raw document to extract key metadata and clauses.
-    Returns: contract_value, end_date, and populated extracted_clauses.
+    Returns: contract_value, currency, end_date, and populated extracted_clauses.
     """
     print(f"[Agent 01: Ingestion] Processing contract: {state.get('contract_id', 'Unknown')}")
     
     prompt = f"""
     You are an expert Legal Document Parser.
     Extract the following from the provided contract text:
-    1. 'contract_value': The total financial consideration or value. If none, say "Not Specified".
-    2. 'end_date': The termination date or duration. If none, say "Not Specified".
-    3. 'effective_date': The date the agreement goes into effect. Look for phrases like 'Effective Date', 'Tanggal Efektif', or use the date the agreement is signed. If none, return null.
-    4. 'jurisdiction': The legal jurisdiction of the contract. If none, return null.
-    5. 'governing_law': The governing law of the contract. If none, return null.
-    6. 'extracted_clauses': A dictionary where keys are clause names (e.g., 'Indemnity', 'Liability', 'Termination') and values are the exact text or a summary.
-    
-    Return pure JSON with keys: 'contract_value', 'end_date', 'effective_date', 'jurisdiction', 'governing_law', 'extracted_clauses'.
+    1. 'contract_value': The total financial consideration or value as a number. If none, output 0.
+    2. 'currency': The ISO 4217 currency code (e.g., 'IDR', 'USD', 'EUR'). If none or unclear, use 'IDR' as default.
+    3. 'end_date': The termination date or duration. If none, say "Not Specified".
+    4. 'effective_date': The date the agreement goes into effect.
+    5. 'jurisdiction': The legal jurisdiction of the contract.
+    6. 'governing_law': The governing law of the contract.
+    7. 'extracted_clauses': A dictionary where keys are clause names (e.g., 'Indemnity', 'Liability') and values are the text.
     
     CONTRACT TEXT:
     {state.get('raw_document', '')[:10000]} # Truncated for safety
     """
 
     try:
-        response = client.chat.completions.create(
+        response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
-            response_format={"type": "json_object"},
+            response_format=ContractMetadata,
             messages=[
-                {"role": "system", "content": "You are a precise JSON legal extraction engine."},
+                {"role": "system", "content": "You are a precise legal extraction engine."},
                 {"role": "user", "content": prompt}
             ]
         )
-        result = json.loads(response.choices[0].message.content)
+        result = response.choices[0].message.parsed
+        # Convert list[ExtractedClause] back to a dict for downstream agents
+        clauses_dict = {c.clause_name: c.clause_text for c in result.extracted_clauses} if result.extracted_clauses else {}
+        print(f"[Agent 01] Extracted: value={result.contract_value}, currency={result.currency}, end_date={result.end_date}")
         return {
-            "contract_value": result.get("contract_value", "Unknown"),
-            "end_date": result.get("end_date", "Unknown"),
-            "effective_date": result.get("effective_date", None),
-            "jurisdiction": result.get("jurisdiction", None),
-            "governing_law": result.get("governing_law", None),
-            "extracted_clauses": result.get("extracted_clauses", {})
+            "contract_value": result.contract_value,
+            "currency": result.currency,
+            "end_date": result.end_date,
+            "effective_date": result.effective_date,
+            "jurisdiction": result.jurisdiction,
+            "governing_law": result.governing_law,
+            "extracted_clauses": clauses_dict
         }
     except Exception as e:
         print(f"Ingestion Agent Error: {e}")
-        return {"contract_value": "Error", "end_date": "Error", "effective_date": None, "jurisdiction": None, "governing_law": None, "extracted_clauses": {}}
+        import traceback
+        traceback.print_exc()
+        return {"contract_value": 0.0, "currency": "IDR", "end_date": "Error", "effective_date": None, "jurisdiction": None, "governing_law": None, "extracted_clauses": {}}
 
 # ==========================================
 # 3. Agent 02: Compliance Agent
@@ -97,9 +120,13 @@ def compliance_agent(state: ContractState) -> ContractState:
     clauses = state.get('extracted_clauses', {})
     
     prompt = f"""
-    You are a Senior Legal Compliance Auditor.
-    Review the following extracted clauses and identify any that are illegal, heavily biased, commercially unreasonable, or violate standard B2B compliance.
-    
+    You are a Senior Legal Compliance Auditor with strict corporate guidelines.
+    Review the following extracted clauses and identify any risks. 
+    CRITICAL CORPORATE PLAYBOOK RULES:
+    1. ORDER OF PRECEDENCE TRAP: If this is an SOW or Addendum and it states it is subordinate to an MSA or external agreement (e.g., "ketentuan MSA yang berlaku"), FLAG THIS AS A COMPLIANCE ISSUE. It is a hidden risk because commercial terms might be overridden.
+    2. MISSING TERMS: If the document is missing a clear termination clause, liability cap, or governing law, flag it.
+    3. BIASED TERMS: Flag any heavily biased or commercially unreasonable terms.
+
     Return pure JSON with a single key 'compliance_issues' containing a list of strings detailing the issues. If none, return an empty list.
     
     CLAUSES:
@@ -136,11 +163,20 @@ def risk_agent(state: ContractState) -> ContractState:
     
     prompt = f"""
     You are a Chief Risk Officer AI.
-    Evaluate the following compliance issues and the contract value to determine the risk.
-    Calculate a 'risk_score' as a float from 0.0 (perfectly safe) to 100.0 (extreme risk).
-    Generate a list of 'risk_flags' summarizing the critical dangers.
+    Evaluate the compliance issues and contract value.
+    CRITICAL SCORING RULES:
+    - If issues contain "Order of Precedence", "MSA subordination", or missing critical clauses, the 'risk_score' MUST be at least 50.0, and 'risk_level' MUST be 'Medium' or 'High'.
+    - Only use 'Low' or 'Safe' if the contract is completely standalone, balanced, and contains zero compliance issues.
+
+    1. Calculate a 'risk_score' (float 0.0 to 100.0).
+    2. Determine a 'risk_level' (STRICTLY use: 'High', 'Medium', 'Low', or 'Safe').
+       - 75-100 = 'High'
+       - 40-74 = 'Medium'
+       - 1-39 = 'Low'
+       - 0 = 'Safe'
+    3. Generate a list of 'risk_flags' summarizing the critical dangers.
     
-    Return pure JSON with keys: 'risk_score' (float) and 'risk_flags' (list of strings).
+    Return pure JSON with keys: 'risk_score' (float), 'risk_level' (string), and 'risk_flags' (list of strings).
     
     CONTRACT VALUE: {value}
     COMPLIANCE ISSUES:
@@ -157,13 +193,20 @@ def risk_agent(state: ContractState) -> ContractState:
             ]
         )
         result = json.loads(response.choices[0].message.content)
+        score = float(result.get("risk_score", 0.0))
+        # Use LLM's risk_level if provided, otherwise derive from score
+        risk_level = result.get("risk_level")
+        if not risk_level or risk_level not in ("High", "Medium", "Low", "Safe"):
+            risk_level = "High" if score >= 75.0 else ("Medium" if score >= 40.0 else ("Low" if score > 0 else "Safe"))
+        print(f"[Agent 03] Risk Score: {score}, Risk Level: {risk_level}")
         return {
-            "risk_score": float(result.get("risk_score", 0.0)),
+            "risk_score": score,
+            "risk_level": risk_level,
             "risk_flags": result.get("risk_flags", [])
         }
     except Exception as e:
         print(f"Risk Agent Error: {e}")
-        return {"risk_score": 100.0, "risk_flags": ["Error calculating risk."]}
+        return {"risk_score": 100.0, "risk_level": "High", "risk_flags": ["Error calculating risk."]}
 
 # ==========================================
 # 5. Agent 04: Negotiation Strategy Agent

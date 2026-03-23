@@ -3,6 +3,8 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { deleteNote } from '@/app/actions/noteActions'
+import { createTask } from '@/app/actions/taskActions'
+import { toast } from 'sonner'
 import GenealogyGraph from '../genealogy/GenealogyGraph'
 import ClauseAssistant from './ClauseAssistant'
 import ObligationsTab from './ObligationsTab'
@@ -56,6 +58,35 @@ export default function IntelligenceSidebar({
             currency: 'IDR',
             minimumFractionDigits: 0
         }).format(numericValue);
+    };
+
+    const handlePushToKanban = async (note: any) => {
+        setIsSaving(true);
+        try {
+            const autoTitle = note.quote.length > 40 ? note.quote.substring(0, 40) + "..." : note.quote;
+            
+            const res = await createTask({
+                title: `[Review] ${autoTitle}`,
+                description: `**Source Note:**\n\n${note.quote}\n\n${note.comment ? `**Comment:** ${note.comment}` : ''}`,
+                status: 'backlog',
+                matterId: contract?.matter_id,
+                sourceNoteId: note.id
+            });
+
+            if (res.error) throw new Error(res.error);
+            
+            toast.success("Task added to Backlog!", {
+                icon: <span className="material-symbols-outlined text-clause-gold text-[16px]">task_alt</span>,
+                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+            });
+        } catch (error: any) {
+            console.error("Failed to push to Kanban:", error);
+            toast.error("Failed to create task", {
+                description: error.message
+            });
+        } finally {
+            setIsSaving(false);
+        }
     };
 
     return (
@@ -232,6 +263,16 @@ export default function IntelligenceSidebar({
                                             {note.comment && (
                                                 <p className="text-white text-xs mt-2 bg-white/5 p-2 rounded border border-white/5">{note.comment}</p>
                                             )}
+
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); handlePushToKanban(note); }}
+                                                disabled={isSaving}
+                                                className="absolute bottom-2 right-2 p-1.5 text-gray-400 bg-gray-800 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:text-white hover:bg-[#d4af37]/80 flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider z-10 disabled:opacity-50"
+                                                title="Convert to Kanban Task"
+                                            >
+                                                <span className="material-symbols-outlined text-[14px]">format_list_bulleted_add</span>
+                                                <span>Push to Backlog</span>
+                                            </button>
                                         </div>
                                     ))
                                 )}

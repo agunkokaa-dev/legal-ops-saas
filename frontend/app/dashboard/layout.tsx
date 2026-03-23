@@ -69,6 +69,28 @@ export default function DashboardLayout({
             <div className="flex-1 flex flex-col overflow-hidden relative">
                 {children}
 
+                {/* ==================== BOTTOM STATUS RAIL ==================== */}
+                <aside
+                    className="shrink-0 bg-background border-t border-surface-border px-8 py-2 flex items-center justify-between"
+                    data-purpose="system-status"
+                >
+                    <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-2">
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
+                            <span className="text-[10px] uppercase tracking-tighter text-gray-500">
+                                AI Engine: Online
+                            </span>
+                        </div>
+                        <div className="h-4 w-[1px] bg-surface-border"></div>
+                        <span className="text-[10px] uppercase tracking-tighter text-gray-500">
+                            Security: AES-256 Encrypted
+                        </span>
+                    </div>
+                    <div className="text-[10px] text-gray-600 font-display italic">
+                        Confidential Legal Terminal v4.0.1
+                    </div>
+                </aside>
+
                 {/* Block pointer events on iframe/content while dragging to prevent stutter */}
                 {isDragging && <div className="absolute inset-0 z-50 bg-transparent" />}
             </div>
