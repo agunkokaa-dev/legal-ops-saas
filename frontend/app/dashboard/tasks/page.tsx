@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { LuxuryThinkingStepper } from '@/components/ui/LuxuryThinkingStepper';
+import SmartComposer from "@/components/drafting/SmartComposer";
 
 export default function TasksDashboardPage() {
     const [isTaskDetailOpen, setIsTaskDetailOpen] = useState(false);
@@ -58,6 +59,7 @@ export default function TasksDashboardPage() {
     const [aiMessages, setAiMessages] = useState<{ role: 'user' | 'ai', content: string }[]>([]);
     const [isAiTyping, setIsAiTyping] = useState(false);
     const [customTemplates, setCustomTemplates] = useState<any[]>([]);
+    const [draftingTask, setDraftingTask] = useState<{matterId: string, title: string, counterparty?: string} | null>(null);
 
     const fetchCustomTemplates = async () => {
         try {
@@ -1098,6 +1100,15 @@ export default function TasksDashboardPage() {
                                 </span>
                             )}
                         </div>
+                        <button 
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                setDraftingTask({ matterId: selectedTask.matter_id || selectedTask.id, title: selectedTask.title });
+                            }}
+                            className="mt-4 w-full bg-[#d4af37]/10 hover:bg-[#d4af37]/20 border border-[#d4af37]/30 text-[#d4af37] py-2 px-4 rounded-lg text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all"
+                        >
+                            ✨ Open Smart Composer
+                        </button>
                     </div>
 
                     <div className="p-6 space-y-8">
@@ -1613,6 +1624,14 @@ export default function TasksDashboardPage() {
             )
             }
             {/* END: Task-Specific AI Chat Modal */}
+
+            {draftingTask && (
+                <SmartComposer 
+                    matterId={draftingTask.matterId} 
+                    taskTitle={draftingTask.title} 
+                    onClose={() => setDraftingTask(null)} 
+                />
+            )}
 
             <Toaster position="top-right" expand={false} richColors theme="dark" />
         </div >

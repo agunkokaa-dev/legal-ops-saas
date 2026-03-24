@@ -7,8 +7,8 @@ Handles:
 import asyncio
 from fastapi import APIRouter, HTTPException, Depends
 
-from app.config import openai_client, qdrant
-from app.schemas import PlaybookRuleRequest
+from app.config import openai_client, qdrant, admin_supabase
+from app.schemas import PlaybookVectorizeRequest
 from qdrant_client.http.models import PointStruct
 
 router = APIRouter()
@@ -27,26 +27,17 @@ async def async_qdrant_upsert(collection: str, points: list):
     )
 
 
-@router.post("/playbook/vectorize")
-async def vectorize_playbook_rule(request: PlaybookRuleRequest):
+@router.post("/vectorize")
+async def vectorize_playbook_rule(request: PlaybookVectorizeRequest):
     try:
-        # Create chunk_text for embedding
-        chunk_text = (
-            f"Category: {request.category}\\n"
-            f"Standard Position: {request.standard_position}\\n"
-            f"Fallback (Compromise): {request.fallback_position or 'None'}\\n"
-            f"Redline (Walk-away): {request.redline or 'None'}\\n"
-            f"Severity if Violated: {request.risk_severity}"
-        )
-        
         # NON-BLOCKING Vector Generation
-        vector = await async_embed(chunk_text)
+        vector = await async_embed(request.rule_text)
         
         # NON-BLOCKING Upsert
         await async_qdrant_upsert(
             collection="company_rules",
             points=[PointStruct(
-                id=request.rule_id, 
+                id=request.id, 
                 vector=vector,
                 payload={
                     "user_id": request.user_id, 
@@ -55,8 +46,8 @@ async def vectorize_playbook_rule(request: PlaybookRuleRequest):
                     "fallback_position": request.fallback_position,
                     "redline": request.redline,
                     "risk_severity": request.risk_severity,
-                    "rule_text": chunk_text, 
-                    "rule_id": request.rule_id
+                    "rule_text": request.rule_text, 
+                    "rule_id": str(request.id)
                 }
             )]
         )
@@ -64,4 +55,21 @@ async def vectorize_playbook_rule(request: PlaybookRuleRequest):
         return {"status": "success", "message": "Rule successfully vectorized and stored in Qdrant."}
     except Exception as e:
         print(f"Playbook Vectorization Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/categories")
+async def get_playbook_categories():
+    print("🔥 [BACKEND] Endpoint /categories hit!")
+    try:
+        res = admin_supabase.table("company_playbooks").select("category").execute()
+        print(f"🔥 [BACKEND] Supabase response: {res.data}")
+        
+        if not res.data:
+            return {"categories": []}
+            
+        categories = list(set(item["category"] for item in res.data if item.get("category")))
+        return {"categories": sorted(categories)}
+    except Exception as e:
+        print(f"🚨 [BACKEND] CRITICAL ERROR: {str(e)}")
+        # Must return an HTTP exception so the frontend doesn't hang
         raise HTTPException(status_code=500, detail=str(e))

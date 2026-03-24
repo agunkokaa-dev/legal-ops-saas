@@ -1,5 +1,5 @@
 import Link from 'next/link';
-import { ListTodo } from 'lucide-react';
+import { ListTodo, BookOpenText } from 'lucide-react';
 
 export default function SettingsPage() {
     return (
@@ -24,6 +24,27 @@ export default function SettingsPage() {
                     <p className="text-sm text-neutral-500 leading-relaxed">
                         Define custom contract rules and compliance guidelines. Our AI will automatically enforce these during document review.
                     </p>
+                </Link>
+
+                {/* 1A. Clause Library */}
+                <Link href="/dashboard/settings/clause-library" className="group">
+                    <div className="h-full bg-[#141414] border border-white/5 hover:border-[#d4af37]/50 rounded-xl p-6 transition-all duration-300 shadow-lg hover:shadow-[#d4af37]/10 flex flex-col gap-4 relative overflow-hidden">
+                        {/* Subtle gold glow effect on hover */}
+                        <div className="absolute inset-0 bg-gradient-to-br from-[#d4af37]/0 via-transparent to-[#d4af37]/5 opacity-0 group-hover:opacity-100 transition-opacity duration-500"></div>
+                        
+                        <div className="w-10 h-10 rounded-lg bg-[#0f0f0f] border border-white/10 group-hover:border-[#d4af37]/30 flex items-center justify-center transition-colors">
+                            <BookOpenText className="w-5 h-5 text-zinc-400 group-hover:text-[#d4af37] transition-colors" />
+                        </div>
+                        
+                        <div>
+                            <h3 className="text-white font-semibold text-lg mb-2 group-hover:text-[#d4af37] transition-colors">
+                                Clause Library
+                            </h3>
+                            <p className="text-sm text-zinc-500 leading-relaxed">
+                                Manage approved standard and fallback clauses. Our AI will suggest these semantically during contract reviews and drafting.
+                            </p>
+                        </div>
+                    </div>
                 </Link>
 
                 {/* 2. Account Profile (Placeholder) */}

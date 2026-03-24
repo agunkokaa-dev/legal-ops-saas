@@ -45,6 +45,12 @@ def init_qdrant_collections():
             collection_name="company_rules",
             vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
         )
+    if "clause_library_vectors" not in existing:
+        print("Creating 'clause_library_vectors' collection...")
+        qdrant.create_collection(
+            collection_name="clause_library_vectors",
+            vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+        )
 
 # --- OpenAI ---
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))

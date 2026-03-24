@@ -1,0 +1,398 @@
+"""
+Pariana Backend — Smart Drafting Router (Isolated)
+
+Handles:
+  - POST /api/v1/drafting/generate  → AI-powered contract draft generation
+  - POST /api/v1/drafting/audit     → Send a raw-text draft to the LangGraph audit pipeline
+
+This router is completely isolated from the existing contracts/upload flow.
+"""
+import asyncio
+import json
+import uuid
+
+from fastapi import APIRouter, HTTPException, Depends
+from supabase import Client
+
+from app.config import openai_client, admin_supabase
+from app.dependencies import verify_clerk_token
+from app.schemas import DraftGenerateRequest, DraftAuditRequest, DraftChatRequest, DraftSaveRequest
+from app.routers.contracts import process_contract_background
+
+router = APIRouter()
+
+
+# =====================================================================
+# POST /generate — AI Draft Generation
+# =====================================================================
+
+@router.post("/generate")
+async def generate_draft(
+    payload: DraftGenerateRequest,
+    claims: dict = Depends(verify_clerk_token),
+):
+    """
+    Uses OpenAI gpt-4o-mini to generate a professional legal contract draft
+    based on the template name, counterparty, and user instructions.
+    """
+    try:
+        tenant_id = claims["verified_tenant_id"]
+
+        system_prompt = (
+            "You are an expert Corporate Lawyer. Draft a professional legal contract "
+            "based on the provided inputs. CRITICAL RULE: You MUST write the entire contract in Bahasa Indonesia. "
+            "Output strictly in CLEAN PLAIN TEXT. "
+            "DO NOT use any Markdown symbols (no asterisks **, no hashes #). "
+            "Use ALL CAPS for section headings, standard legal numbering (1., 2., 3.), "
+            "and clear double line breaks between paragraphs. "
+            "The text must look like a perfectly formatted formal document inside a plain text editor."
+        )
+
+        user_prompt = (
+            f"Template: {payload.template_name}\n"
+            f"Counterparty: {payload.party_name}\n"
+        )
+        if payload.instructions:
+            user_prompt += f"Special Instructions: {payload.instructions}\n"
+
+        response = await asyncio.to_thread(
+            openai_client.chat.completions.create,
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+
+        draft_text = response.choices[0].message.content
+
+        return {"status": "success", "draft_text": draft_text}
+
+    except Exception as e:
+        print(f"❌ Draft Generate Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================================
+# POST /audit — Send Draft Text to LangGraph Audit Pipeline
+# =====================================================================
+
+@router.post("/audit")
+async def audit_draft(
+    payload: DraftAuditRequest,
+    claims: dict = Depends(verify_clerk_token),
+):
+    """
+    Inserts the raw-text draft into the `contracts` table and triggers the
+    LangGraph multi-agent audit pipeline as a background task.
+    """
+    try:
+        tenant_id = claims.get("org_id") or claims.get("sub")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid token claims")
+            
+        contract_id = str(uuid.uuid4())
+
+        # --- Step 1: Insert into contracts table ---
+        try:
+            insert_res = admin_supabase.table("contracts").insert({
+                "id": contract_id,
+                "tenant_id": tenant_id,
+                "matter_id": payload.matter_id,
+                "title": payload.title,
+                "draft_revisions": {"latest_text": payload.draft_text},
+                "status": "Review",
+            }).execute()
+
+            if not insert_res.data:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Failed to insert draft contract into database.",
+                )
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"🚨 SUPABASE INSERT ERROR (contracts table - drafting audit): {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        # --- Step 2: Trigger LangGraph background pipeline ---
+        asyncio.create_task(
+            process_contract_background(
+                contract_id=contract_id,
+                tenant_id=tenant_id,
+                matter_id=payload.matter_id,
+                filename=payload.title,
+                text_content=payload.draft_text,
+            )
+        )
+
+        return {
+            "status": "success",
+            "message": "Draft sent to LangGraph Audit",
+            "contract_id": contract_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Draft Audit Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+from langchain_core.tools import tool
+from pydantic import BaseModel, Field
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
+
+
+# =====================================================================
+# LangChain Tool Factory: Semantic Clause Search (Strict Tenant Isolation)
+# =====================================================================
+
+class ClauseSearchInput(BaseModel):
+    query: str = Field(description="The risky vendor clause text to search for.")
+
+def get_clause_search_tool(tenant_id: str):
+    @tool("search_standard_clauses", args_schema=ClauseSearchInput)
+    def search_standard_clauses(query: str) -> str:
+        """Search the company's approved standard clause library in Qdrant. Use this when you find a risky vendor clause and need to suggest a replacement."""
+        try:
+            from app.config import qdrant, openai_client
+            from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+            
+            # Embed query
+            response = openai_client.embeddings.create(input=query, model="text-embedding-3-small")
+            
+            # Search Qdrant with STRICT tenant isolation
+            hits = qdrant.search(
+                collection_name="clause_library_vectors",
+                query_vector=response.data[0].embedding,
+                query_filter=Filter(must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]),
+                limit=1,
+                score_threshold=0.5
+            )
+            
+            if not hits:
+                return "System Message: No matching standard clauses found in the company library."
+                
+            match = hits[0]
+            # Provide rich context back to the LLM so it can format the suggestion
+            clause_id = match.payload.get('clause_id', '')
+            
+            return f"""
+            FOUND MATCH!
+            Standard Text: {match.payload.get('content', '')}
+            Type: {match.payload.get('clause_type', 'Standard')}
+            Similarity Score: {round(match.score, 2)}
+            
+            Instruct the user to replace their risky clause with this Standard Text. Provide the replacement button using the exact format `[REPLACE_ACTION: {clause_id}]` in your reply. Set the `suggestion` key to the exact Standard Text.
+            """
+        except Exception as e:
+            print(f"Tool Error: {e}")
+            return "System Message: Failed to search the clause library due to an internal error."
+            
+    return search_standard_clauses
+
+
+# =====================================================================
+# POST /chat — Clause Assistant (Live Draft Q&A with Tooling)
+# =====================================================================
+
+@router.post("/chat")
+async def draft_chat(
+    payload: DraftChatRequest,
+    claims: dict = Depends(verify_clerk_token),
+):
+    """
+    Clause Assistant: Agentic loop with tooling to answer draft questions
+    and actively search the custom Clause Library.
+    """
+    try:
+        tenant_id = claims.get("org_id") or claims.get("sub")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid token claims")
+
+        # 1. Get the tenant-aware tool
+        clause_tool = get_clause_search_tool(tenant_id)
+        
+        # 2. Initialize LLM
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        llm_with_tools = llm.bind_tools([clause_tool])
+
+        system_prompt = (
+            "You are an expert Legal Clause Assistant. "
+            "Review the user's current draft and answer their question. "
+            "If they ask to review a clause against playbooks, ALWAYS use the `search_standard_clauses` tool. "
+            "YOU MUST RESPOND ONLY IN VALID JSON FORMAT at the very end. "
+            "The JSON must contain exactly two keys: "
+            "1. `reply`: Your conversational explanation and any [REPLACE_ACTION: id] tags. "
+            "2. `suggestion`: The exact new legal paragraph if suggesting a replacement, otherwise null."
+        )
+
+        user_prompt = (
+            f"CURRENT DRAFT:\n{payload.draft_text}\n\n"
+            f"LAWYER'S REQUEST:\n{payload.question}"
+        )
+
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]
+        
+        # 3. First Pass (Tool Calling)
+        response = await llm_with_tools.ainvoke(messages)
+        
+        # 4. Agentic Loop: Execute Tool if Requested
+        if response.tool_calls:
+            messages.append(response)
+            for tool_call in response.tool_calls:
+                if tool_call["name"] == "search_standard_clauses":
+                    tool_result = clause_tool.invoke(tool_call["args"])
+                    messages.append(ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"]))
+            
+            # Second Pass: Force JSON Object Output
+            llm_json = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind(response_format={"type": "json_object"})
+            final_response = await llm_json.ainvoke(messages)
+            content = json.loads(final_response.content)
+        else:
+            # First pass didn't use tools, but we must guarantee JSON
+            try:
+                content = json.loads(response.content)
+            except json.JSONDecodeError:
+                llm_json = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind(response_format={"type": "json_object"})
+                final_response = await llm_json.ainvoke(messages)
+                content = json.loads(final_response.content)
+
+        return {
+            "reply": content.get("reply", ""),
+            "suggestion": content.get("suggestion", None),
+        }
+
+    except Exception as e:
+        print(f"❌ Draft Chat Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================================
+# POST /save — Save Draft to Contracts Table
+# =====================================================================
+
+@router.post("/save")
+async def save_draft(
+    payload: DraftSaveRequest,
+    claims: dict = Depends(verify_clerk_token),
+):
+    """
+    Saves or updates a draft in the contracts table.
+    """
+    try:
+        tenant_id = claims.get("org_id") or claims.get("sub")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid token claims")
+        
+        if payload.contract_id:
+            # Update existing
+            contract_id = payload.contract_id
+
+            # Smart passthrough: accept both legacy string and new JSONB object
+            draft_revisions = payload.draft_text if isinstance(payload.draft_text, dict) else {"latest_text": payload.draft_text}
+
+            update_res = admin_supabase.table("contracts").update({
+                "draft_revisions": draft_revisions,
+                "status": "Draft",
+            }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+            
+            if not update_res.data:
+                raise HTTPException(status_code=500, detail="Failed to update draft.")
+        else:
+            # Insert new
+            contract_id = str(uuid.uuid4())
+
+            # Smart passthrough: accept both legacy string and new JSONB object
+            draft_revisions = payload.draft_text if isinstance(payload.draft_text, dict) else {"latest_text": payload.draft_text}
+
+            insert_res = admin_supabase.table("contracts").insert({
+                "id": contract_id,
+                "tenant_id": tenant_id,
+                "matter_id": payload.matter_id,
+                "title": payload.title,
+                "draft_revisions": draft_revisions,
+                "status": "Draft",
+            }).execute()
+            
+            if not insert_res.data:
+                raise HTTPException(status_code=500, detail="Failed to insert draft.")
+
+        return {"status": "success", "contract_id": contract_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Draft Save Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================================
+# GET /load/{matter_id} — Load Latest Draft
+# =====================================================================
+
+@router.get("/load/{matter_id}")
+async def load_draft(
+    matter_id: str,
+    claims: dict = Depends(verify_clerk_token),
+):
+    """
+    Loads the latest draft for a specific matter.
+    """
+    try:
+        tenant_id = claims.get("org_id") or claims.get("sub")
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid token claims")
+        
+        res = admin_supabase.table("contracts") \
+            .select("id, draft_revisions, status") \
+            .eq("matter_id", matter_id) \
+            .eq("tenant_id", tenant_id) \
+            .order("created_at", desc=True) \
+            .limit(1) \
+            .execute()
+            
+        if res.data and len(res.data) > 0:
+            draft = res.data[0]
+            revisions = draft.get("draft_revisions")
+
+            # Adaptive JSONB parsing: handle dict, list, or raw string
+            draft_text = ""
+            if revisions:
+                if isinstance(revisions, dict):
+                    draft_text = revisions.get("latest_text", "")
+                elif isinstance(revisions, list):
+                    # LangGraph Compliance Audit stores an array of findings
+                    formatted = []
+                    for idx, item in enumerate(revisions):
+                        if isinstance(item, dict):
+                            original = item.get("original_issue", "N/A")
+                            rewrite = item.get("neutral_rewrite", "N/A")
+                            formatted.append(
+                                f"📌 PASAL REVISI {idx + 1}\n\n"
+                                f"[Isu Awal]:\n{original}\n\n"
+                                f"[Saran Redaksi AI]:\n{rewrite}"
+                            )
+                        elif isinstance(item, str):
+                            formatted.append(item)
+                    draft_text = ("\n\n" + "─" * 40 + "\n\n").join(formatted)
+                elif isinstance(revisions, str):
+                    draft_text = revisions
+
+            return {
+                "found": True,
+                "contract_id": draft["id"],
+                "draft_text": draft_text,
+                "draft_revisions": revisions,  # Return raw JSONB for frontend history parsing
+                "status": draft["status"]
+            }
+        
+        return {"found": False}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Draft Load Error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load draft")

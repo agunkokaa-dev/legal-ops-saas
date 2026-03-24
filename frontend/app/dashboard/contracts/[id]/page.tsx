@@ -7,6 +7,9 @@ import ContractHeader from '@/components/contract-detail/ContractHeader';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 export default async function ContractDetailPage({ params }: { params: Promise<{ id: string }> }) {
     // Await params for Next 15+ compatibility
     const resolvedParams = await params;
@@ -22,6 +25,8 @@ export default async function ContractDetailPage({ params }: { params: Promise<{
             </div>
         );
     }
+
+    console.log("🔥 [DEBUG] RAW CONTRACT DATA FROM SUPABASE:", JSON.stringify(contract, null, 2));
 
     // Fetch associated matter to get client name
     const { data: matter } = await getMatterById(contract.matter_id);

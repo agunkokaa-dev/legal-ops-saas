@@ -110,13 +110,14 @@ export default function CompanyPlaybookPage() {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    rule_id: newRule.id,
-                    user_id: user.id,
-                    category: newRule.category,
-                    standard_position: newRule.standard_position,
-                    fallback_position: newRule.fallback_position,
-                    redline: newRule.redline,
-                    risk_severity: newRule.risk_severity
+                    id: newRule.id,
+                    user_id: newRule.user_id,
+                    rule_text: newRule.rule_text,
+                    category: newRule.category || null,
+                    standard_position: newRule.standard_position || null,
+                    fallback_position: newRule.fallback_position || null,
+                    redline: newRule.redline || null,
+                    risk_severity: newRule.risk_severity || null
                 })
             })
 

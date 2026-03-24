@@ -30,7 +30,7 @@ export async function getNotesByContract(contractId: string) {
 }
 
 // 2. Create Note
-export async function createNote(data: { contractId: string, quote: string, comment: string, positionData: any }) {
+export async function createNote(data: { contractId: string, quote: string, comment: string, positionData: any, draftVersion?: string }) {
     const { userId, orgId } = await auth()
     if (!userId) return { error: "Unauthorized" }
 
@@ -44,7 +44,10 @@ export async function createNote(data: { contractId: string, quote: string, comm
                 contract_id: data.contractId,
                 quote: data.quote,
                 comment: data.comment,
-                position_data: data.positionData || { boundingRect: null, rects: [], pageNumber: 1 }
+                position_data: { 
+                    ...(data.positionData || { boundingRect: null, rects: [], pageNumber: 1 }),
+                    draft_version: data.draftVersion 
+                }
             })
             .select('*')
             .single()

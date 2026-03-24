@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
+import { useAuth } from '@clerk/nextjs'
 import { motion, AnimatePresence } from 'framer-motion'
 import { deleteNote } from '@/app/actions/noteActions'
 import { createTask } from '@/app/actions/taskActions'
@@ -18,7 +19,10 @@ export default function IntelligenceSidebar({
     graphDocs = [],
     graphRels = [],
     onNoteClick,
-    onNoteDeleted
+    onNoteDeleted,
+    isLocked = false,
+    onUnlock,
+    currentDraftVersion = null
 }: {
     contract?: any,
     obligations?: any[],
@@ -27,10 +31,54 @@ export default function IntelligenceSidebar({
     graphDocs?: any[],
     graphRels?: any[],
     onNoteClick?: (noteId: string) => void,
-    onNoteDeleted?: () => void
+    onNoteDeleted?: () => void,
+    isLocked?: boolean,
+    onUnlock?: () => void,
+    currentDraftVersion?: string | null
 }) {
     const [activeTab, setActiveTab] = useState<'Analysis' | 'Obligations' | 'Notes' | 'Genealogy' | 'Assistant'>('Analysis')
     const [isSaving, setIsSaving] = useState(false)
+    const { getToken } = useAuth();
+    
+    // Semantic Match States
+    const [isMatchingMap, setIsMatchingMap] = useState<Record<number, boolean>>({});
+    const [matchedClausesMap, setMatchedClausesMap] = useState<Record<number, any[]>>({});
+
+    const handleFindMatch = async (riskyText: string, index: number) => {
+        setIsMatchingMap(prev => ({ ...prev, [index]: true }));
+        try {
+            const token = await getToken({ template: 'supabase' });
+            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            
+            // Harden the payload to prevent 500 / 422 errors
+            const query_text = (riskyText && typeof riskyText === 'string') ? riskyText.trim() : "Standard Review Required";
+            
+            const res = await fetch(`${apiUrl}/api/v1/clauses/match`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+                body: JSON.stringify({ query_text, limit: 1 })
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setMatchedClausesMap(prev => ({ ...prev, [index]: data.matches || [] }));
+            } else {
+                console.error("Failed to match clause. Status:", res.status);
+            }
+        } catch (error) {
+            console.error("Match error:", error);
+        } finally {
+            setIsMatchingMap(prev => ({ ...prev, [index]: false }));
+        }
+    };
+
+    const parsedFindings = useMemo(() => {
+        if (!contract?.draft_revisions) return null;
+        let rd = contract.draft_revisions;
+        if (typeof rd === 'string') {
+            try { rd = JSON.parse(rd); } catch(e) { return null; }
+        }
+        return Array.isArray(rd) ? rd : null;
+    }, [contract?.draft_revisions]);
 
     // Helper for formatting IDR
     const formatIDR = (value: any) => {
@@ -91,6 +139,25 @@ export default function IntelligenceSidebar({
 
     return (
         <div className="flex flex-col h-full w-[400px] bg-surface border-l border-white/10 z-10 flex-shrink-0">
+            {/* LOCKED FOR REVIEW BANNER */}
+            {isLocked && (
+                <div className="flex-none auto-h p-4 border-b border-white/10 bg-[#d4af37]/10 flex flex-col gap-2">
+                    <div className="flex items-center gap-2 text-[#d4af37]">
+                        <span className="material-symbols-outlined text-[16px]">lock</span>
+                        <span className="text-xs font-bold uppercase tracking-wider">Locked for Review</span>
+                    </div>
+                    <p className="text-[10px] text-[#d4af37]/70 leading-relaxed mb-1">
+                        PDF Highlighting is active. Unlock to edit the HTML draft, which will hide previous coordinate highlights.
+                    </p>
+                    <button 
+                        onClick={onUnlock}
+                        className="w-full py-1.5 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 border border-[#d4af37]/50 rounded text-xs font-bold text-[#d4af37] transition-colors"
+                    >
+                        Unlock to Edit
+                    </button>
+                </div>
+            )}
+
             {/* HEADER: flex-none ensures it NEVER gets crushed by the body */}
             <div className="flex-none flex overflow-x-auto scrollbar-hide border-b border-white/10 w-full px-2">
                 {['Analysis', 'Obligations', 'Notes', 'Genealogy', 'Assistant'].map((tab) => (
@@ -202,6 +269,75 @@ export default function IntelligenceSidebar({
                                         </p>
                                     </div>
                                 </div>
+
+                                {/* Risk Findings & Semantic Matching */}
+                                {parsedFindings && parsedFindings.length > 0 && (
+                                    <div className="mt-2">
+                                        <h3 className="text-white font-serif font-semibold text-sm mb-3 flex items-center gap-2 tracking-wide">
+                                            Identified Risks
+                                        </h3>
+                                        <div className="flex flex-col gap-5">
+                                            {parsedFindings.map((finding: any, index: number) => {
+                                                const matchedClauses = matchedClausesMap[index];
+                                                const isMatching = isMatchingMap[index];
+
+                                                return (
+                                                    <div key={index} className="bg-background rounded-lg p-4 border border-surface-border shadow-sm">
+                                                        <span className="text-xs font-bold text-red-400 mb-2 flex items-center gap-2 uppercase tracking-wider">
+                                                            <span className="material-symbols-outlined text-[14px]">warning</span>
+                                                            Finding {index + 1}
+                                                        </span>
+                                                        <div className="text-[11px] text-zinc-300 italic border-l-2 border-red-400/50 pl-3 mb-3 leading-relaxed">
+                                                            "{finding.original_issue}"
+                                                        </div>
+                                                        <div className="text-[11px] text-white leading-relaxed">
+                                                            <span className="font-bold text-[#d4af37]">LangGraph Analysis:</span> {finding.neutral_rewrite}
+                                                        </div>
+                                                        
+                                                        <button 
+                                                            onClick={() => handleFindMatch(finding.original_issue, index)}
+                                                            disabled={isMatching}
+                                                            className="mt-4 w-full bg-[#141414] border border-[#d4af37]/30 hover:border-[#d4af37] text-[#d4af37] px-3 py-2 rounded flex items-center justify-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all disabled:opacity-50"
+                                                        >
+                                                            {isMatching ? (
+                                                                <span className="flex items-center gap-2">
+                                                                    <span className="w-2 h-2 bg-[#d4af37] rounded-full animate-ping"></span>
+                                                                    Analyzing semantics...
+                                                                </span>
+                                                            ) : (
+                                                                "✨ Find Standard Clause"
+                                                            )}
+                                                        </button>
+
+                                                        {matchedClauses && matchedClauses.length > 0 && (
+                                                            <div className="mt-4 p-4 rounded-lg bg-white/5 border border-white/10 backdrop-blur-md relative overflow-hidden animate-in slide-in-from-top-2 duration-300">
+                                                                <div className="absolute top-0 left-0 w-1 h-full bg-gradient-to-b from-[#d4af37] to-transparent"></div>
+                                                                
+                                                                <div className="flex justify-between items-center mb-3">
+                                                                    <span className="text-xs font-bold text-white uppercase tracking-wider">Company Standard</span>
+                                                                    <span className="text-[10px] bg-[#d4af37]/20 text-[#d4af37] px-2 py-1 rounded border border-[#d4af37]/30">
+                                                                        {(matchedClauses[0].similarity_score * 100).toFixed(0)}% Match
+                                                                    </span>
+                                                                </div>
+                                                                
+                                                                <div className="text-[11px] text-zinc-300 font-serif leading-relaxed mb-4">
+                                                                    {matchedClauses[0].content}
+                                                                </div>
+                                                                
+                                                                <button 
+                                                                    onClick={() => console.log("Trigger replace logic for:", matchedClauses[0].id)}
+                                                                    className="w-full bg-[#d4af37] text-black hover:bg-[#b5952f] px-4 py-2 rounded text-xs font-bold uppercase tracking-wider transition-colors shadow-[0_0_15px_rgba(212,175,55,0.3)]"
+                                                                >
+                                                                    Replace in Draft
+                                                                </button>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </motion.div>
                     )}
@@ -234,12 +370,23 @@ export default function IntelligenceSidebar({
                                         Highlight text on the PDF to create a note.
                                     </div>
                                 ) : (
-                                    notes.map((note: any, idx: number) => (
+                                    notes.map((note: any, idx: number) => {
+                                        const pos = typeof note.position_data === 'string' ? JSON.parse(note.position_data) : note.position_data;
+                                        const isOutdated = isLocked && pos?.draft_version !== currentDraftVersion;
+                                        
+                                        return (
                                         <div
                                             key={note.id || idx}
-                                            className="bg-background rounded-lg p-3 border border-surface-border hover:border-[#d4af37]/30 transition-colors relative cursor-pointer group"
-                                            onClick={() => onNoteClick?.(note.id)}
+                                            className={`bg-background rounded-lg p-3 border ${isOutdated ? 'border-amber-500/50 opacity-80' : 'border-surface-border hover:border-[#d4af37]/30'} transition-colors relative cursor-pointer group`}
+                                            onClick={() => !isOutdated && onNoteClick?.(note.id)}
                                         >
+                                            {isOutdated && (
+                                                <div className="absolute -top-2 -right-2 bg-amber-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded shadow flex items-center gap-1 z-20">
+                                                    <span className="material-symbols-outlined text-[10px]">warning</span>
+                                                    Previous Version
+                                                </div>
+                                            )}
+                                            
                                             <button
                                                 onClick={async (e) => {
                                                     e.stopPropagation();
@@ -274,7 +421,8 @@ export default function IntelligenceSidebar({
                                                 <span>Push to Backlog</span>
                                             </button>
                                         </div>
-                                    ))
+                                        )
+                                    })
                                 )}
                             </div>
                         </motion.div>

@@ -3,7 +3,7 @@ Pariana Backend - Pydantic Schemas
 All request/response models used across the application.
 """
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, List, Optional
 
 
 class MatterCreate(BaseModel):
@@ -18,14 +18,15 @@ class ClauseAssistantRequest(BaseModel):
     userId: str = None
 
 
-class PlaybookRuleRequest(BaseModel):
-    rule_id: str
+class PlaybookVectorizeRequest(BaseModel):
+    id: int
     user_id: str
-    category: str
-    standard_position: str
+    rule_text: str
+    category: Optional[str] = None
+    standard_position: Optional[str] = None
     fallback_position: Optional[str] = None
     redline: Optional[str] = None
-    risk_severity: str
+    risk_severity: Optional[str] = None
 
 
 class ExtractObligationsRequest(BaseModel):
@@ -64,3 +65,72 @@ class TaskAssistantRequest(BaseModel):
 
 class ArchiveContractRequest(BaseModel):
     archive_reason: str
+
+
+# --- Intake Portal Models ---
+class IntakeRequestCreate(BaseModel):
+    request_type: str  # e.g., "NDA", "PKS", "Review"
+    counterparty: str
+    urgency: str  # e.g., "Standard", "High"
+    business_context: str
+
+
+# --- Smart Drafting Models ---
+class DraftGenerateRequest(BaseModel):
+    matter_id: str
+    template_name: str
+    party_name: str
+    instructions: Optional[str] = None
+
+
+class DraftAuditRequest(BaseModel):
+    matter_id: str
+    title: str
+    draft_text: str
+
+
+class DraftChatRequest(BaseModel):
+    draft_text: str
+    question: str
+
+
+class DraftSaveRequest(BaseModel):
+    matter_id: str
+    title: str
+    draft_text: Any  # Accepts string OR full JSONB {latest_text, history[]}
+    contract_id: Optional[str] = None
+
+
+# --- Clause Library Models ---
+class ClauseBase(BaseModel):
+    category: str
+    clause_type: str  # 'Standard' or 'Fallback'
+    title: str
+    content: str
+    guidance_notes: Optional[str] = None
+
+class ClauseCreate(ClauseBase):
+    pass
+
+class ClauseResponse(ClauseBase):
+    id: str
+    tenant_id: str
+    created_at: str
+    updated_at: str
+
+
+class ClauseMatchRequest(BaseModel):
+    query_text: str
+    limit: int = 3
+    category: Optional[str] = None
+
+
+class ClauseMatchResult(BaseModel):
+    id: str
+    category: str
+    clause_type: str
+    title: str
+    content: str
+    guidance_notes: Optional[str] = None
+    similarity_score: float
+

@@ -21,9 +21,10 @@ interface PDFHighlighterComponentProps {
     contractId: string
     scrollToId?: string | null
     notes?: any[]
+    draftVersion?: string | null
 }
 
-export default function PDFHighlighterComponent({ fileUrl, contractId, scrollToId, notes }: PDFHighlighterComponentProps) {
+export default function PDFHighlighterComponent({ fileUrl, contractId, scrollToId, notes, draftVersion }: PDFHighlighterComponentProps) {
     const router = useRouter()
     const scrollToFnRef = useRef<((highlight: any) => void) | null>(null)
 
@@ -41,7 +42,7 @@ export default function PDFHighlighterComponent({ fileUrl, contractId, scrollToI
         if (!fileUrl) return;
 
         let url = fileUrl;
-        if (!url.startsWith('http') && !url.startsWith('/')) {
+        if (!url.startsWith('http') && !url.startsWith('/') && !url.startsWith('blob:')) {
             const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
             url = `${supabaseUrl}/storage/v1/object/public/matter-files/${fileUrl}`
         }
@@ -107,7 +108,8 @@ export default function PDFHighlighterComponent({ fileUrl, contractId, scrollToI
                     contractId: contractId,
                     quote: highlight.content.text || '',
                     comment: highlight.comment.text || '',
-                    positionData: highlight.position
+                    positionData: highlight.position,
+                    draftVersion: draftVersion || undefined
                 })
 
                 if (data && !error) {
