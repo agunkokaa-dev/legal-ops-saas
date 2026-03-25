@@ -44,7 +44,7 @@ async def submit_intake_request(
             matter_res = supabase.table("matters").insert({
                 "id": matter_id,
                 "tenant_id": tenant_id,
-                "title": matter_title,
+                "name": matter_title,
                 "description": payload.business_context,
                 "status": "Active",
             }).execute()

@@ -9,31 +9,36 @@ from supabase import create_client, Client
 from app.config import CLERK_PEM_KEY, SUPABASE_URL, SUPABASE_ANON_KEY
 
 
-async def verify_clerk_token(authorization: str = Header(...)) -> dict:
+async def verify_clerk_token(authorization: str = Header(None)) -> dict:
     """
     Validates the Clerk JWT from the Authorization header.
     Returns the decoded payload with `verified_tenant_id` injected.
     """
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid token format")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+        
+    token = authorization.split(" ")[1]
+    
+    if not CLERK_PEM_KEY:
+        # FAIL HARD - Do NOT decode with verify_signature=False
+        print("🚨 CRITICAL: CLERK_PEM_KEY is missing from environment!")
+        raise HTTPException(status_code=500, detail="Server authentication configuration error.")
+
     try:
-        token = authorization.replace("Bearer ", "")
-        if CLERK_PEM_KEY:
-            payload = jwt.decode(token, CLERK_PEM_KEY, algorithms=["RS256"])
-        else:
-            # Fallback UNSECURE decode if env var missing (DO NOT USE IN PROD)
-            payload = jwt.decode(token, options={"verify_signature": False})
-
-        tenant_id = payload.get("org_id") or payload.get("sub")
+        # Always verify signature strictly
+        claims = jwt.decode(token, CLERK_PEM_KEY, algorithms=["RS256"])
+        
+        # Consistent tenant extraction
+        tenant_id = claims.get("org_id") or claims.get("sub")
         if not tenant_id:
-            raise HTTPException(status_code=403, detail="No tenant context found in token.")
-
-        payload["verified_tenant_id"] = tenant_id
-        return payload
+            raise HTTPException(status_code=401, detail="No valid tenant identity found in token")
+            
+        claims["verified_tenant_id"] = tenant_id
+        return claims
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token has expired")
-    except jwt.InvalidTokenError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
 
 async def get_tenant_supabase(authorization: str = Header(...)) -> Client:

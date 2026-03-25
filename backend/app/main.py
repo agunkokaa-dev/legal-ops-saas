@@ -17,7 +17,7 @@ app = FastAPI(title="CLAUSE Intelligent Engine", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://173.212.240.143:3000", "http://173.212.240.143"],
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

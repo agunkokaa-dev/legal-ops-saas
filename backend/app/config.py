@@ -12,20 +12,22 @@ from openai import OpenAI
 load_dotenv()
 
 # --- CORS ---
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://173.212.240.143:3000").split(",")
+raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://173.212.240.143:3000,http://173.212.240.143")
+ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 # --- Auth ---
 CLERK_PEM_KEY = os.getenv("CLERK_PEM_PUBLIC_KEY", "").replace("\\n", "\n")
 
 # --- Supabase ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY")
 
-if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-    print("🚨 WARNING: SUPABASE_URL or SUPABASE_ANON_KEY is missing from environment variables! API calls to Supabase will fail.")
+# Strict startup validation (Fail Hard)
+if not SUPABASE_URL or not SUPABASE_ANON_KEY or not SUPABASE_SERVICE_ROLE_KEY:
+    raise ValueError("CRITICAL SECURITY ERROR: SUPABASE_URL, SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY is missing. Halting startup to prevent RLS bypass.")
 
-_service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or SUPABASE_ANON_KEY
-admin_supabase: Client = create_client(SUPABASE_URL or "https://placeholder.supabase.co", _service_key or "placeholder")
+admin_supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 # --- Qdrant ---
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")

@@ -18,9 +18,7 @@ router = APIRouter()
 @router.get("/clauses", response_model=List[ClauseResponse])
 async def get_clauses(claims: dict = Depends(verify_clerk_token)):
     """Fetch all clauses for the authenticated tenant."""
-    tenant_id = claims.get("org_id") or claims.get("sub")
-    if not tenant_id:
-        raise HTTPException(status_code=403, detail="Unable to resolve tenant identity.")
+    tenant_id = claims["verified_tenant_id"]
 
     try:
         result = admin_supabase.table("clause_library") \
@@ -39,9 +37,7 @@ async def get_clauses(claims: dict = Depends(verify_clerk_token)):
 @router.post("/clauses", response_model=ClauseResponse)
 async def create_clause(clause: ClauseCreate, claims: dict = Depends(verify_clerk_token)):
     """Create a new clause, save to Supabase, and vectorize into Qdrant."""
-    tenant_id = claims.get("org_id") or claims.get("sub")
-    if not tenant_id:
-        raise HTTPException(status_code=403, detail="Unable to resolve tenant identity.")
+    tenant_id = claims["verified_tenant_id"]
 
     # 1. Insert into Supabase
     try:
@@ -97,6 +93,9 @@ async def create_clause(clause: ClauseCreate, claims: dict = Depends(verify_cler
                         "clause_id": new_clause_id,
                         "category": clause.category,
                         "clause_type": clause.clause_type,
+                        "title": clause.title,
+                        "content": clause.content,
+                        "guidance_notes": clause.guidance_notes
                     }
                 )
             ]
@@ -112,9 +111,7 @@ async def create_clause(clause: ClauseCreate, claims: dict = Depends(verify_cler
 @router.post("/clauses/match")
 async def match_clause(request: ClauseMatchRequest, claims: dict = Depends(verify_clerk_token)):
     """Semantic search: find the best-matching approved clauses for a given vendor text block."""
-    tenant_id = claims.get("org_id") or claims.get("sub")
-    if not tenant_id:
-        raise HTTPException(status_code=401, detail="Unable to resolve tenant identity.")
+    tenant_id = claims["verified_tenant_id"]
 
     try:
         # 1. Embed the incoming risky vendor clause

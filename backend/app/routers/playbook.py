@@ -8,6 +8,7 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Depends
 
 from app.config import openai_client, qdrant, admin_supabase
+from app.dependencies import verify_clerk_token
 from app.schemas import PlaybookVectorizeRequest
 from qdrant_client.http.models import PointStruct
 
@@ -28,8 +29,13 @@ async def async_qdrant_upsert(collection: str, points: list):
 
 
 @router.post("/vectorize")
-async def vectorize_playbook_rule(request: PlaybookVectorizeRequest):
+async def vectorize_playbook_rule(
+    request: PlaybookVectorizeRequest,
+    claims: dict = Depends(verify_clerk_token)
+):
     try:
+        tenant_id = claims["verified_tenant_id"]
+        
         # NON-BLOCKING Vector Generation
         vector = await async_embed(request.rule_text)
         
@@ -40,7 +46,7 @@ async def vectorize_playbook_rule(request: PlaybookVectorizeRequest):
                 id=request.id, 
                 vector=vector,
                 payload={
-                    "user_id": request.user_id, 
+                    "user_id": tenant_id, 
                     "category": request.category,
                     "standard_position": request.standard_position,
                     "fallback_position": request.fallback_position,
@@ -58,10 +64,11 @@ async def vectorize_playbook_rule(request: PlaybookVectorizeRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/categories")
-async def get_playbook_categories():
+async def get_playbook_categories(claims: dict = Depends(verify_clerk_token)):
     print("🔥 [BACKEND] Endpoint /categories hit!")
     try:
-        res = admin_supabase.table("company_playbooks").select("category").execute()
+        tenant_id = claims["verified_tenant_id"]
+        res = admin_supabase.table("company_playbooks").select("category").eq("tenant_id", tenant_id).execute()
         print(f"🔥 [BACKEND] Supabase response: {res.data}")
         
         if not res.data:

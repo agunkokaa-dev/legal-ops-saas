@@ -10,6 +10,7 @@ to prevent blocking the FastAPI event loop under concurrent load.
 """
 import io
 import asyncio
+import functools
 import uuid
 import traceback
 import json
@@ -22,7 +23,7 @@ from PyPDF2 import PdfReader
 from dotenv import load_dotenv
 import os
 
-from app.config import openai_client, qdrant, COLLECTION_NAME
+from app.config import openai_client, qdrant, COLLECTION_NAME, admin_supabase
 from app.dependencies import verify_clerk_token, get_tenant_supabase
 from app.schemas import ExtractObligationsRequest, ArchiveContractRequest
 from app.utils import chunk_text
@@ -30,18 +31,23 @@ from graph import clm_graph
 import traceback
 
 load_dotenv()
-# Get admin supabase client for background tasks (bypassing RLS since request context is lost)
-from supabase import create_client
-supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY")
-admin_supabase: Client = create_client(os.getenv("SUPABASE_URL"), supabase_key)
-
 
 router = APIRouter()
 
 
 # =====================================================================
-# ASYNC WRAPPERS
+# ASYNC WRAPPERS & CALLBACKS
 # =====================================================================
+
+def handle_task_result(task: asyncio.Task, contract_id: str):
+    try:
+        exc = task.exception()
+        if exc:
+            print(f"🚨 [BACKGROUND TASK FAILED] Contract {contract_id}: {exc}")
+            # Update status to Failed so UI doesn't hang forever
+            admin_supabase.table("contracts").update({"status": "Failed"}).eq("id", contract_id).execute()
+    except asyncio.CancelledError:
+        print(f"⚠️ [BACKGROUND TASK CANCELLED] Contract {contract_id}")
 
 async def async_embed(text: str) -> list[float]:
     response = await asyncio.to_thread(
@@ -146,7 +152,7 @@ async def process_contract_background(
         # Invoke the Multi-Agent Workflow
         final_state = await async_clm_graph_invoke({
             "contract_id": contract_id,
-            "raw_document": text_content[:20000] 
+            "raw_document": text_content[:150000] 
         })
         
         # 2. Raw JSON output from LLM extraction
@@ -324,7 +330,7 @@ async def upload_contract(
         # BackgroundTasks runs coroutines in a sync threadpool, which
         # silently kills all `await` calls inside the function.
         # asyncio.create_task() keeps it on the event loop where awaits work.
-        asyncio.create_task(
+        task = asyncio.create_task(
             process_contract_background(
                 contract_id=contract_id,
                 tenant_id=tenant_id,
@@ -333,6 +339,7 @@ async def upload_contract(
                 text_content=text_content
             )
         )
+        task.add_done_callback(functools.partial(handle_task_result, contract_id=contract_id))
         print(f"[ENDPOINT SUCCESS] Background task scheduled for contract_id: {contract_id}. Returning 200 immediately.")
 
         return {

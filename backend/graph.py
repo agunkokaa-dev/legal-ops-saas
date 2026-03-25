@@ -76,7 +76,7 @@ def ingestion_agent(state: ContractState) -> ContractState:
     7. 'extracted_clauses': A dictionary where keys are clause names (e.g., 'Indemnity', 'Liability') and values are the text.
     
     CONTRACT TEXT:
-    {state.get('raw_document', '')[:10000]} # Truncated for safety
+    {state.get('raw_document', '')}
     """
 
     try:
@@ -107,6 +107,39 @@ def ingestion_agent(state: ContractState) -> ContractState:
         traceback.print_exc()
         return {"contract_value": 0.0, "currency": "IDR", "end_date": "Error", "effective_date": None, "jurisdiction": None, "governing_law": None, "extracted_clauses": {}}
 
+class ComplianceAudit(BaseModel):
+    compliance_issues: List[str] = Field(description="List of strings detailing the issues. Empty list if none.", default_factory=list)
+
+class RiskAssessment(BaseModel):
+    risk_score: float = Field(description="Score between 0.0 and 100.0")
+    risk_level: str = Field(description="'High', 'Medium', 'Low', or 'Safe'")
+    risk_flags: List[str] = Field(description="List of critical danger summaries", default_factory=list)
+
+class NegotiationStrategy(BaseModel):
+    counter_proposal: str = Field(description="Detailed strategy based on BATNA")
+
+class DraftRevision(BaseModel):
+    original_issue: str = Field(description="The original issue")
+    neutral_rewrite: str = Field(description="Neutral B2B rewrite of the clause")
+
+class DraftingResult(BaseModel):
+    draft_revisions: List[DraftRevision] = Field(default_factory=list)
+
+class ContractObligation(BaseModel):
+    description: str = Field(description="Clear, concise description of the obligation")
+    due_date: Optional[str] = Field(description="Deadline or date if mentioned, otherwise null", default=None)
+
+class ObligationMinerResult(BaseModel):
+    obligations: List[ContractObligation] = Field(default_factory=list)
+
+class ClassifiedClause(BaseModel):
+    clause_type: str = Field(description="Standard category from list")
+    original_text: str = Field(description="Exact text excerpt")
+    ai_summary: str = Field(description="1-2 sentence plain-English summary")
+
+class ClauseClassifierResult(BaseModel):
+    clauses: List[ClassifiedClause] = Field(default_factory=list)
+
 # ==========================================
 # 3. Agent 02: Compliance Agent
 # ==========================================
@@ -134,16 +167,16 @@ def compliance_agent(state: ContractState) -> ContractState:
     """
 
     try:
-        response = client.chat.completions.create(
+        response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
-            response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": "You are a legal compliance JSON generator."},
                 {"role": "user", "content": prompt}
-            ]
+            ],
+            response_format=ComplianceAudit
         )
-        result = json.loads(response.choices[0].message.content)
-        return {"compliance_issues": result.get("compliance_issues", [])}
+        result = response.choices[0].message.parsed
+        return {"compliance_issues": result.compliance_issues}
     except Exception as e:
         print(f"Compliance Agent Error: {e}")
         return {"compliance_issues": ["Error during compliance check."]}
@@ -184,25 +217,24 @@ def risk_agent(state: ContractState) -> ContractState:
     """
 
     try:
-        response = client.chat.completions.create(
+        response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
-            response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": "You are a risk assessment JSON generator."},
                 {"role": "user", "content": prompt}
-            ]
+            ],
+            response_format=RiskAssessment
         )
-        result = json.loads(response.choices[0].message.content)
-        score = float(result.get("risk_score", 0.0))
-        # Use LLM's risk_level if provided, otherwise derive from score
-        risk_level = result.get("risk_level")
+        result = response.choices[0].message.parsed
+        score = float(result.risk_score)
+        risk_level = result.risk_level
         if not risk_level or risk_level not in ("High", "Medium", "Low", "Safe"):
             risk_level = "High" if score >= 75.0 else ("Medium" if score >= 40.0 else ("Low" if score > 0 else "Safe"))
         print(f"[Agent 03] Risk Score: {score}, Risk Level: {risk_level}")
         return {
             "risk_score": score,
             "risk_level": risk_level,
-            "risk_flags": result.get("risk_flags", [])
+            "risk_flags": result.risk_flags
         }
     except Exception as e:
         print(f"Risk Agent Error: {e}")
@@ -235,16 +267,16 @@ def negotiation_agent(state: ContractState) -> ContractState:
     """
 
     try:
-        response = client.chat.completions.create(
+        response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
-            response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": "You are a strategic negotiation JSON generator."},
                 {"role": "user", "content": prompt}
-            ]
+            ],
+            response_format=NegotiationStrategy
         )
-        result = json.loads(response.choices[0].message.content)
-        return {"counter_proposal": result.get("counter_proposal", "No strategy formulated.")}
+        result = response.choices[0].message.parsed
+        return {"counter_proposal": result.counter_proposal}
     except Exception as e:
         print(f"Negotiation Agent Error: {e}")
         return {"counter_proposal": "Error formulating negotiation strategy."}
@@ -274,16 +306,16 @@ def drafting_agent(state: ContractState) -> ContractState:
     """
 
     try:
-        response = client.chat.completions.create(
+        response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
-            response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": "You are a legal contract drafting JSON generator."},
                 {"role": "user", "content": prompt}
-            ]
+            ],
+            response_format=DraftingResult
         )
-        result = json.loads(response.choices[0].message.content)
-        return {"draft_revisions": result.get("draft_revisions", [])}
+        result = response.choices[0].message.parsed
+        return {"draft_revisions": [r.model_dump() for r in result.draft_revisions]}
     except Exception as e:
         print(f"Drafting Agent Error: {e}")
         return {"draft_revisions": [{"error": "Failed to draft revisions."}]}
@@ -314,20 +346,20 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
     If no obligations are found, return an empty list.
 
     CONTRACT TEXT:
-    {state.get('raw_document', '')[:12000]}
+    {state.get('raw_document', '')}
     """
 
     try:
-        response = client.chat.completions.create(
+        response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
-            response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": "You are a precise obligation extraction JSON engine."},
                 {"role": "user", "content": prompt}
-            ]
+            ],
+            response_format=ObligationMinerResult
         )
-        result = json.loads(response.choices[0].message.content)
-        return {"extracted_obligations": result.get("obligations", [])}
+        result = response.choices[0].message.parsed
+        return {"extracted_obligations": [dict(o) for o in result.obligations]}
     except Exception as e:
         print(f"Obligation Miner Error: {e}")
         return {"extracted_obligations": []}
@@ -368,16 +400,16 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
     """
 
     try:
-        response = client.chat.completions.create(
+        response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
-            response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": "You are a legal clause classification JSON engine."},
                 {"role": "user", "content": prompt}
-            ]
+            ],
+            response_format=ClauseClassifierResult
         )
-        result = json.loads(response.choices[0].message.content)
-        return {"classified_clauses": result.get("clauses", [])}
+        result = response.choices[0].message.parsed
+        return {"classified_clauses": [dict(c) for c in result.clauses]}
     except Exception as e:
         print(f"Clause Classifier Error: {e}")
         return {"classified_clauses": []}

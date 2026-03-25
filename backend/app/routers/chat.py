@@ -28,17 +28,13 @@ from supabase import Client
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from qdrant_client import models
 
-from app.config import openai_client, qdrant, COLLECTION_NAME
+from app.config import openai_client, qdrant, COLLECTION_NAME, admin_supabase
 from app.dependencies import verify_clerk_token, get_tenant_supabase
 from app.schemas import ClauseAssistantRequest
 
-# Admin Supabase client for genealogy lookups (bypasses RLS)
 import os
 from dotenv import load_dotenv
-from supabase import create_client
 load_dotenv()
-_supa_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_ANON_KEY")
-admin_supabase = create_client(os.getenv("SUPABASE_URL"), _supa_key)
 
 router = APIRouter()
 
