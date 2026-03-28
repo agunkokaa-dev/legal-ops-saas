@@ -179,7 +179,11 @@ async def process_contract_background(
             "risk_level": risk_level,
             "currency": final_state.get("currency", "IDR"),
             "counter_proposal": final_state.get("counter_proposal"),
-            "draft_revisions": final_state.get("draft_revisions")
+            "draft_revisions": {
+                "latest_text": text_content,
+                "findings": final_state.get("draft_revisions", []),
+                "history": []
+            }
         }
         
         print(f"[SUPABASE UPDATE] Checking if contract_id: {contract_id} already exists (Admin Client).")
@@ -313,12 +317,10 @@ async def upload_contract(
         raise HTTPException(status_code=403, detail="Peringatan Keamanan: File ini mencoba menyamar sebagai PDF. Ditolak.")
 
     try:
-        pdf_reader = PdfReader(io.BytesIO(contents))
-        text_content = ""
-        for page_num, page in enumerate(pdf_reader.pages):
-            text = page.extract_text()
-            if text:
-                text_content += f"[Page {page_num + 1}] " + text + "\n"
+        import fitz
+        import pymupdf4llm
+        doc = fitz.open(stream=contents, filetype="pdf")
+        text_content = pymupdf4llm.to_markdown(doc)
 
         if not text_content.strip():
             raise HTTPException(status_code=400, detail="Kami tidak dapat membaca dokumen ini. Pastikan PDF tidak dienkripsi atau berupa gambar hasil scan tanpa OCR.")

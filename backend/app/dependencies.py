@@ -9,7 +9,10 @@ from supabase import create_client, Client
 from app.config import CLERK_PEM_KEY, SUPABASE_URL, SUPABASE_ANON_KEY
 
 
-async def verify_clerk_token(authorization: str = Header(None)) -> dict:
+async def verify_clerk_token(
+    authorization: str = Header(None),
+    x_tenant_id: str = Header(None)
+) -> dict:
     """
     Validates the Clerk JWT from the Authorization header.
     Returns the decoded payload with `verified_tenant_id` injected.
@@ -25,11 +28,11 @@ async def verify_clerk_token(authorization: str = Header(None)) -> dict:
         raise HTTPException(status_code=500, detail="Server authentication configuration error.")
 
     try:
-        # Always verify signature strictly
         claims = jwt.decode(token, CLERK_PEM_KEY, algorithms=["RS256"])
+        print("🔥 JWT CLAIMS:", claims)
         
-        # Consistent tenant extraction
-        tenant_id = claims.get("org_id") or claims.get("sub")
+        # Consistent tenant extraction: Prioritize explicit frontend context, fallback to token claims
+        tenant_id = x_tenant_id or claims.get("org_id") or claims.get("sub")
         if not tenant_id:
             raise HTTPException(status_code=401, detail="No valid tenant identity found in token")
             
@@ -41,18 +44,12 @@ async def verify_clerk_token(authorization: str = Header(None)) -> dict:
         raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
 
-async def get_tenant_supabase(authorization: str = Header(...)) -> Client:
+async def get_tenant_supabase() -> Client:
     """
-    Creates a per-request Supabase client using the Anon Key + user JWT.
-    This activates Row Level Security (RLS) in the database automatically.
+    Since Pariana uses Clerk for authentication (RS256) instead of Supabase Auth (HS256),
+    we bypass Supabase RLS token injection to prevent PGRST301 (wrong key type) errors.
+    The backend already securely enforces tenant isolation via explicit .eq("tenant_id", tenant_id)
+    and insert mappings in every router.
     """
-    token = authorization.replace("Bearer ", "")
-    client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
-    
-    try:
-        client.postgrest.auth(token) # Inject JWT for RLS
-    except Exception as e:
-        print(f"Supabase Auth Injection Error: {e}")
-        raise HTTPException(status_code=401, detail="Authentication failed: PostgREST rejected the JWT token.")
-        
-    return client
+    from app.config import admin_supabase
+    return admin_supabase

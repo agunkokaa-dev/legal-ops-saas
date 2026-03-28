@@ -2,6 +2,10 @@
 
 import { useState, useMemo, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { useAuth } from '@clerk/nextjs'
+import { toast } from 'sonner'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import IntelligenceSidebar from './IntelligenceSidebar'
 import PDFViewerWrapper from './PDFViewerWrapper'
 import jsPDF from 'jspdf'
@@ -25,6 +29,7 @@ export default function ContractDetailClient({
 }) {
     const [scrollToId, setScrollToId] = useState<string | null>(null);
     const router = useRouter();
+    const { getToken } = useAuth();
 
     // Lock-for-Review Options
     const [isLockedForReview, setIsLockedForReview] = useState(false);
@@ -65,6 +70,40 @@ export default function ContractDetailClient({
         
         return typeof rawDraft === 'string' ? rawDraft : JSON.stringify(rawDraft);
     }, [contract?.draft_revisions]);
+
+    const handleApplySuggestion = async (originalIssue: string, neutralRewrite: string) => {
+        if (!contract?.id) return;
+        try {
+            const token = await getToken();
+            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            
+            const res = await fetch(`${apiUrl}/api/v1/drafting/apply-suggestion`, {
+                method: 'POST',
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    contract_id: contract.id,
+                    original_issue: originalIssue,
+                    neutral_rewrite: neutralRewrite
+                })
+            });
+            
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.detail || "Failed to apply suggestion");
+            }
+            
+            toast.success("AI suggestion applied successfully.", {
+                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+            });
+            router.refresh();
+        } catch (error: any) {
+            console.error("Apply error:", error);
+            toast.error(error.message || "Failed to apply suggestion.");
+        }
+    };
 
     const handleLockForReview = () => {
         setIsLockedForReview(true);
@@ -198,8 +237,14 @@ export default function ContractDetailClient({
                             {/* Live Draft Document Viewer */}
                             <div className="w-full h-full bg-[#141414] p-4 md:p-8 overflow-y-auto rounded-xl border border-white/5 flex justify-center shadow-inner relative">
                                 <div className="w-full max-w-[850px] bg-white text-black p-12 md:p-16 rounded shadow-2xl min-h-[1056px]">
-                                    <div className="font-serif leading-relaxed space-y-6 text-[15px] whitespace-pre-wrap">
-                                        {parsedDraftText || "No draft content available."}
+                                    <div 
+                                        className="font-serif leading-relaxed text-[15px] prose prose-sm prose-invert max-w-none whitespace-pre-wrap prose-p:my-2 prose-headings:my-4 prose-headings:text-[#d4af37] prose-strong:text-[#d4af37] prose-a:text-[#d4af37]"
+                                        style={{ whiteSpace: 'pre-wrap' }}
+                                    >
+                                        <ReactMarkdown 
+                                            remarkPlugins={[remarkGfm]} 
+                                            children={parsedDraftText || "No draft content available."} 
+                                        />
                                     </div>
                                 </div>
                             </div>
@@ -220,6 +265,7 @@ export default function ContractDetailClient({
                     isLocked={isLockedForReview}
                     onUnlock={() => setShowUnlockModal(true)}
                     currentDraftVersion={currentDraftVersion}
+                    onApplySuggestion={handleApplySuggestion}
                 />
             </div>
         </div>

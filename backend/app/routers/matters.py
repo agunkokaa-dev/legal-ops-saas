@@ -29,7 +29,7 @@ async def create_matter(
         response = supabase.table("matters").insert({
             "id": matter_id,
             "tenant_id": tenant_id,
-            "name": matter.name,
+            "title": matter.name,
             "description": matter.description
         }).execute()
         return {"status": "success", "data": response.data}
@@ -45,7 +45,9 @@ async def get_matters(
 ):
     try:
         tenant_id = claims["verified_tenant_id"]
+        print(f"🔥 DEBUG GET /api/matters - tenant_id from claims: '{tenant_id}'")
         response = supabase.table("matters").select("*").eq("tenant_id", tenant_id).execute()
+        print(f"🔥 DEBUG GET /api/matters - Supabase returned {len(response.data)} rows")
         return {"status": "success", "data": response.data}
     except Exception as e:
         print(f"API Get Matters Error: {e}")

@@ -9,14 +9,35 @@ from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams
 from openai import OpenAI
 
-load_dotenv()
+load_dotenv(override=False)
 
 # --- CORS ---
 raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://173.212.240.143:3000,http://173.212.240.143")
 ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 # --- Auth ---
-CLERK_PEM_KEY = os.getenv("CLERK_PEM_PUBLIC_KEY", "").replace("\\n", "\n")
+import re as _re
+import textwrap as _textwrap
+
+def _load_pem_key() -> str:
+    """Bulletproof PEM key loader. Reconstructs a valid RSA public key
+    from any mangled .env input (literal \\n, \\v, vertical tabs, quotes, etc.)."""
+    raw = os.getenv("CLERK_PEM_KEY", "")
+    if not raw:
+        return ""
+    # Step 1: Normalize all escape sequences and control characters to spaces
+    cleaned = raw.replace("\\n", " ").replace("\\v", " ").replace("\n", " ").replace("\r", " ").replace("\x0b", " ").replace("\t", " ").strip('"').strip("'")
+    # Step 2: Strip PEM headers/footers and extract pure base64 body
+    cleaned = cleaned.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "")
+    # Step 3: Remove ALL remaining whitespace to get a single base64 string
+    b64_body = _re.sub(r'\s+', '', cleaned)
+    if not b64_body:
+        return ""
+    # Step 4: Rebuild proper PEM with 64-char lines (RFC 7468)
+    wrapped = "\n".join(_textwrap.wrap(b64_body, 64))
+    return f"-----BEGIN PUBLIC KEY-----\n{wrapped}\n-----END PUBLIC KEY-----"
+
+CLERK_PEM_KEY = _load_pem_key()
 
 # --- Supabase ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")

@@ -178,3 +178,88 @@ async def match_clause(request: ClauseMatchRequest, claims: dict = Depends(verif
         print(f"🔥 [ClauseLibrary] Semantic Match Error: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to run semantic match: {str(e)}")
 
+
+# =====================================================================
+# [TEMPORARY] POST /repair-vectors — Re-vectorize all clauses
+# DELETE THIS ENDPOINT after use.
+# =====================================================================
+@router.post("/clauses/repair-vectors")
+async def repair_clause_vectors(claims: dict = Depends(verify_clerk_token)):
+    """
+    Temporary maintenance endpoint: re-embeds ALL clauses for the
+    authenticated tenant and upserts corrected payloads (with content)
+    into Qdrant. Runs inside the live Uvicorn process so env vars are
+    already loaded.
+    """
+    tenant_id = claims["verified_tenant_id"]
+    print(f"🔧 [RepairVectors] Starting repair for tenant: {tenant_id}")
+
+    try:
+        # 1. Fetch all clauses for this tenant
+        res = admin_supabase.table("clause_library") \
+            .select("*") \
+            .eq("tenant_id", tenant_id) \
+            .execute()
+
+        clauses = res.data or []
+        if not clauses:
+            return {"status": "warning", "message": "No clauses found for this tenant.", "repaired": 0}
+
+        print(f"🔧 [RepairVectors] Found {len(clauses)} clauses. Re-vectorizing...")
+
+        repaired = 0
+        errors = []
+
+        for clause in clauses:
+            try:
+                clause_id = clause["id"]
+                title = clause.get("title", "")
+                content = clause.get("content", "")
+                guidance = clause.get("guidance_notes", "")
+
+                # 2. Re-embed
+                embed_text = f"{title}\n{content}\n{guidance}"
+                embedding_response = openai_client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input=embed_text
+                )
+                vector = embedding_response.data[0].embedding
+
+                # 3. Upsert with FULL payload (the fix)
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, clause_id))
+                qdrant.upsert(
+                    collection_name="clause_library_vectors",
+                    points=[
+                        PointStruct(
+                            id=point_id,
+                            vector=vector,
+                            payload={
+                                "tenant_id": tenant_id,
+                                "clause_id": clause_id,
+                                "category": clause.get("category"),
+                                "clause_type": clause.get("clause_type"),
+                                "title": title,
+                                "content": content,
+                                "guidance_notes": guidance
+                            }
+                        )
+                    ]
+                )
+                repaired += 1
+                print(f"   ✅ Repaired: {title} ({clause_id})")
+
+            except Exception as clause_err:
+                errors.append({"clause_id": clause.get("id"), "error": str(clause_err)})
+                print(f"   ❌ Failed: {clause.get('title')} — {clause_err}")
+
+        print(f"🔧 [RepairVectors] Done. Repaired: {repaired}, Errors: {len(errors)}")
+        return {
+            "status": "success",
+            "repaired": repaired,
+            "errors": errors,
+            "message": f"Re-vectorized {repaired}/{len(clauses)} clauses."
+        }
+
+    except Exception as e:
+        print(f"🔥 [RepairVectors] Fatal Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

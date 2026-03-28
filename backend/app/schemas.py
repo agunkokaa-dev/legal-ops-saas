@@ -73,6 +73,7 @@ class IntakeRequestCreate(BaseModel):
     counterparty: str
     urgency: str  # e.g., "Standard", "High"
     business_context: str
+    matter_id: Optional[str] = None
 
 
 # --- Smart Drafting Models ---
@@ -99,6 +100,12 @@ class DraftSaveRequest(BaseModel):
     title: str
     draft_text: Any  # Accepts string OR full JSONB {latest_text, history[]}
     contract_id: Optional[str] = None
+
+
+class ApplySuggestionRequest(BaseModel):
+    contract_id: str
+    original_issue: str
+    neutral_rewrite: str
 
 
 # --- Clause Library Models ---

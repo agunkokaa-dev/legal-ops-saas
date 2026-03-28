@@ -36,24 +36,35 @@ async def submit_intake_request(
     """
     try:
         tenant_id = claims["verified_tenant_id"]
-        matter_id = str(uuid.uuid4())
-
-        # --- Step 1: Insert into `matters` ---
-        try:
-            matter_title = f"{payload.request_type} - {payload.counterparty}"
-            matter_res = supabase.table("matters").insert({
-                "id": matter_id,
-                "tenant_id": tenant_id,
-                "name": matter_title,
-                "description": payload.business_context,
-                "status": "Active",
-            }).execute()
-
-            if not matter_res.data:
-                raise HTTPException(status_code=500, detail="Failed to create matter from intake request.")
-        except Exception as e:
-            print(f"🚨 SUPABASE INSERT ERROR (matters table): {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+        
+        # 1. Determine the Matter ID
+        matter_id = payload.matter_id
+        
+        if matter_id:
+            # Verify the matter actually exists and belongs to this tenant
+            check_res = supabase.table("matters").select("id").eq("id", matter_id).eq("tenant_id", tenant_id).execute()
+            if not check_res.data:
+                raise HTTPException(status_code=404, detail="The specified Matter was not found or access is denied.")
+        else:
+            # Create a brand new Matter
+            matter_id = str(uuid.uuid4())
+    
+            # --- Step 1: Insert into `matters` ---
+            try:
+                matter_title = f"{payload.request_type} - {payload.counterparty}"
+                matter_res = supabase.table("matters").insert({
+                    "id": matter_id,
+                    "tenant_id": tenant_id,
+                    "title": matter_title,
+                    "description": payload.business_context,
+                    "status": "Active",
+                }).execute()
+    
+                if not matter_res.data:
+                    raise HTTPException(status_code=500, detail="Failed to create matter from intake request.")
+            except Exception as e:
+                print(f"🚨 SUPABASE INSERT ERROR (matters table): {str(e)}")
+                raise HTTPException(status_code=500, detail=str(e))
 
         # --- Step 2: Insert into `tasks` linked to the new matter ---
         try:

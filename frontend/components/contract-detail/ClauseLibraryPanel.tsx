@@ -18,7 +18,7 @@ interface Clause {
 }
 
 export default function ClauseLibraryPanel({ onInsert }: { onInsert: (text: string) => void }) {
-    const { getToken } = useAuth();
+    const { getToken, orgId, userId } = useAuth();
     const [clauses, setClauses] = useState<Clause[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState("");
@@ -27,11 +27,12 @@ export default function ClauseLibraryPanel({ onInsert }: { onInsert: (text: stri
     useEffect(() => {
         const fetchClauses = async () => {
             try {
-                const token = await getToken({ template: 'supabase' });
+                const token = await getToken();
                 const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
                 const res = await fetch(`${apiUrl}/api/v1/clauses`, {
                     headers: {
                         Authorization: `Bearer ${token}`,
+                        "X-Tenant-Id": orgId || userId || "",
                         "Content-Type": "application/json"
                     }
                 });

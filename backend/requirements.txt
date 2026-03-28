@@ -8,6 +8,9 @@ openai
 python-dotenv==1.0.0
 python-multipart==0.0.6
 PyPDF2==3.0.1
+pymupdf4llm
+pymupdf
+markdownify
 langgraph
 langchain-openai
 langchain-core

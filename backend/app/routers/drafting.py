@@ -87,7 +87,7 @@ async def audit_draft(
     LangGraph multi-agent audit pipeline as a background task.
     """
     try:
-        tenant_id = claims.get("org_id") or claims.get("sub")
+        tenant_id = claims["verified_tenant_id"]
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid token claims")
             
@@ -208,7 +208,7 @@ async def draft_chat(
     and actively search the custom Clause Library.
     """
     try:
-        tenant_id = claims.get("org_id") or claims.get("sub")
+        tenant_id = claims["verified_tenant_id"]
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid token claims")
 
@@ -283,7 +283,7 @@ async def save_draft(
     Saves or updates a draft in the contracts table.
     """
     try:
-        tenant_id = claims.get("org_id") or claims.get("sub")
+        tenant_id = claims["verified_tenant_id"]
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid token claims")
         
@@ -342,7 +342,7 @@ async def load_draft(
     Loads the latest draft for a specific matter.
     """
     try:
-        tenant_id = claims.get("org_id") or claims.get("sub")
+        tenant_id = claims["verified_tenant_id"]
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid token claims")
         
@@ -396,3 +396,104 @@ async def load_draft(
     except Exception as e:
         print(f"❌ Draft Load Error: {e}")
         raise HTTPException(status_code=500, detail="Failed to load draft")
+
+
+# =====================================================================
+# POST /apply-suggestion — Smart AI text replacement
+# =====================================================================
+
+from app.schemas import ApplySuggestionRequest
+
+@router.post("/apply-suggestion")
+async def apply_suggestion(
+    payload: ApplySuggestionRequest,
+    claims: dict = Depends(verify_clerk_token),
+):
+    """
+    Intelligently locates the referenced clause based on original_issue and replaces it
+    with the neutral_rewrite, saving the updated document to the database.
+    """
+    try:
+        tenant_id = claims["verified_tenant_id"]
+        if not tenant_id:
+            raise HTTPException(status_code=401, detail="Invalid token claims")
+
+        # 1. Fetch current draft text & history
+        res = admin_supabase.table("contracts") \
+            .select("draft_revisions, id") \
+            .eq("id", payload.contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .limit(1) \
+            .execute()
+
+        if not res.data or not res.data[0].get("draft_revisions"):
+            raise HTTPException(status_code=404, detail="Contract draft not found.")
+
+        revisions = res.data[0].get("draft_revisions")
+        if not isinstance(revisions, dict) or "latest_text" not in revisions:
+            raise HTTPException(status_code=400, detail="Draft format is incompatible with suggestions.")
+
+        current_text = revisions["latest_text"]
+
+        # 2. Use LLM to accurately replace the text
+        system_prompt = (
+            "You are an expert context-aware text replacer. "
+            "You will be given the full current document text, an issue description or excerpt ('original_issue'), "
+            "and a new clause to apply ('neutral_rewrite'). "
+            "Locate the exact paragraph/clause in the document that matches the 'original_issue'. "
+            "Replace that entire clause with the 'neutral_rewrite'. "
+            "Return ONLY the complete updated document text. "
+            "CRITICAL: You MUST preserve all existing Markdown formatting, bolding, headings, line breaks, and structure exactly as they appear in the original text. Do not strip any Markdown structure."
+        )
+
+        user_prompt = (
+            f"ORIGINAL_ISSUE:\n{payload.original_issue}\n\n"
+            f"NEUTRAL_REWRITE:\n{payload.neutral_rewrite}\n\n"
+            f"CURRENT DOCUMENT TEXT:\n{current_text}"
+        )
+
+        response = await asyncio.to_thread(
+            openai_client.chat.completions.create,
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.0
+        )
+
+        updated_text = response.choices[0].message.content.strip()
+
+        # 3. Save the updated text back to the database
+        revisions["latest_text"] = updated_text
+        
+        # Add to history
+        history = revisions.get("history", [])
+        from datetime import datetime
+        history.append({
+            "version_id": str(int(datetime.utcnow().timestamp())),
+            "timestamp": datetime.utcnow().isoformat(),
+            "actor": "User (AI Assist)",
+            "action_type": "Applied Suggestion",
+            "content": updated_text
+        })
+        revisions["history"] = history
+
+        update_res = admin_supabase.table("contracts").update({
+            "draft_revisions": revisions
+        }).eq("id", payload.contract_id).eq("tenant_id", tenant_id).execute()
+
+        if not update_res.data:
+            raise HTTPException(status_code=500, detail="Failed to save the updated document.")
+
+        return {
+            "status": "success",
+            "message": "Suggestion applied successfully.",
+            "updated_text": updated_text
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Apply Suggestion Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

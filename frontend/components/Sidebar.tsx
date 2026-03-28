@@ -9,6 +9,7 @@ import { ListTodo } from 'lucide-react'
 const navItems = [
     { href: '/dashboard', icon: 'dashboard', label: 'Dashboard', exact: true, type: 'material' },
     { href: '/dashboard/matters', icon: 'briefcase_meal', label: 'Matters', exact: false, type: 'material' },
+    { href: '/dashboard/drafting', icon: 'edit_document', label: 'Drafting', exact: false, type: 'material' },
     { href: '/dashboard/tasks', icon: ListTodo, label: 'Task Management', exact: false, type: 'lucide' },
     { href: '/dashboard/documents', icon: 'description', label: 'Documents', exact: false, type: 'material' },
     { href: '/dashboard/calendar', icon: 'calendar_month', label: 'Calendar', exact: false, type: 'material' },

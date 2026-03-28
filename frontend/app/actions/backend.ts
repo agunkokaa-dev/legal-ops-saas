@@ -15,7 +15,7 @@ export async function chatWithClause(question: string) {
     }
 
     try {
-        const token = await getToken({ template: 'supabase' })
+        const token = await getToken()
         
         const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://173.212.240.143:8000'}/api/v1/ai/task-assistant`, {
             method: 'POST',
@@ -70,7 +70,7 @@ export async function chatWithClauseRAG({
     }
 
     try {
-        const token = await getToken({ template: 'supabase' });
+        const token = await getToken();
         if (!token) {
             throw new Error("Authentication failed: Could not retrieve Supabase JWT");
         }
@@ -127,7 +127,7 @@ export async function uploadDocument(formData: FormData) {
     }
 
     try {
-        const token = await getToken({ template: 'supabase' })
+        const token = await getToken()
         const backendFormData = new FormData()
         backendFormData.append('file', file)
         backendFormData.append('tenant_id', tenantId)
@@ -169,7 +169,7 @@ export async function triggerSmartIngestion(formData: FormData, matterId: string
     }
 
     try {
-        const token = await getToken({ template: 'supabase' })
+        const token = await getToken()
         const backendFormData = new FormData()
         backendFormData.append('file', file)
         backendFormData.append('tenant_id', tenantId)

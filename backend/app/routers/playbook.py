@@ -68,7 +68,7 @@ async def get_playbook_categories(claims: dict = Depends(verify_clerk_token)):
     print("🔥 [BACKEND] Endpoint /categories hit!")
     try:
         tenant_id = claims["verified_tenant_id"]
-        res = admin_supabase.table("company_playbooks").select("category").eq("tenant_id", tenant_id).execute()
+        res = admin_supabase.table("company_playbooks").select("category").or_(f"tenant_id.eq.{tenant_id},tenant_id.is.null").execute()
         print(f"🔥 [BACKEND] Supabase response: {res.data}")
         
         if not res.data:

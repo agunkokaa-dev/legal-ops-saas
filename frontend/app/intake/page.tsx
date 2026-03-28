@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import { useAuth } from "@clerk/nextjs";
 
 export default function IntakePortal() {
-  const { getToken } = useAuth();
+  const { getToken, isLoaded, orgId, userId } = useAuth();
   
   const [requestType, setRequestType] = useState("NDA");
   const [counterparty, setCounterparty] = useState("");
@@ -13,13 +13,20 @@ export default function IntakePortal() {
   const [isLoading, setIsLoading] = useState(false);
   const [message, setMessage] = useState({ type: "", text: "" });
   const [recentRequests, setRecentRequests] = useState<any[]>([]);
+  const [matters, setMatters] = useState<any[]>([]);
+  const [selectedMatterId, setSelectedMatterId] = useState<string>("");
 
   const fetchRecentRequests = async () => {
+    if (!isLoaded) return;
     try {
       const token = await getToken({ template: "supabase" });
+      if (!token) return;
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
       const res = await fetch(`${apiUrl}/api/v1/intake/requests`, {
-        headers: { "Authorization": `Bearer ${token}` }
+        headers: { 
+          "Authorization": `Bearer ${token}`,
+          "X-Tenant-Id": orgId || userId || ""
+        }
       });
       if (res.ok) {
         const data = await res.json();
@@ -30,9 +37,33 @@ export default function IntakePortal() {
     }
   };
 
+  const fetchMatters = async () => {
+    if (!isLoaded) return;
+    try {
+      const token = await getToken({ template: "supabase" });
+      if (!token) return;
+      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const res = await fetch(`${apiUrl}/api/matters`, {
+        headers: { 
+          "Authorization": `Bearer ${token}`,
+          "X-Tenant-Id": orgId || userId || ""
+        }
+      });
+      if (res.ok) {
+        const result = await res.json();
+        setMatters(result.data || []);
+      }
+    } catch (err) {
+      console.error("Failed to fetch matters:", err);
+    }
+  };
+
   useEffect(() => {
-    fetchRecentRequests();
-  }, []);
+    if (isLoaded) {
+      fetchRecentRequests();
+      fetchMatters();
+    }
+  }, [isLoaded]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -46,7 +77,8 @@ export default function IntakePortal() {
         request_type: requestType,
         counterparty,
         urgency,
-        business_context: businessContext
+        business_context: businessContext,
+        matter_id: selectedMatterId || null
       };
 
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -54,6 +86,7 @@ export default function IntakePortal() {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${token}`,
+          "X-Tenant-Id": orgId || userId || "",
           "Content-Type": "application/json"
         },
         body: JSON.stringify(payload)
@@ -72,6 +105,7 @@ export default function IntakePortal() {
       setCounterparty("");
       setUrgency("Standard");
       setBusinessContext("");
+      setSelectedMatterId("");
       
       fetchRecentRequests();
       
@@ -149,6 +183,24 @@ export default function IntakePortal() {
                 {message.text}
               </div>
             )}
+
+            {/* Matter Selection */}
+            <div className="flex flex-col space-y-2">
+              <label className="text-[10px] font-medium tracking-[0.15em] text-[#99907c] uppercase italic">Linked Project (Optional)</label>
+              <select 
+                value={selectedMatterId}
+                onChange={(e) => setSelectedMatterId(e.target.value)}
+                className="bg-[#292524] border border-zinc-700/50 rounded-lg p-3 text-zinc-200 text-sm focus:ring-1 focus:ring-[#f2ca50]/30 focus:border-[#f2ca50]/30 outline-none transition-all appearance-none cursor-pointer"
+              >
+                <option value="">+ Create New Project / Matter</option>
+                {matters.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+              <p className="text-[9px] text-zinc-500 font-light">Select an existing project to group this request, or leave as is to create a new one.</p>
+            </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               {/* Request Type */}

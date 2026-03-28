@@ -22,7 +22,8 @@ export default function IntelligenceSidebar({
     onNoteDeleted,
     isLocked = false,
     onUnlock,
-    currentDraftVersion = null
+    currentDraftVersion = null,
+    onApplySuggestion
 }: {
     contract?: any,
     obligations?: any[],
@@ -34,10 +35,12 @@ export default function IntelligenceSidebar({
     onNoteDeleted?: () => void,
     isLocked?: boolean,
     onUnlock?: () => void,
-    currentDraftVersion?: string | null
+    currentDraftVersion?: string | null,
+    onApplySuggestion?: (originalText: string, newText: string) => Promise<void>
 }) {
     const [activeTab, setActiveTab] = useState<'Analysis' | 'Obligations' | 'Notes' | 'Genealogy' | 'Assistant'>('Analysis')
     const [isSaving, setIsSaving] = useState(false)
+    const [isApplyingMap, setIsApplyingMap] = useState<Record<number, boolean>>({})
     const { getToken } = useAuth();
     
     // Semantic Match States
@@ -77,7 +80,9 @@ export default function IntelligenceSidebar({
         if (typeof rd === 'string') {
             try { rd = JSON.parse(rd); } catch(e) { return null; }
         }
-        return Array.isArray(rd) ? rd : null;
+        if (Array.isArray(rd)) return rd;
+        if (rd && typeof rd === 'object' && Array.isArray(rd.findings)) return rd.findings;
+        return null;
     }, [contract?.draft_revisions]);
 
     // Helper for formatting IDR
@@ -294,10 +299,27 @@ export default function IntelligenceSidebar({
                                                             <span className="font-bold text-[#d4af37]">LangGraph Analysis:</span> {finding.neutral_rewrite}
                                                         </div>
                                                         
+                                                        {onApplySuggestion && (
+                                                            <button
+                                                                onClick={async () => {
+                                                                    setIsApplyingMap(prev => ({ ...prev, [index]: true }));
+                                                                    try {
+                                                                        await onApplySuggestion(finding.original_issue, finding.neutral_rewrite);
+                                                                    } finally {
+                                                                        setIsApplyingMap(prev => ({ ...prev, [index]: false }));
+                                                                    }
+                                                                }}
+                                                                disabled={isApplyingMap[index]}
+                                                                className="mt-4 w-full bg-[#d4af37] text-black hover:bg-[#b5952f] px-3 py-2 rounded flex items-center justify-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all disabled:opacity-50"
+                                                            >
+                                                                {isApplyingMap[index] ? "Applying..." : "Apply AI Suggestion"}
+                                                            </button>
+                                                        )}
+                                                        
                                                         <button 
                                                             onClick={() => handleFindMatch(finding.original_issue, index)}
                                                             disabled={isMatching}
-                                                            className="mt-4 w-full bg-[#141414] border border-[#d4af37]/30 hover:border-[#d4af37] text-[#d4af37] px-3 py-2 rounded flex items-center justify-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all disabled:opacity-50"
+                                                            className="mt-3 w-full bg-[#141414] border border-[#d4af37]/30 hover:border-[#d4af37] text-[#d4af37] px-3 py-2 rounded flex items-center justify-center gap-2 text-[11px] font-bold uppercase tracking-wider transition-all disabled:opacity-50"
                                                         >
                                                             {isMatching ? (
                                                                 <span className="flex items-center gap-2">

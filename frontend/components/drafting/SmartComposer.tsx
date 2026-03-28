@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@clerk/nextjs";
 import { LuxuryThinkingStepper } from '@/components/ui/LuxuryThinkingStepper';
 import ClauseLibraryPanel from "../contract-detail/ClauseLibraryPanel";
 import HistoryPanel from "./HistoryPanel";
-import { toast } from 'sonner';
+import { toast, Toaster } from 'sonner';
 import type { RevisionSnapshot, DraftRevisionsPayload } from '@/types/history';
 
 interface SmartComposerProps {
@@ -21,6 +22,7 @@ export default function SmartComposer({
   initialCounterparty = "",
   onClose,
 }: SmartComposerProps) {
+  const { getToken } = useAuth();
   const [templateName, setTemplateName] = useState("Mutual NDA");
   const [governingLaw, setGoverningLaw] = useState("State of Delaware");
   const [draftText, setDraftText] = useState("");
@@ -42,6 +44,7 @@ export default function SmartComposer({
   const [totalApprovedClauses, setTotalApprovedClauses] = useState(0);
   const [revisionHistory, setRevisionHistory] = useState<RevisionSnapshot[]>([]);
   const [previewText, setPreviewText] = useState<string | null>(null);
+  const [isSaved, setIsSaved] = useState(false);
   const router = useRouter();
 
   const draftingSteps = [
@@ -54,7 +57,7 @@ export default function SmartComposer({
   React.useEffect(() => {
     const loadExistingDraft = async () => {
       try {
-        const token = await (window as any).Clerk.session.getToken({ template: 'supabase' });
+        const token = await getToken();
         const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
         const res = await fetch(`${baseUrl}/api/v1/drafting/load/${matterId}`, {
           headers: { Authorization: `Bearer ${token}` }
@@ -82,8 +85,8 @@ export default function SmartComposer({
     const fetchPlaybooks = async () => {
       console.log("🚀 [SmartComposer] Attempting to fetch Playbooks...");
       try {
-        const token = await (window as any).Clerk.session.getToken({ template: 'supabase' });
-        const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://173.212.240.143:8000").replace(/\/$/, "");
+        const token = await getToken();
+        const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
         const url = `${baseUrl}/api/playbook/categories`;
         console.log("🌐 [SmartComposer] Fetching from:", url);
 
@@ -117,7 +120,7 @@ export default function SmartComposer({
     setIsGenerating(true);
     try {
       // Fetch Clerk token from window as requested
-      const token = await (window as any).Clerk.session.getToken({ template: 'supabase' });
+      const token = await getToken();
       const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
       const res = await fetch(`${baseUrl}/api/v1/drafting/generate`, {
         method: "POST",
@@ -147,7 +150,7 @@ export default function SmartComposer({
   const handleAudit = async () => {
     setIsAuditing(true);
     try {
-      const token = await (window as any).Clerk.session.getToken({ template: 'supabase' });
+      const token = await getToken();
       const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
       const res = await fetch(`${baseUrl}/api/v1/drafting/audit`, {
         method: "POST",
@@ -181,7 +184,7 @@ export default function SmartComposer({
     setChatInput("");
     setIsChatting(true);
     try {
-      const token = await (window as any).Clerk.session.getToken({ template: 'supabase' });
+      const token = await getToken();
       const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
       const res = await fetch(`${baseUrl}/api/v1/drafting/chat`, {
         method: "POST",
@@ -207,7 +210,7 @@ export default function SmartComposer({
 
   const handleSaveDraft = async (actionType: RevisionSnapshot['action_type'] = 'Manual Save', actor: RevisionSnapshot['actor'] = 'User') => {
     try {
-      const token = await (window as any).Clerk.session.getToken({ template: 'supabase' });
+      const token = await getToken();
       const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
 
       // Create a new revision snapshot
@@ -245,7 +248,13 @@ export default function SmartComposer({
       const data = await res.json();
       setCurrentContractId(data.contract_id);
       setRevisionHistory(updatedHistory);
+      
+      // Visual feedback states
+      setIsSaved(true);
       toast.success(`Draft saved — ${actionType}`);
+      
+      // Reset button state after 3s
+      setTimeout(() => setIsSaved(false), 3000);
     } catch (error) {
       console.error("Save Draft Error:", error);
       toast.error("Failed to save draft.");
@@ -279,7 +288,7 @@ export default function SmartComposer({
   useEffect(() => {
     const fetchClauseCount = async () => {
       try {
-        const token = await (window as any).Clerk.session.getToken({ template: 'supabase' });
+        const token = await getToken();
         const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
         const res = await fetch(`${baseUrl}/api/v1/clauses`, {
           headers: { Authorization: `Bearer ${token}` }
@@ -357,7 +366,7 @@ export default function SmartComposer({
   const handleSendChatDirect = async (userMsg: string) => {
     setIsChatting(true);
     try {
-      const token = await (window as any).Clerk.session.getToken({ template: 'supabase' });
+      const token = await getToken();
       const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
       const res = await fetch(`${baseUrl}/api/v1/drafting/chat`, {
         method: 'POST',
@@ -432,9 +441,10 @@ export default function SmartComposer({
         <div className="flex items-center gap-6">
           <button
             onClick={() => handleSaveDraft()}
-            className="text-zinc-400 hover:text-white text-xs font-semibold transition-colors"
+            disabled={isSaved}
+            className={`text-xs font-semibold transition-all duration-300 ${isSaved ? 'text-primary scale-105' : 'text-zinc-400 hover:text-white'}`}
           >
-            Save Draft
+            {isSaved ? 'DRAFT SAVED! ✓' : 'SAVE DRAFT'}
           </button>
           <button
             onClick={handleAudit}
@@ -790,6 +800,8 @@ export default function SmartComposer({
       {/* Overlay Effects for Luxury Feel */}
       <div className="fixed inset-0 pointer-events-none border-[24px] border-black opacity-10 z-50"></div>
       <div className="fixed bottom-0 left-0 w-full h-32 bg-gradient-to-t from-black to-transparent pointer-events-none opacity-40 z-50"></div>
+      
+      <Toaster position="bottom-right" theme="dark" richColors />
     </div>
   );
 }
