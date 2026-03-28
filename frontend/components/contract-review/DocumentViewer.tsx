@@ -3,7 +3,7 @@
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ScrollbarMarkers from './ScrollbarMarkers'
-import FindingTooltip from './FindingTooltip'
+import FindingPopover from './FindingPopover'
 
 interface TextCoordinate {
     start_char: number
@@ -52,10 +52,6 @@ const ACCEPTED_COLORS = {
     dot: 'bg-green-500',
 }
 
-/**
- * Splits the raw document into segments — some are plain text, some are
- * highlighted findings. Uses absolute character offsets.
- */
 interface TextSegment {
     type: 'text' | 'finding'
     content: string
@@ -67,7 +63,6 @@ interface TextSegment {
 function buildSegments(rawDocument: string, findings: ReviewFinding[]): TextSegment[] {
     if (!rawDocument) return []
 
-    // Sort findings by start_char
     const sorted = [...findings]
         .filter(f => f.coordinates && f.coordinates.start_char >= 0 && f.coordinates.end_char > f.coordinates.start_char)
         .sort((a, b) => a.coordinates.start_char - b.coordinates.start_char)
@@ -79,9 +74,8 @@ function buildSegments(rawDocument: string, findings: ReviewFinding[]): TextSegm
         const start = finding.coordinates.start_char
         const end = Math.min(finding.coordinates.end_char, rawDocument.length)
 
-        if (start < cursor) continue // overlapping, skip
+        if (start < cursor) continue
 
-        // Plain text before this finding
         if (start > cursor) {
             segments.push({
                 type: 'text',
@@ -91,7 +85,6 @@ function buildSegments(rawDocument: string, findings: ReviewFinding[]): TextSegm
             })
         }
 
-        // The finding segment
         segments.push({
             type: 'finding',
             content: rawDocument.slice(start, end),
@@ -103,7 +96,6 @@ function buildSegments(rawDocument: string, findings: ReviewFinding[]): TextSegm
         cursor = end
     }
 
-    // Remaining text after last finding
     if (cursor < rawDocument.length) {
         segments.push({
             type: 'text',
@@ -122,20 +114,26 @@ export default function DocumentViewer({
     selectedFinding,
     hoveredFinding,
     scrollToFindingId,
+    isBlurred,
     onFindingSelect,
     onFindingHover,
+    onAcceptRedline,
+    onConvertToTask,
 }: {
     rawDocument: string
     findings: ReviewFinding[]
     selectedFinding: ReviewFinding | null
     hoveredFinding: ReviewFinding | null
     scrollToFindingId: string | null
+    isBlurred?: boolean
     onFindingSelect: (finding: ReviewFinding) => void
     onFindingHover: (finding: ReviewFinding | null) => void
+    onAcceptRedline: (finding: ReviewFinding) => Promise<void>
+    onConvertToTask: (finding: ReviewFinding) => Promise<void>
 }) {
     const containerRef = useRef<HTMLDivElement>(null)
     const findingRefs = useRef<Map<string, HTMLElement>>(new Map())
-    const [tooltipTarget, setTooltipTarget] = useState<{
+    const [popoverTarget, setPopoverTarget] = useState<{
         finding: ReviewFinding
         rect: DOMRect
     } | null>(null)
@@ -152,38 +150,48 @@ export default function DocumentViewer({
         const el = findingRefs.current.get(scrollToFindingId)
         if (el) {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-            // Flash animation
-            el.classList.add('ring-2', 'ring-[#d4af37]', 'ring-offset-2', 'ring-offset-[#0a0a0a]')
+            el.classList.add('ring-2', 'ring-[#d4af37]', 'ring-offset-2', 'ring-offset-white')
             setTimeout(() => {
-                el.classList.remove('ring-2', 'ring-[#d4af37]', 'ring-offset-2', 'ring-offset-[#0a0a0a]')
+                el.classList.remove('ring-2', 'ring-[#d4af37]', 'ring-offset-2', 'ring-offset-white')
             }, 2000)
         }
     }, [scrollToFindingId])
 
-    // Register finding element ref
     const setFindingRef = useCallback((id: string, el: HTMLElement | null) => {
         if (el) findingRefs.current.set(id, el)
         else findingRefs.current.delete(id)
     }, [])
 
-    // ── Hover handler ──
-    const handleMouseEnter = useCallback((finding: ReviewFinding, e: React.MouseEvent) => {
-        onFindingHover(finding)
+    // ── Click handler (click-to-popover, not hover) ──
+    const handleFindingClick = useCallback((finding: ReviewFinding, e: React.MouseEvent) => {
+        e.stopPropagation()
         const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-        setTooltipTarget({ finding, rect })
-    }, [onFindingHover])
+        // Toggle: if same finding clicked again, close popover
+        if (popoverTarget?.finding.finding_id === finding.finding_id) {
+            setPopoverTarget(null)
+        } else {
+            setPopoverTarget({ finding, rect })
+        }
+    }, [popoverTarget])
 
-    const handleMouseLeave = useCallback(() => {
-        onFindingHover(null)
-        setTooltipTarget(null)
-    }, [onFindingHover])
+    // Close popover on outside click
+    const handleContainerClick = useCallback(() => {
+        setPopoverTarget(null)
+    }, [])
+
+    // Close popover when selectedFinding changes (sidebar opened)
+    useEffect(() => {
+        if (selectedFinding) setPopoverTarget(null)
+    }, [selectedFinding])
 
     return (
-        <div className="relative h-full flex">
+        <div className="relative h-full flex" onClick={handleContainerClick}>
             {/* ── Document Container ── */}
             <div
                 ref={containerRef}
-                className="flex-1 h-full overflow-y-auto p-8 pb-24"
+                className={`flex-1 h-full overflow-y-auto p-8 pb-24 transition-all duration-500 ${
+                    isBlurred ? 'blur-md opacity-40 pointer-events-none select-none' : 'blur-0 opacity-100'
+                }`}
                 style={{ scrollBehavior: 'smooth' }}
             >
                 {/* A4-style paper container */}
@@ -197,6 +205,7 @@ export default function DocumentViewer({
 
                                 const finding = seg.finding!
                                 const isSelected = selectedFinding?.finding_id === finding.finding_id
+                                const isPopoverOpen = popoverTarget?.finding.finding_id === finding.finding_id
                                 const isAccepted = finding.status === 'accepted'
                                 const colors = isAccepted ? ACCEPTED_COLORS : SEVERITY_COLORS[finding.severity]
 
@@ -209,7 +218,7 @@ export default function DocumentViewer({
                                             relative cursor-pointer transition-all duration-300 rounded-sm
                                             border-l-4 px-1 -mx-1
                                             ${colors.bg} ${colors.border} ${colors.hoverBg}
-                                            ${isSelected ? 'ring-2 ring-[#d4af37] ring-offset-1 ring-offset-white shadow-lg' : ''}
+                                            ${isSelected || isPopoverOpen ? 'ring-2 ring-[#d4af37] ring-offset-1 ring-offset-white shadow-lg' : ''}
                                         `}
                                         style={{
                                             backgroundColor: isAccepted
@@ -221,9 +230,9 @@ export default function DocumentViewer({
                                                         : 'rgba(59, 130, 246, 0.08)',
                                             color: 'inherit',
                                         }}
-                                        onClick={() => onFindingSelect(finding)}
-                                        onMouseEnter={(e) => handleMouseEnter(finding, e)}
-                                        onMouseLeave={handleMouseLeave}
+                                        onClick={(e) => handleFindingClick(finding, e)}
+                                        onMouseEnter={() => onFindingHover(finding)}
+                                        onMouseLeave={() => onFindingHover(null)}
                                     >
                                         {seg.content}
                                     </mark>
@@ -235,23 +244,32 @@ export default function DocumentViewer({
             </div>
 
             {/* ── Scrollbar Side Markers ── */}
-            <ScrollbarMarkers
-                findings={findings}
-                documentLength={rawDocument.length}
-                containerRef={containerRef}
-                onMarkerClick={(finding) => {
-                    onFindingSelect(finding)
-                    const el = findingRefs.current.get(finding.finding_id)
-                    el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                }}
-            />
+            {!isBlurred && (
+                <ScrollbarMarkers
+                    findings={findings}
+                    documentLength={rawDocument.length}
+                    containerRef={containerRef}
+                    onMarkerClick={(finding) => {
+                        onFindingSelect(finding)
+                        const el = findingRefs.current.get(finding.finding_id)
+                        el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                    }}
+                />
+            )}
 
-            {/* ── Tooltip ── */}
+            {/* ── Click-to-Open Popover ── */}
             <AnimatePresence>
-                {tooltipTarget && (
-                    <FindingTooltip
-                        finding={tooltipTarget.finding}
-                        targetRect={tooltipTarget.rect}
+                {popoverTarget && !isBlurred && (
+                    <FindingPopover
+                        finding={popoverTarget.finding}
+                        targetRect={popoverTarget.rect}
+                        onAcceptRedline={onAcceptRedline}
+                        onConvertToTask={onConvertToTask}
+                        onViewDetails={(f) => {
+                            onFindingSelect(f)
+                            setPopoverTarget(null)
+                        }}
+                        onClose={() => setPopoverTarget(null)}
                     />
                 )}
             </AnimatePresence>

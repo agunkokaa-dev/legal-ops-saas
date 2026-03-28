@@ -1,14 +1,14 @@
 'use client'
 
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@clerk/nextjs'
 import { toast } from 'sonner'
-import { motion, AnimatePresence } from 'framer-motion'
-import AIInsightBanner from './AIInsightBanner'
+import { AnimatePresence } from 'framer-motion'
+import HeroOverlay from './HeroOverlay'
 import DocumentViewer from './DocumentViewer'
-import QuickInsightPanel from './QuickInsightPanel'
-import AdvancedRiskPanel from './AdvancedRiskPanel'
+import AISidebar from './AISidebar'
+import FindingCard from './FindingCard'
 import Link from 'next/link'
 
 // ── Types ──
@@ -71,10 +71,21 @@ export default function ContractReviewClient({
     const [loadingPhase, setLoadingPhase] = useState<'checking' | 'analyzing' | 'finalizing'>('checking')
     const [error, setError] = useState<string | null>(null)
 
-    // ── Interaction State ──
+    // ── UI State ──
+    const [showHero, setShowHero] = useState(true)
     const [selectedFinding, setSelectedFinding] = useState<ReviewFinding | null>(null)
     const [hoveredFinding, setHoveredFinding] = useState<ReviewFinding | null>(null)
     const [scrollToFinding, setScrollToFinding] = useState<string | null>(null)
+
+    // ── Wizard State ──
+    const [wizardMode, setWizardMode] = useState(false)
+    const [wizardIndex, setWizardIndex] = useState(0)
+
+    // Critical findings for wizard
+    const wizardFindings = useMemo(() => {
+        if (!reviewData) return []
+        return reviewData.findings.filter(f => f.severity === 'critical' && f.status === 'open' && f.suggested_revision)
+    }, [reviewData])
 
     // ── Load Review Data ──
     const loadReview = useCallback(async (forceRefresh = false) => {
@@ -85,7 +96,6 @@ export default function ContractReviewClient({
             const token = await getToken()
             const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '')
 
-            // Try to get cached review first
             if (!forceRefresh) {
                 try {
                     const cached = await fetch(`${apiUrl}/api/v1/review/${contractId}`, {
@@ -104,9 +114,7 @@ export default function ContractReviewClient({
                 }
             }
 
-            // No cached data — run fresh analysis
             setLoadingPhase('analyzing')
-
             const res = await fetch(`${apiUrl}/api/v1/review/analyze`, {
                 method: 'POST',
                 headers: {
@@ -136,22 +144,50 @@ export default function ContractReviewClient({
         loadReview()
     }, [loadReview])
 
-    // ── Banner Click Handler ──
-    const handleBannerClick = useCallback((severity: 'critical' | 'warning' | 'info') => {
-        if (!reviewData) return
-        const first = reviewData.findings.find(
-            f => f.severity === severity && f.status === 'open'
-        )
-        if (first) {
-            setScrollToFinding(first.finding_id)
-            setTimeout(() => setScrollToFinding(null), 500)
-        }
-    }, [reviewData])
-
-    // ── Finding Click Handler (paragraph click → open sidebar) ──
-    const handleFindingSelect = useCallback((finding: ReviewFinding) => {
-        setSelectedFinding(finding)
+    // ── Hero Handlers ──
+    const handleHeroDismiss = useCallback(() => {
+        setShowHero(false)
     }, [])
+
+    const handleStartWizard = useCallback(() => {
+        setShowHero(false)
+        if (wizardFindings.length > 0) {
+            setWizardMode(true)
+            setWizardIndex(0)
+            const first = wizardFindings[0]
+            setSelectedFinding(first)
+            setScrollToFinding(first.finding_id)
+            setTimeout(() => setScrollToFinding(null), 600)
+        }
+    }, [wizardFindings])
+
+    // ── Wizard: advance to next finding ──
+    const handleWizardNext = useCallback(() => {
+        const nextIdx = wizardIndex + 1
+        if (nextIdx < wizardFindings.length) {
+            setWizardIndex(nextIdx)
+            const next = wizardFindings[nextIdx]
+            setSelectedFinding(next)
+            setScrollToFinding(next.finding_id)
+            setTimeout(() => setScrollToFinding(null), 600)
+        } else {
+            // Wizard complete
+            setWizardMode(false)
+            setSelectedFinding(null)
+            toast.success('All critical issues reviewed!', {
+                style: { background: '#1a1a1a', border: '1px solid #22c55e', color: '#fff' },
+                icon: '🎉',
+            })
+        }
+    }, [wizardIndex, wizardFindings])
+
+    // ── Finding Click (from sidebar) ──
+    const handleFindingClick = useCallback((finding: ReviewFinding) => {
+        setSelectedFinding(finding)
+        setScrollToFinding(finding.finding_id)
+        setTimeout(() => setScrollToFinding(null), 600)
+        if (wizardMode) setWizardMode(false)
+    }, [wizardMode])
 
     // ── Accept AI Redline ──
     const handleAcceptRedline = useCallback(async (finding: ReviewFinding) => {
@@ -175,20 +211,25 @@ export default function ContractReviewClient({
             if (!res.ok) throw new Error('Failed to apply redline')
 
             const data = await res.json()
-            toast.success('AI Redline accepted. Document updated.', {
+            toast.success('Revision applied to document.', {
                 style: { background: '#1a1a1a', border: '1px solid #22c55e', color: '#fff' }
             })
 
-            // Update local state
             setReviewData(prev => {
                 if (!prev) return prev
                 return {
                     ...prev,
                     raw_document: data.updated_document,
-                    findings: data.updated_findings
+                    findings: data.updated_findings,
+                    banner: {
+                        ...prev.banner,
+                        critical_count: (data.updated_findings || []).filter((f: ReviewFinding) => f.severity === 'critical' && f.status === 'open').length,
+                        warning_count: (data.updated_findings || []).filter((f: ReviewFinding) => f.severity === 'warning' && f.status === 'open').length,
+                        info_count: (data.updated_findings || []).filter((f: ReviewFinding) => f.severity === 'info' && f.status === 'open').length,
+                        total_count: (data.updated_findings || []).filter((f: ReviewFinding) => f.status === 'open').length,
+                    }
                 }
             })
-            setSelectedFinding(null)
         } catch (e: any) {
             toast.error(e.message || 'Failed to accept redline')
         }
@@ -292,8 +333,8 @@ export default function ContractReviewClient({
     return (
         <div className="flex flex-col h-full w-full overflow-hidden bg-[#0a0a0a]">
             {/* ── Top Bar ── */}
-            <header className="h-14 bg-[#0e0e0e] border-b border-white/5 flex items-center justify-between px-6 flex-shrink-0 z-30">
-                <div className="flex items-center gap-4">
+            <header className="h-12 bg-[#0e0e0e] border-b border-white/5 flex items-center justify-between px-6 flex-shrink-0 z-30">
+                <div className="flex items-center gap-3">
                     <Link
                         href={`/dashboard/contracts/${contractId}`}
                         className="text-zinc-500 hover:text-white transition-colors flex items-center gap-1"
@@ -301,15 +342,28 @@ export default function ContractReviewClient({
                         <span className="material-symbols-outlined text-sm">arrow_back</span>
                         <span className="text-xs tracking-wide">Detail</span>
                     </Link>
-                    <div className="w-px h-5 bg-white/10" />
+                    <div className="w-px h-4 bg-white/10" />
                     <h1 className="text-white font-serif text-sm font-semibold truncate max-w-[300px]">
                         {contractTitle}
                     </h1>
                     <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-[#d4af37]/10 text-[#d4af37] border border-[#d4af37]/20">
-                        Review Mode
+                        {wizardMode ? 'Wizard Mode' : 'Review Mode'}
                     </span>
                 </div>
                 <div className="flex items-center gap-3">
+                    {/* Summary badges */}
+                    <div className="flex items-center gap-1.5">
+                        {reviewData.banner.critical_count > 0 && (
+                            <span className="px-1.5 py-0.5 text-[9px] font-bold bg-red-500/10 text-red-400 border border-red-500/20 rounded">
+                                {reviewData.banner.critical_count} Critical
+                            </span>
+                        )}
+                        {reviewData.banner.warning_count > 0 && (
+                            <span className="px-1.5 py-0.5 text-[9px] font-bold bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded">
+                                {reviewData.banner.warning_count} Warnings
+                            </span>
+                        )}
+                    </div>
                     <button
                         onClick={() => loadReview(true)}
                         className="text-zinc-500 hover:text-white text-xs flex items-center gap-1 transition-colors"
@@ -320,14 +374,8 @@ export default function ContractReviewClient({
                 </div>
             </header>
 
-            {/* ── AI Insight Banner ── */}
-            <AIInsightBanner
-                banner={reviewData.banner}
-                onSeverityClick={handleBannerClick}
-            />
-
             {/* ── Main Content ── */}
-            <div className="flex flex-1 overflow-hidden">
+            <div className="flex flex-1 overflow-hidden relative">
                 {/* ── Center: Document Viewer ── */}
                 <div className="flex-1 h-full min-w-0 overflow-hidden relative">
                     <DocumentViewer
@@ -336,53 +384,56 @@ export default function ContractReviewClient({
                         selectedFinding={selectedFinding}
                         hoveredFinding={hoveredFinding}
                         scrollToFindingId={scrollToFinding}
-                        onFindingSelect={handleFindingSelect}
+                        isBlurred={showHero}
+                        onFindingSelect={handleFindingClick}
                         onFindingHover={setHoveredFinding}
+                        onAcceptRedline={handleAcceptRedline}
+                        onConvertToTask={handleConvertToTask}
                     />
                 </div>
 
                 {/* ── Right Sidebar ── */}
-                <div className="w-[380px] h-full flex-shrink-0 overflow-hidden border-l border-white/5 bg-[#0e0e0e]">
+                <div className="w-[380px] h-full flex-shrink-0 overflow-hidden border-l border-white/5">
                     <AnimatePresence mode="wait">
                         {selectedFinding ? (
-                            <motion.div
-                                key="risk-panel"
-                                initial={{ opacity: 0, x: 20 }}
-                                animate={{ opacity: 1, x: 0 }}
-                                exit={{ opacity: 0, x: 20 }}
-                                transition={{ duration: 0.2, ease: 'easeOut' }}
-                                className="h-full"
-                            >
-                                <AdvancedRiskPanel
-                                    finding={selectedFinding}
-                                    onBack={() => setSelectedFinding(null)}
-                                    onAcceptRedline={handleAcceptRedline}
-                                    onConvertToTask={handleConvertToTask}
-                                />
-                            </motion.div>
+                            <FindingCard
+                                key={`card-${selectedFinding.finding_id}`}
+                                finding={selectedFinding}
+                                onBack={() => {
+                                    setSelectedFinding(null)
+                                    if (wizardMode) setWizardMode(false)
+                                }}
+                                onAcceptRedline={handleAcceptRedline}
+                                onConvertToTask={handleConvertToTask}
+                                wizardMode={wizardMode}
+                                wizardProgress={wizardMode ? { current: wizardIndex + 1, total: wizardFindings.length } : undefined}
+                                onWizardNext={wizardMode ? handleWizardNext : undefined}
+                            />
                         ) : (
-                            <motion.div
-                                key="quick-panel"
-                                initial={{ opacity: 0, x: -20 }}
-                                animate={{ opacity: 1, x: 0 }}
-                                exit={{ opacity: 0, x: -20 }}
-                                transition={{ duration: 0.2, ease: 'easeOut' }}
-                                className="h-full"
-                            >
-                                <QuickInsightPanel
-                                    insights={reviewData.quick_insights}
-                                    findings={reviewData.findings}
-                                    onFindingClick={(f: ReviewFinding) => {
-                                        setSelectedFinding(f)
-                                        setScrollToFinding(f.finding_id)
-                                        setTimeout(() => setScrollToFinding(null), 500)
-                                    }}
-                                />
-                            </motion.div>
+                            <AISidebar
+                                key="sidebar"
+                                banner={reviewData.banner}
+                                findings={reviewData.findings}
+                                quickInsights={reviewData.quick_insights}
+                                selectedFinding={selectedFinding}
+                                onFindingClick={handleFindingClick}
+                                onConvertToTask={handleConvertToTask}
+                            />
                         )}
                     </AnimatePresence>
                 </div>
             </div>
+
+            {/* ── Hero Overlay ── */}
+            {showHero && (
+                <HeroOverlay
+                    banner={reviewData.banner}
+                    findings={reviewData.findings}
+                    quickInsights={reviewData.quick_insights}
+                    onDismiss={handleHeroDismiss}
+                    onStartWizard={handleStartWizard}
+                />
+            )}
         </div>
     )
 }
