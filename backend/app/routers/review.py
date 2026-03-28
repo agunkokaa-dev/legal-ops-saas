@@ -96,7 +96,7 @@ async def analyze_contract(
         if not raw_text:
             # Fetch raw text from contracts table — try multiple fields
             contract_res = admin_supabase.table("contracts") \
-                .select("draft_revisions, raw_text, title, matter_id") \
+                .select("draft_revisions, title, matter_id") \
                 .eq("id", payload.contract_id) \
                 .eq("tenant_id", tenant_id) \
                 .limit(1) \
@@ -105,7 +105,7 @@ async def analyze_contract(
             if not contract_res.data:
                 # Fallback: try without tenant filter (some contracts created before tenant enforcement)
                 contract_res = admin_supabase.table("contracts") \
-                    .select("draft_revisions, raw_text, title, matter_id, tenant_id") \
+                    .select("draft_revisions, title, matter_id, tenant_id") \
                     .eq("id", payload.contract_id) \
                     .limit(1) \
                     .execute()
@@ -122,10 +122,6 @@ async def analyze_contract(
                 raw_text = revisions.get("latest_text", "") or revisions.get("content", "")
             elif isinstance(revisions, str) and len(revisions) > 50:
                 raw_text = revisions
-
-            # Strategy 2: raw_text column
-            if not raw_text:
-                raw_text = contract.get("raw_text", "") or ""
 
             # Strategy 3: parse draft_revisions if it's a JSON string
             if not raw_text and isinstance(revisions, str):
