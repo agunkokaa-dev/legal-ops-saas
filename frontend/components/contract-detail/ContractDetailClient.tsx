@@ -226,12 +226,20 @@ export default function ContractDetailClient({
                                         HTML Reflow Enabled. Lock the document to apply highlights.
                                     </span>
                                 </div>
-                                <button 
-                                    onClick={handleLockForReview}
-                                    className="px-4 py-1.5 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 border border-[#d4af37]/50 rounded text-xs font-bold transition-colors uppercase tracking-wider flex items-center gap-2"
-                                >
-                                    <span className="material-symbols-outlined text-[16px]">lock</span> Lock for Review
-                                </button>
+                                <div className="flex items-center gap-2">
+                                    <a
+                                        href={`/dashboard/contracts/${contract.id}/review`}
+                                        className="px-4 py-1.5 bg-gradient-to-r from-[#d4af37] to-[#bda036] text-black rounded text-xs font-bold transition-all uppercase tracking-wider flex items-center gap-2 hover:shadow-[0_0_15px_rgba(212,175,55,0.3)] hover:scale-[1.02]"
+                                    >
+                                        <span className="material-symbols-outlined text-[16px]">shield</span> Enter Review Mode
+                                    </a>
+                                    <button 
+                                        onClick={handleLockForReview}
+                                        className="px-4 py-1.5 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 border border-[#d4af37]/50 rounded text-xs font-bold transition-colors uppercase tracking-wider flex items-center gap-2"
+                                    >
+                                        <span className="material-symbols-outlined text-[16px]">lock</span> Lock for Review
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Live Draft Document Viewer */}

@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import ALLOWED_ORIGINS, init_qdrant_collections
-from app.routers import matters, contracts, chat, templates, tasks, playbook, intake, drafting, clauses
+from app.routers import matters, contracts, chat, templates, tasks, playbook, intake, drafting, clauses, review
 
 # --- App Initialization ---
 app = FastAPI(title="CLAUSE Intelligent Engine", version="2.0.0")
@@ -37,6 +37,7 @@ app.include_router(tasks.router,      prefix="/api/v1",        tags=["Tasks & AI
 app.include_router(intake.router,     prefix="/api/v1",        tags=["Intake Portal"])
 app.include_router(drafting.router,   prefix="/api/v1/drafting", tags=["Drafting"])
 app.include_router(clauses.router,    prefix="/api/v1",          tags=["Clause Library"])
+app.include_router(review.router,     prefix="/api/v1/review",   tags=["Contract Review"])
 
 
 @app.get("/health")
