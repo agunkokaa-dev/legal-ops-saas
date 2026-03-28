@@ -12,7 +12,7 @@ from openai import OpenAI
 load_dotenv(override=False)
 
 # --- CORS ---
-raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,http://173.212.240.143:3000,http://173.212.240.143")
+raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://173.212.240.143:3000,http://173.212.240.143:3001,http://173.212.240.143")
 ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
 
 # --- Auth ---
