@@ -290,22 +290,31 @@ async def accept_finding(
         end = coords.get("end_char", -1)
 
         # Attempt exact coordinate replacement first
+        actual_start = -1
+        actual_end = -1
+        
         if start >= 0 and end > start and end <= len(raw_document):
             existing_text = raw_document[start:end]
             if existing_text.strip() == source_text.strip():
-                updated_document = raw_document[:start] + payload.suggested_revision + raw_document[end:]
+                actual_start = start
+                actual_end = end
+                updated_document = raw_document[:actual_start] + payload.suggested_revision + raw_document[actual_end:]
             else:
                 # Coordinate mismatch — fallback to string search
                 idx = raw_document.find(source_text)
                 if idx >= 0:
-                    updated_document = raw_document[:idx] + payload.suggested_revision + raw_document[idx + len(source_text):]
+                    actual_start = idx
+                    actual_end = idx + len(source_text)
+                    updated_document = raw_document[:actual_start] + payload.suggested_revision + raw_document[actual_end:]
                 else:
                     raise HTTPException(status_code=400, detail="Could not locate the clause text in the document.")
         elif source_text:
             # No coordinates — fallback to string search
             idx = raw_document.find(source_text)
             if idx >= 0:
-                updated_document = raw_document[:idx] + payload.suggested_revision + raw_document[idx + len(source_text):]
+                actual_start = idx
+                actual_end = idx + len(source_text)
+                updated_document = raw_document[:actual_start] + payload.suggested_revision + raw_document[actual_end:]
             else:
                 raise HTTPException(status_code=400, detail="Could not locate the clause text in the document.")
         else:
@@ -313,6 +322,20 @@ async def accept_finding(
 
         # Update finding status
         target_finding["status"] = "accepted"
+
+        # Shift coordinates for all subsequent findings to keep highlights aligned
+        if actual_start >= 0 and actual_end >= 0:
+            length_diff = len(payload.suggested_revision) - (actual_end - actual_start)
+            target_finding["coordinates"]["start_char"] = actual_start
+            target_finding["coordinates"]["end_char"] = actual_start + len(payload.suggested_revision)
+            target_finding["coordinates"]["source_text"] = payload.suggested_revision
+            
+            for f in findings:
+                if f.get("finding_id") != target_finding["finding_id"]:
+                    f_start = f.get("coordinates", {}).get("start_char", -1)
+                    if f_start > actual_start:
+                        f["coordinates"]["start_char"] += length_diff
+                        f["coordinates"]["end_char"] += length_diff
 
         # Save updated review
         admin_supabase.table("contract_reviews") \

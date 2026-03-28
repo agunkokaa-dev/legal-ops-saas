@@ -230,10 +230,14 @@ export default function ContractReviewClient({
                     }
                 }
             })
+            
+            setSelectedFinding(prev => prev && prev.finding_id === finding.finding_id ? { ...prev, status: 'accepted' } : prev)
+            router.refresh()
+            
         } catch (e: any) {
             toast.error(e.message || 'Failed to accept redline')
         }
-    }, [contractId, getToken])
+    }, [contractId, getToken, router])
 
     // ── Convert to Task ──
     const handleConvertToTask = useCallback(async (finding: ReviewFinding) => {
