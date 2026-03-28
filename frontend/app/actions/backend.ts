@@ -198,3 +198,41 @@ export async function triggerSmartIngestion(formData: FormData, matterId: string
         return { success: false, error: error.message || "Internal server error" }
     }
 }
+
+// 4. Confirm War Room Version Link
+export async function confirmVersionLink(newContractId: string, parentContractId: string) {
+    const { userId, orgId, getToken } = await auth()
+    const tenantId = orgId || userId
+
+    if (!tenantId) {
+        return { success: false, error: "Unauthorized: No tenant or user ID found." }
+    }
+
+    try {
+        const token = await getToken()
+        
+        const response = await fetch(`${FASTAPI_URL}/api/upload/confirm-version`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                new_contract_id: newContractId,
+                parent_contract_id: parentContractId
+            }),
+        })
+
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}))
+            console.error("Confirm Version API Error:", errorData.detail)
+            return { success: false, error: errorData.detail || 'Failed to confirm version link' }
+        }
+
+        const data = await response.json()
+        return { success: true, data }
+    } catch (error: any) {
+        console.error("Confirm Version Action Error:", error)
+        return { success: false, error: error.message || "Internal server error" }
+    }
+}

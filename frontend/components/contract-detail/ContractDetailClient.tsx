@@ -4,8 +4,6 @@ import { useState, useMemo, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@clerk/nextjs'
 import { toast } from 'sonner'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import IntelligenceSidebar from './IntelligenceSidebar'
 import PDFViewerWrapper from './PDFViewerWrapper'
 import jsPDF from 'jspdf'
@@ -35,7 +33,6 @@ export default function ContractDetailClient({
     const [isLockedForReview, setIsLockedForReview] = useState(false);
     const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
     const [currentDraftVersion, setCurrentDraftVersion] = useState<string | null>(null);
-    const [showUnlockModal, setShowUnlockModal] = useState(false);
 
     // String hasher
     const generateHash = (str: string) => {
@@ -166,15 +163,6 @@ export default function ContractDetailClient({
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [contract?.status, parsedDraftText, isLockedForReview]);
 
-    const confirmUnlock = () => {
-        setIsLockedForReview(false);
-        setShowUnlockModal(false);
-        if (pdfBlobUrl) {
-            URL.revokeObjectURL(pdfBlobUrl);
-            setPdfBlobUrl(null);
-        }
-    };
-
     const filteredNotes = useMemo(() => {
         if (!isLockedForReview) return [];
         return notes.filter(n => {
@@ -187,69 +175,20 @@ export default function ContractDetailClient({
         <div className="flex h-[calc(100vh-70px)] w-full overflow-hidden bg-background">
             {/* LEFT: PDF Viewer or Live Draft Viewer */}
             <div className="flex-1 h-full min-w-0 overflow-hidden relative">
-                {showUnlockModal && (
-                    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-                        <div className="bg-[#1a1a1a] border border-[#333] rounded-xl p-6 max-w-sm text-center shadow-2xl">
-                            <h3 className="text-white text-lg font-bold font-serif mb-2">Unlock Document?</h3>
-                            <p className="text-gray-400 text-sm mb-6 leading-relaxed">
-                                Unlocking will change the document layout. Previous highlights will be hidden from the document to prevent misalignment, but notes remain in the sidebar.
-                            </p>
-                            <div className="flex justify-between gap-4">
-                                <button onClick={() => setShowUnlockModal(false)} className="flex-1 py-2 text-sm text-gray-300 hover:text-white transition-colors border border-gray-600 rounded">
-                                    Stay in Review
-                                </button>
-                                <button onClick={confirmUnlock} className="flex-1 py-2 text-sm bg-white text-black font-semibold rounded hover:bg-gray-200 transition-colors">
-                                    Continue Editing
-                                </button>
-                            </div>
-                        </div>
+                {/* War Room: Version Badge */}
+                {contract.version_count && contract.version_count > 1 && (
+                    <div className="absolute top-3 left-3 z-20 bg-[#d4af37]/90 text-black text-[11px] font-bold px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5 backdrop-blur-sm">
+                        <span className="material-symbols-outlined text-[14px]">history</span>
+                        V{contract.version_count}
                     </div>
                 )}
-
-                {(pdfUrl && contract.status !== 'Draft') || (isLockedForReview && pdfBlobUrl) ? (
-                    <PDFViewerWrapper
-                        fileUrl={isLockedForReview && pdfBlobUrl ? pdfBlobUrl : pdfUrl}
-                        contractId={contract.id}
-                        scrollToId={scrollToId}
-                        notes={isLockedForReview ? filteredNotes : notes}
-                        draftVersion={currentDraftVersion}
-                    />
-                ) : (
-                    <div className="w-full h-full flex flex-col bg-[#0a0a0a] p-6">
-                        {/* Dynamic Banner */}
-                        <div className="w-full bg-[#d4af37]/10 border border-[#d4af37]/30 text-[#d4af37] px-4 py-3 rounded-lg mb-4 flex items-center justify-between flex-shrink-0 shadow-lg">
-                            <div className="flex flex-col">
-                                <span className="text-xs font-bold uppercase tracking-wider flex items-center gap-2">
-                                    Live Draft Mode
-                                </span>
-                                <span className="text-[10px] text-[#d4af37]/70 italic hidden md:inline mt-0.5">
-                                    HTML Reflow Enabled. Lock the document to apply highlights.
-                                </span>
-                            </div>
-                                <button 
-                                    onClick={handleLockForReview}
-                                    className="px-4 py-1.5 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 border border-[#d4af37]/50 rounded text-xs font-bold transition-colors uppercase tracking-wider flex items-center gap-2"
-                                >
-                                    <span className="material-symbols-outlined text-[16px]">lock</span> Lock for Review
-                                </button>
-                        </div>
-
-                        {/* Live Draft Document Viewer */}
-                        <div className="w-full h-full bg-[#141414] p-4 md:p-8 overflow-y-auto rounded-xl border border-white/5 flex justify-center shadow-inner relative">
-                            <div className="w-full max-w-[850px] bg-white text-black p-12 md:p-16 rounded shadow-2xl min-h-[1056px]">
-                                <div
-                                    className="font-serif leading-relaxed text-[15px] prose prose-sm prose-invert max-w-none whitespace-pre-wrap prose-p:my-2 prose-headings:my-4 prose-headings:text-[#d4af37] prose-strong:text-[#d4af37] prose-a:text-[#d4af37]"
-                                    style={{ whiteSpace: 'pre-wrap' }}
-                                >
-                                    <ReactMarkdown
-                                        remarkPlugins={[remarkGfm]}
-                                        children={parsedDraftText || "No draft content available."}
-                                    />
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                )}
+                <PDFViewerWrapper
+                    fileUrl={isLockedForReview && pdfBlobUrl ? pdfBlobUrl : pdfUrl}
+                    contractId={contract.id}
+                    scrollToId={scrollToId}
+                    notes={isLockedForReview ? filteredNotes : notes}
+                    draftVersion={currentDraftVersion}
+                />
             </div>
             {/* RIGHT: Sidebar - fixed width, strict height */}
             <div className="w-[400px] h-full flex-shrink-0 overflow-hidden">
@@ -263,7 +202,7 @@ export default function ContractDetailClient({
                     onNoteClick={setScrollToId}
                     onNoteDeleted={() => router.refresh()}
                     isLocked={isLockedForReview}
-                    onUnlock={() => setShowUnlockModal(true)}
+                    onUnlock={() => router.push(`/dashboard/drafting/${contract.matter_id}?contract_id=${contract.id}`)}
                     currentDraftVersion={currentDraftVersion}
                     onApplySuggestion={handleApplySuggestion}
                 />

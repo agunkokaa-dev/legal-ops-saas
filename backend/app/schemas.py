@@ -141,3 +141,53 @@ class ClauseMatchResult(BaseModel):
     guidance_notes: Optional[str] = None
     similarity_score: float
 
+
+# --- Negotiation War Room (Phase 1) Models ---
+
+class ContractVersionResponse(BaseModel):
+    id: str
+    contract_id: str
+    version_number: int
+    risk_score: float = 0.0
+    risk_level: str = "Unknown"
+    uploaded_filename: Optional[str] = None
+    created_at: str
+
+
+class NegotiationIssueResponse(BaseModel):
+    id: str
+    contract_id: str
+    version_id: Optional[str] = None
+    finding_id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    severity: str = "warning"
+    category: Optional[str] = None
+    status: str = "open"
+    linked_task_id: Optional[str] = None
+    coordinates: Optional[Any] = None
+    suggested_revision: Optional[str] = None
+    playbook_reference: Optional[str] = None
+    created_at: str
+
+
+class EscalateIssueRequest(BaseModel):
+    issue_id: str
+    matter_id: str
+
+
+class VersionCandidateResponse(BaseModel):
+    """Returned by upload when a potential version match is detected."""
+    is_version_candidate: bool = False
+    matched_contract_id: Optional[str] = None
+    matched_contract_title: Optional[str] = None
+    similarity_score: float = 0.0
+    uploaded_contract_id: str  # The new contract ID created (pending link)
+    uploaded_filename: str
+
+
+class ConfirmVersionLinkRequest(BaseModel):
+    """User confirms that a newly uploaded contract is a new version."""
+    new_contract_id: str
+    parent_contract_id: str
+

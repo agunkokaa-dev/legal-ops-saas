@@ -273,6 +273,13 @@ export default function ContractReviewClient({
         }
     }, [matterId, contractId, getToken, router])
 
+    // ── Edit in Drafting (Review-to-Draft Bridge) ──
+    const handleEditInDrafting = useCallback((finding: ReviewFinding) => {
+        router.push(
+            `/dashboard/drafting/${matterId}?mode=review&contract_id=${contractId}&focus_finding=${finding.finding_id}`
+        )
+    }, [matterId, contractId, router])
+
     // ── Loading State ──
     if (isLoading) {
         const phaseMessages = {
@@ -409,6 +416,7 @@ export default function ContractReviewClient({
                                 }}
                                 onAcceptRedline={handleAcceptRedline}
                                 onConvertToTask={handleConvertToTask}
+                                onEditInDrafting={handleEditInDrafting}
                                 wizardMode={wizardMode}
                                 wizardProgress={wizardMode ? { current: wizardIndex + 1, total: wizardFindings.length } : undefined}
                                 onWizardNext={wizardMode ? handleWizardNext : undefined}

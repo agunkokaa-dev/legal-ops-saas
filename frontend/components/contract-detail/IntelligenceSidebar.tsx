@@ -74,7 +74,7 @@ export default function IntelligenceSidebar({
         setIsSaving(true);
         try {
             const autoTitle = note.quote.length > 40 ? note.quote.substring(0, 40) + "..." : note.quote;
-            
+
             const res = await createTask({
                 title: `[Review] ${autoTitle}`,
                 description: `**Source Note:**\n\n${note.quote}\n\n${note.comment ? `**Comment:** ${note.comment}` : ''}`,
@@ -84,7 +84,7 @@ export default function IntelligenceSidebar({
             });
 
             if (res.error) throw new Error(res.error);
-            
+
             toast.success("Task added to Backlog!", {
                 icon: <span className="material-symbols-outlined text-clause-gold text-[16px]">task_alt</span>,
                 style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
@@ -114,21 +114,21 @@ export default function IntelligenceSidebar({
                 </p>
             </div>
 
-            {/* LOCKED FOR REVIEW BANNER */}
+            {/* EDIT IN SMART COMPOSER BANNER */}
             {isLocked && (
                 <div className="flex-none auto-h p-4 border-b border-white/10 bg-[#d4af37]/10 flex flex-col gap-2">
                     <div className="flex items-center gap-2 text-[#d4af37]">
-                        <span className="material-symbols-outlined text-[16px]">lock</span>
-                        <span className="text-xs font-bold uppercase tracking-wider">Locked for Review</span>
+                        <span className="material-symbols-outlined text-[16px]">draw</span>
+                        <span className="text-xs font-bold uppercase tracking-wider">Drafting Mode Available</span>
                     </div>
                     <p className="text-[10px] text-[#d4af37]/70 leading-relaxed mb-1">
-                        PDF Highlighting is active. Unlock to edit the HTML draft, which will hide previous coordinate highlights.
+                        This document is available for deep-work editing in the Smart Composer.
                     </p>
-                    <button 
+                    <button
                         onClick={onUnlock}
-                        className="w-full py-1.5 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 border border-[#d4af37]/50 rounded text-xs font-bold text-[#d4af37] transition-colors"
+                        className="w-full py-1.5 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 border border-[#d4af37]/50 rounded text-xs font-bold text-[#d4af37] transition-colors flex items-center justify-center gap-2"
                     >
-                        Unlock to Edit
+                        <span></span> Edit in Smart Composer
                     </button>
                 </div>
             )}
@@ -234,6 +234,26 @@ export default function IntelligenceSidebar({
                                         Go to Review Workspace
                                     </a>
                                 </div>
+
+                                {/* War Room: Version History Card */}
+                                {contract?.version_count && contract.version_count > 1 && (
+                                    <div className="mt-4 p-4 rounded-xl bg-[#0a0a0a] border border-white/10 flex items-center gap-4 group hover:border-[#d4af37]/30 transition-colors cursor-pointer">
+                                        <div className="w-10 h-10 rounded-full bg-[#d4af37]/10 flex items-center justify-center shrink-0">
+                                            <span className="material-symbols-outlined text-[#d4af37] text-lg">difference</span>
+                                        </div>
+                                        <div className="flex flex-col flex-1 min-w-0">
+                                            <span className="text-white font-serif font-bold text-xs group-hover:text-[#d4af37] transition-colors">
+                                                Version History
+                                            </span>
+                                            <span className="text-[10px] text-text-muted">
+                                                {contract.version_count} versions tracked
+                                            </span>
+                                        </div>
+                                        <div className="bg-[#d4af37]/20 text-[#d4af37] text-[10px] font-bold px-2.5 py-1 rounded-full">
+                                            V{contract.version_count}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </motion.div>
                     )}
@@ -269,54 +289,54 @@ export default function IntelligenceSidebar({
                                     notes.map((note: any, idx: number) => {
                                         const pos = typeof note.position_data === 'string' ? JSON.parse(note.position_data) : note.position_data;
                                         const isOutdated = isLocked && pos?.draft_version !== currentDraftVersion;
-                                        
+
                                         return (
-                                        <div
-                                            key={note.id || idx}
-                                            className={`bg-background rounded-lg p-3 border ${isOutdated ? 'border-amber-500/50 opacity-80' : 'border-surface-border hover:border-[#d4af37]/30'} transition-colors relative cursor-pointer group`}
-                                            onClick={() => !isOutdated && onNoteClick?.(note.id)}
-                                        >
-                                            {isOutdated && (
-                                                <div className="absolute -top-2 -right-2 bg-amber-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded shadow flex items-center gap-1 z-20">
-                                                    <span className="material-symbols-outlined text-[10px]">warning</span>
-                                                    Previous Version
+                                            <div
+                                                key={note.id || idx}
+                                                className={`bg-background rounded-lg p-3 border ${isOutdated ? 'border-amber-500/50 opacity-80' : 'border-surface-border hover:border-[#d4af37]/30'} transition-colors relative cursor-pointer group`}
+                                                onClick={() => !isOutdated && onNoteClick?.(note.id)}
+                                            >
+                                                {isOutdated && (
+                                                    <div className="absolute -top-2 -right-2 bg-amber-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded shadow flex items-center gap-1 z-20">
+                                                        <span className="material-symbols-outlined text-[10px]">warning</span>
+                                                        Previous Version
+                                                    </div>
+                                                )}
+
+                                                <button
+                                                    onClick={async (e) => {
+                                                        e.stopPropagation();
+                                                        if (confirm('Delete this note?')) {
+                                                            const res = await deleteNote(note.id);
+                                                            if (res.error) alert(res.error);
+                                                            else onNoteDeleted?.();
+                                                        }
+                                                    }}
+                                                    className="absolute top-2 right-2 text-text-muted hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                                                >
+                                                    <span className="material-symbols-outlined text-[14px]">delete</span>
+                                                </button>
+
+                                                <div className="text-[11px] text-gray-300 leading-relaxed mb-2 px-2 border-l-2 border-[#d4af37]/50 pr-6 prose-invert prose-xs max-w-none prose-p:leading-relaxed prose-blockquote:border-l-lux-gold prose-blockquote:bg-white/5 prose-blockquote:py-1 prose-blockquote:px-3">
+                                                    <ReactMarkdown>
+                                                        {note.quote}
+                                                    </ReactMarkdown>
                                                 </div>
-                                            )}
-                                            
-                                            <button
-                                                onClick={async (e) => {
-                                                    e.stopPropagation();
-                                                    if (confirm('Delete this note?')) {
-                                                        const res = await deleteNote(note.id);
-                                                        if (res.error) alert(res.error);
-                                                        else onNoteDeleted?.();
-                                                    }
-                                                }}
-                                                className="absolute top-2 right-2 text-text-muted hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                                            >
-                                                <span className="material-symbols-outlined text-[14px]">delete</span>
-                                            </button>
-                                            
-                                            <div className="text-[11px] text-gray-300 leading-relaxed mb-2 px-2 border-l-2 border-[#d4af37]/50 pr-6 prose-invert prose-xs max-w-none prose-p:leading-relaxed prose-blockquote:border-l-lux-gold prose-blockquote:bg-white/5 prose-blockquote:py-1 prose-blockquote:px-3">
-                                                <ReactMarkdown>
-                                                    {note.quote}
-                                                </ReactMarkdown>
+
+                                                {note.comment && (
+                                                    <p className="text-white text-xs mt-2 bg-white/5 p-2 rounded border border-white/5">{note.comment}</p>
+                                                )}
+
+                                                <button
+                                                    onClick={(e) => { e.stopPropagation(); handlePushToKanban(note); }}
+                                                    disabled={isSaving}
+                                                    className="absolute bottom-2 right-2 p-1.5 text-gray-400 bg-gray-800 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:text-white hover:bg-[#d4af37]/80 flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider z-10 disabled:opacity-50"
+                                                    title="Convert to Kanban Task"
+                                                >
+                                                    <span className="material-symbols-outlined text-[14px]">format_list_bulleted_add</span>
+                                                    <span>Push to Backlog</span>
+                                                </button>
                                             </div>
-
-                                            {note.comment && (
-                                                <p className="text-white text-xs mt-2 bg-white/5 p-2 rounded border border-white/5">{note.comment}</p>
-                                            )}
-
-                                            <button 
-                                                onClick={(e) => { e.stopPropagation(); handlePushToKanban(note); }}
-                                                disabled={isSaving}
-                                                className="absolute bottom-2 right-2 p-1.5 text-gray-400 bg-gray-800 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:text-white hover:bg-[#d4af37]/80 flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider z-10 disabled:opacity-50"
-                                                title="Convert to Kanban Task"
-                                            >
-                                                <span className="material-symbols-outlined text-[14px]">format_list_bulleted_add</span>
-                                                <span>Push to Backlog</span>
-                                            </button>
-                                        </div>
                                         )
                                     })
                                 )}

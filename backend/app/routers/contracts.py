@@ -25,8 +25,9 @@ import os
 
 from app.config import openai_client, qdrant, COLLECTION_NAME, admin_supabase
 from app.dependencies import verify_clerk_token, get_tenant_supabase
-from app.schemas import ExtractObligationsRequest, ArchiveContractRequest
+from app.schemas import ExtractObligationsRequest, ArchiveContractRequest, ConfirmVersionLinkRequest
 from app.utils import chunk_text
+from difflib import SequenceMatcher
 from graph import clm_graph
 import traceback
 
@@ -215,6 +216,55 @@ async def process_contract_background(
                 print(f"!!! [SUPABASE INSERT ERROR] Exceptions swallowed during insert(): {e}")
                 traceback.print_exc()
         
+        # ── War Room: Persist version snapshot ──
+        try:
+            # Determine the version number for this contract
+            version_res = admin_supabase.table("contract_versions") \
+                .select("version_number") \
+                .eq("contract_id", contract_id) \
+                .order("version_number", desc=True) \
+                .limit(1) \
+                .execute()
+            
+            next_version = 1
+            if version_res.data:
+                next_version = (version_res.data[0].get("version_number", 0) or 0) + 1
+            
+            # Serialize the pipeline output (strip raw_document to save space)
+            pipeline_snapshot = {}
+            for key in ["risk_score", "risk_level", "risk_flags_v2", "compliance_findings_v2",
+                        "draft_revisions_v2", "obligations_v2", "classified_clauses_v2",
+                        "review_findings", "quick_insights", "banner",
+                        "contract_value", "currency", "end_date", "effective_date",
+                        "jurisdiction", "governing_law", "counter_proposal"]:
+                if key in final_state:
+                    pipeline_snapshot[key] = final_state[key]
+
+            version_id = str(uuid.uuid4())
+            version_record = {
+                "id": version_id,
+                "contract_id": contract_id,
+                "tenant_id": tenant_id,
+                "version_number": next_version,
+                "raw_text": text_content[:500000],
+                "pipeline_output": pipeline_snapshot,
+                "risk_score": float(score),
+                "risk_level": risk_level,
+                "uploaded_filename": filename
+            }
+            admin_supabase.table("contract_versions").insert(version_record).execute()
+            
+            # Update contracts table with version tracking
+            admin_supabase.table("contracts") \
+                .update({"version_count": next_version, "latest_version_id": version_id}) \
+                .eq("id", contract_id) \
+                .execute()
+            
+            print(f"✅ [War Room] Persisted version V{next_version} (id={version_id}) for contract {contract_id}")
+        except Exception as ver_err:
+            print(f"⚠️ [War Room] Failed to persist version snapshot: {ver_err}")
+            traceback.print_exc()
+
         # Insert extracted obligations
         obligations = final_state.get("extracted_obligations", [])
         if obligations:
@@ -328,10 +378,42 @@ async def upload_contract(
         if not contract_id:
             contract_id = str(uuid.uuid4())
 
+        # ── War Room: Version-Aware Fuzzy Match ──
+        version_candidate = None
+        if matter_id:
+            try:
+                existing_contracts = admin_supabase.table("contracts") \
+                    .select("id, title") \
+                    .eq("matter_id", matter_id) \
+                    .eq("tenant_id", tenant_id) \
+                    .execute()
+                
+                if existing_contracts.data:
+                    upload_name = (file.filename or "").lower().replace(".pdf", "").strip()
+                    best_match = None
+                    best_score = 0.0
+                    
+                    for ec in existing_contracts.data:
+                        existing_title = (ec.get("title") or "").lower().replace(".pdf", "").strip()
+                        if not existing_title:
+                            continue
+                        ratio = SequenceMatcher(None, upload_name, existing_title).ratio()
+                        if ratio >= 0.6 and ratio > best_score:
+                            best_score = ratio
+                            best_match = ec
+                    
+                    if best_match:
+                        version_candidate = {
+                            "is_version_candidate": True,
+                            "matched_contract_id": best_match["id"],
+                            "matched_contract_title": best_match.get("title", "Unknown"),
+                            "similarity_score": round(best_score, 3)
+                        }
+                        print(f"🔗 [War Room] Version candidate detected: '{file.filename}' matches '{best_match.get('title')}' (score={best_score:.3f})")
+            except Exception as match_err:
+                print(f"⚠️ [War Room] Fuzzy match check failed (non-fatal): {match_err}")
+
         # Schedule on the running event loop (NOT BackgroundTasks).
-        # BackgroundTasks runs coroutines in a sync threadpool, which
-        # silently kills all `await` calls inside the function.
-        # asyncio.create_task() keeps it on the event loop where awaits work.
         task = asyncio.create_task(
             process_contract_background(
                 contract_id=contract_id,
@@ -344,13 +426,109 @@ async def upload_contract(
         task.add_done_callback(functools.partial(handle_task_result, contract_id=contract_id))
         print(f"[ENDPOINT SUCCESS] Background task scheduled for contract_id: {contract_id}. Returning 200 immediately.")
 
-        return {
+        response = {
             "status": "success", 
             "message": "Upload diproses di latar belakang.",
+            "contract_id": contract_id,
             "smart_metadata": {}
         }
+        
+        # Attach version candidate info if detected
+        if version_candidate:
+            response["version_candidate"] = {
+                **version_candidate,
+                "uploaded_contract_id": contract_id,
+                "uploaded_filename": file.filename
+            }
+        
+        return response
     except Exception as e:
         print(f"API Upload Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/upload/confirm-version")
+async def confirm_version_link(
+    payload: ConfirmVersionLinkRequest,
+    claims: dict = Depends(verify_clerk_token),
+):
+    """
+    User confirms that a newly uploaded contract is a new version of an existing one.
+    This merges the new contract's data into the parent contract's version chain.
+    """
+    try:
+        tenant_id = claims["verified_tenant_id"]
+        
+        # Verify both contracts exist and belong to this tenant
+        parent_res = admin_supabase.table("contracts") \
+            .select("id, title, version_count, matter_id") \
+            .eq("id", payload.parent_contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .limit(1) \
+            .execute()
+        
+        new_res = admin_supabase.table("contracts") \
+            .select("id, title") \
+            .eq("id", payload.new_contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .limit(1) \
+            .execute()
+        
+        if not parent_res.data:
+            raise HTTPException(status_code=404, detail="Parent contract not found.")
+        if not new_res.data:
+            raise HTTPException(status_code=404, detail="New contract not found.")
+        
+        parent = parent_res.data[0]
+        
+        # Check if the new contract already has a V1 version entry — re-assign it to the parent
+        new_version_res = admin_supabase.table("contract_versions") \
+            .select("id, version_number, raw_text, pipeline_output, risk_score, risk_level, uploaded_filename") \
+            .eq("contract_id", payload.new_contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .order("version_number", desc=True) \
+            .limit(1) \
+            .execute()
+        
+        current_version_count = parent.get("version_count", 1) or 1
+        next_version = current_version_count + 1
+        
+        if new_version_res.data:
+            # Re-assign the version snapshot to the parent contract
+            version_row = new_version_res.data[0]
+            admin_supabase.table("contract_versions") \
+                .update({
+                    "contract_id": payload.parent_contract_id,
+                    "version_number": next_version
+                }) \
+                .eq("id", version_row["id"]) \
+                .execute()
+            
+            # Update parent contract tracking
+            admin_supabase.table("contracts") \
+                .update({
+                    "version_count": next_version,
+                    "latest_version_id": version_row["id"]
+                }) \
+                .eq("id", payload.parent_contract_id) \
+                .execute()
+            
+            print(f"✅ [War Room] Linked version V{next_version} to parent contract {payload.parent_contract_id}")
+        else:
+            print(f"⚠️ [War Room] No version snapshot found for new contract {payload.new_contract_id} — pipeline may still be running.")
+        
+        return {
+            "status": "success",
+            "message": f"Contract linked as Version {next_version}.",
+            "parent_contract_id": payload.parent_contract_id,
+            "new_version_number": next_version
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Confirm Version Link Error: {e}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

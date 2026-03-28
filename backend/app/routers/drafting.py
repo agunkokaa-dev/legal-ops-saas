@@ -337,22 +337,34 @@ async def save_draft(
 async def load_draft(
     matter_id: str,
     claims: dict = Depends(verify_clerk_token),
+    contract_id: str | None = None,
 ):
     """
     Loads the latest draft for a specific matter.
+    If contract_id is provided, loads that specific contract instead.
     """
     try:
         tenant_id = claims["verified_tenant_id"]
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid token claims")
         
-        res = admin_supabase.table("contracts") \
-            .select("id, draft_revisions, status") \
-            .eq("matter_id", matter_id) \
-            .eq("tenant_id", tenant_id) \
-            .order("created_at", desc=True) \
-            .limit(1) \
-            .execute()
+        if contract_id:
+            # Load a specific contract by ID
+            res = admin_supabase.table("contracts") \
+                .select("id, draft_revisions, status, matter_id") \
+                .eq("id", contract_id) \
+                .eq("tenant_id", tenant_id) \
+                .limit(1) \
+                .execute()
+        else:
+            # Load the latest contract for this matter
+            res = admin_supabase.table("contracts") \
+                .select("id, draft_revisions, status") \
+                .eq("matter_id", matter_id) \
+                .eq("tenant_id", tenant_id) \
+                .order("created_at", desc=True) \
+                .limit(1) \
+                .execute()
             
         if res.data and len(res.data) > 0:
             draft = res.data[0]

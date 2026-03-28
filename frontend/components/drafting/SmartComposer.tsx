@@ -13,6 +13,9 @@ interface SmartComposerProps {
   matterId: string;
   taskTitle: string;
   initialCounterparty?: string;
+  mode?: string;
+  contractId?: string;
+  focusFindingId?: string;
   onClose: () => void;
 }
 
@@ -20,6 +23,9 @@ export default function SmartComposer({
   matterId,
   taskTitle,
   initialCounterparty = "",
+  mode,
+  contractId,
+  focusFindingId,
   onClose,
 }: SmartComposerProps) {
   const { getToken } = useAuth();
@@ -46,6 +52,7 @@ export default function SmartComposer({
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState(false);
   const router = useRouter();
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
 
   const draftingSteps = [
     "Reading current draft...",
@@ -59,18 +66,66 @@ export default function SmartComposer({
       try {
         const token = await getToken();
         const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
-        const res = await fetch(`${baseUrl}/api/v1/drafting/load/${matterId}`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.found) {
-            setDraftText(data.draft_text);
-            setCurrentContractId(data.contract_id);
+        
+        if (mode === 'review' && contractId) {
+          // Special Review-to-Draft flow: fetch from the review endpoint
+          const res = await fetch(`${baseUrl}/api/v1/review/${contractId}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.review) {
+              setDraftText(data.review.raw_document);
+              setCurrentContractId(contractId);
+              
+              if (focusFindingId) {
+                const target = data.review.findings.find((f: any) => f.finding_id === focusFindingId);
+                if (target) {
+                  // Inject suggestion into chat history
+                  setChatHistory([
+                    {
+                      role: 'assistant',
+                      content: `Revising: **${target.title}**\n\n${target.description}`,
+                      suggestion: target.suggested_revision || null
+                    }
+                  ]);
+                  // Scroll document and set active range
+                  setTimeout(() => {
+                    const start = target.coordinates?.start_char;
+                    const end = target.coordinates?.end_char;
+                    if (start >= 0 && end > start && textareaRef.current) {
+                      textareaRef.current.focus();
+                      textareaRef.current.setSelectionRange(start, end);
+                      setActiveRange({ start, end });
+                      // Simple text selection simulation
+                      setTextSelection({
+                         text: data.review.raw_document.substring(start, end),
+                         x: window.innerWidth / 2,
+                         y: window.innerHeight / 2,
+                         start,
+                         end
+                      });
+                    }
+                  }, 500);
+                }
+              }
+            }
+          }
+        } else {
+          // Standard drafting flow
+          const res = await fetch(`${baseUrl}/api/v1/drafting/load/${matterId}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.found) {
+              setDraftText(data.draft_text);
+              setCurrentContractId(data.contract_id);
 
-            // Parse history from the full draft_revisions JSONB if available
-            if (data.draft_revisions && typeof data.draft_revisions === 'object' && !Array.isArray(data.draft_revisions)) {
-              setRevisionHistory(data.draft_revisions.history || []);
+              // Parse history from the full draft_revisions JSONB if available
+              if (data.draft_revisions && typeof data.draft_revisions === 'object' && !Array.isArray(data.draft_revisions)) {
+                setRevisionHistory(data.draft_revisions.history || []);
+              }
             }
           }
         }
@@ -79,7 +134,7 @@ export default function SmartComposer({
       }
     };
     loadExistingDraft();
-  }, [matterId]);
+  }, [matterId, mode, contractId, focusFindingId]);
 
   React.useEffect(() => {
     const fetchPlaybooks = async () => {
@@ -627,6 +682,7 @@ export default function SmartComposer({
                 </div>
               ) : draftText ? (
                 <textarea
+                  ref={textareaRef}
                   value={draftText}
                   onChange={(e) => setDraftText(e.target.value)}
                   onMouseUp={handleTextSelection}

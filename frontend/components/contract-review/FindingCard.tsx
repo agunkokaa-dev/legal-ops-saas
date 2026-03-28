@@ -47,6 +47,7 @@ export default function FindingCard({
     onBack,
     onAcceptRedline,
     onConvertToTask,
+    onEditInDrafting,
     wizardMode,
     wizardProgress,
     onWizardNext,
@@ -55,6 +56,7 @@ export default function FindingCard({
     onBack: () => void
     onAcceptRedline: (finding: ReviewFinding) => Promise<void>
     onConvertToTask: (finding: ReviewFinding) => Promise<void>
+    onEditInDrafting?: (finding: ReviewFinding) => void
     wizardMode?: boolean
     wizardProgress?: { current: number; total: number }
     onWizardNext?: () => void
@@ -227,6 +229,15 @@ export default function FindingCard({
                             </>
                         )}
                     </button>
+                    {onEditInDrafting && (
+                        <button
+                            onClick={() => onEditInDrafting(finding)}
+                            className="w-full py-2.5 bg-transparent border border-blue-500/20 text-blue-400 hover:text-blue-300 hover:border-blue-500/40 hover:bg-blue-500/5 text-xs font-bold uppercase tracking-[0.12em] rounded-xl transition-all flex items-center justify-center gap-2"
+                        >
+                            <span className="material-symbols-outlined text-sm">edit_note</span>
+                            Edit & Apply in Drafting
+                        </button>
+                    )}
                 </div>
             )}
         </motion.div>

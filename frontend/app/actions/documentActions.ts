@@ -79,13 +79,20 @@ export async function uploadDocument(matterId: string, formData: FormData) {
         }
 
         // --- NEW: AI EXTRACTION INTEGRATION ---
-        // Non-blocking fire-and-forget execution for LangGraph Smart Ingestion
-        triggerSmartIngestion(formData, matterId, newDoc.id).catch(err => {
+        // Block to get the immediate FastAPI response (which contains version_candidate)
+        // Since LangGraph runs in a true BackgroundTask now, this await only takes ~1s.
+        let ingestRes = null;
+        try {
+            ingestRes = await triggerSmartIngestion(formData, matterId, newDoc.id);
+        } catch (err) {
             console.error("🔥 ERROR DURING AI EXTRACTION BACKGROUND TASK:", err)
-        })
+        }
 
         revalidatePath(`/dashboard/matters/${matterId}`)
-        return { success: true }
+        return { 
+            success: true, 
+            versionCandidate: ingestRes?.data?.version_candidate || null 
+        }
     } catch (e: any) {
         console.error("🔥 ERROR UPLOADING DOCUMENT:", e)
         return { error: e.message || "Failed to upload document." }
@@ -236,4 +243,16 @@ export async function getContractById(contractId: string) {
     } catch (e: any) {
         return { error: e.message || "Failed to fetch contract." }
     }
+}
+
+// 7. Confirm Version Link
+export async function confirmVersion(newContractId: string, parentContractId: string) {
+    const { userId } = await auth()
+    if (!userId) return { error: "Unauthorized" }
+
+    const { confirmVersionLink } = await import('@/app/actions/backend')
+    const res = await confirmVersionLink(newContractId, parentContractId)
+    
+    revalidatePath(`/dashboard`)
+    return res
 }

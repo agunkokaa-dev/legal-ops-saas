@@ -179,6 +179,46 @@ async def analyze_contract(
             print(f"⚠️ [Review] Failed to store review: {e}")
             traceback.print_exc()
 
+        # ── War Room: Persist findings as negotiation_issues ──
+        try:
+            # Find the latest version for this contract
+            latest_version_id = None
+            ver_res = admin_supabase.table("contract_versions") \
+                .select("id") \
+                .eq("contract_id", payload.contract_id) \
+                .eq("tenant_id", tenant_id) \
+                .order("version_number", desc=True) \
+                .limit(1) \
+                .execute()
+            if ver_res.data:
+                latest_version_id = ver_res.data[0]["id"]
+
+            if findings:
+                issue_rows = []
+                for f in findings:
+                    coords = f.get("coordinates", {})
+                    issue_rows.append({
+                        "id": str(uuid.uuid4()),
+                        "tenant_id": tenant_id,
+                        "contract_id": payload.contract_id,
+                        "version_id": latest_version_id,
+                        "finding_id": f.get("finding_id"),
+                        "title": f.get("title", "Untitled Finding"),
+                        "description": f.get("description", ""),
+                        "severity": f.get("severity", "warning"),
+                        "category": f.get("category"),
+                        "status": "open",
+                        "coordinates": coords,
+                        "suggested_revision": f.get("suggested_revision"),
+                        "playbook_reference": f.get("playbook_reference")
+                    })
+                if issue_rows:
+                    admin_supabase.table("negotiation_issues").insert(issue_rows).execute()
+                    print(f"✅ [War Room] Persisted {len(issue_rows)} negotiation issues for contract {payload.contract_id}")
+        except Exception as ni_err:
+            print(f"⚠️ [War Room] Failed to persist negotiation issues (non-fatal): {ni_err}")
+            traceback.print_exc()
+
         return {
             "status": "success",
             "source": "fresh",
@@ -224,10 +264,26 @@ async def get_review(
             return {"found": False}
 
         review = res.data[0]
+
+        # Fetch matter_id from contracts table for the Review-to-Draft bridge
+        matter_id = None
+        try:
+            contract_res = admin_supabase.table("contracts") \
+                .select("matter_id") \
+                .eq("id", contract_id) \
+                .eq("tenant_id", tenant_id) \
+                .limit(1) \
+                .execute()
+            if contract_res.data:
+                matter_id = contract_res.data[0].get("matter_id")
+        except Exception:
+            pass
+
         return {
             "found": True,
             "review": {
                 "contract_id": contract_id,
+                "matter_id": matter_id,
                 "banner": review.get("banner", {}),
                 "quick_insights": review.get("quick_insights", []),
                 "findings": review.get("findings", []),
@@ -433,6 +489,18 @@ async def create_task_from_finding(
                 "action": f"Task created from review finding: {payload.finding_title[:60]}",
                 "actor_name": "Review System"
             }).execute()
+        except Exception:
+            pass
+
+        # ── War Room: Link task to negotiation_issue if it exists ──
+        try:
+            if hasattr(payload, 'finding_id') and payload.finding_id:
+                admin_supabase.table("negotiation_issues") \
+                    .update({"status": "escalated", "linked_task_id": task_payload["id"]}) \
+                    .eq("finding_id", payload.finding_id) \
+                    .eq("contract_id", payload.contract_id) \
+                    .eq("tenant_id", tenant_id) \
+                    .execute()
         except Exception:
             pass
 

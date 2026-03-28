@@ -1,12 +1,42 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 
 export default function DraftingGatekeeper() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { getToken, isLoaded, orgId, userId } = useAuth();
+
+  // ── Review-to-Draft Bridge: bypass gatekeeper ──
+  useEffect(() => {
+    const mode = searchParams.get('mode');
+    const contractId = searchParams.get('contract_id');
+    const focusFinding = searchParams.get('focus_finding');
+
+    if (mode === 'review' && contractId) {
+      // We need a matterId for the route. Fetch the contract's matter_id.
+      const resolveMatter = async () => {
+        try {
+          const token = await getToken();
+          const apiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
+          const res = await fetch(`${apiUrl}/api/v1/review/${contractId}`, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const matterId = data.review?.matter_id || data.matter_id || contractId;
+            const qs = `mode=review&contract_id=${contractId}${focusFinding ? `&focus_finding=${focusFinding}` : ''}`;
+            router.replace(`/dashboard/drafting/${matterId}?${qs}`);
+          }
+        } catch (e) {
+          console.error('Review-to-Draft redirect failed:', e);
+        }
+      };
+      if (isLoaded) resolveMatter();
+    }
+  }, [searchParams, isLoaded, getToken, router]);
 
   const [matters, setMatters] = useState<any[]>([]);
   const [selectedMatterId, setSelectedMatterId] = useState<string>("NEW_MATTER");
