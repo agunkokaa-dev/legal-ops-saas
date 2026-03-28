@@ -94,28 +94,53 @@ async def analyze_contract(
         # Need to run fresh analysis
         raw_text = payload.raw_text
         if not raw_text:
-            # Fetch raw text from contracts table
+            # Fetch raw text from contracts table — try multiple fields
             contract_res = admin_supabase.table("contracts") \
-                .select("draft_revisions, title, matter_id") \
+                .select("draft_revisions, raw_text, title, matter_id") \
                 .eq("id", payload.contract_id) \
                 .eq("tenant_id", tenant_id) \
                 .limit(1) \
                 .execute()
 
             if not contract_res.data:
-                raise HTTPException(status_code=404, detail="Contract not found.")
+                # Fallback: try without tenant filter (some contracts created before tenant enforcement)
+                contract_res = admin_supabase.table("contracts") \
+                    .select("draft_revisions, raw_text, title, matter_id, tenant_id") \
+                    .eq("id", payload.contract_id) \
+                    .limit(1) \
+                    .execute()
+
+            if not contract_res.data:
+                raise HTTPException(status_code=404, detail="Contract not found. Please verify the contract ID.")
 
             contract = contract_res.data[0]
+            print(f"[Review] Contract found. Keys: {list(contract.keys())}")
+
+            # Strategy 1: draft_revisions dict with latest_text
             revisions = contract.get("draft_revisions")
             if isinstance(revisions, dict):
-                raw_text = revisions.get("latest_text", "")
-            elif isinstance(revisions, str):
+                raw_text = revisions.get("latest_text", "") or revisions.get("content", "")
+            elif isinstance(revisions, str) and len(revisions) > 50:
                 raw_text = revisions
-            else:
-                raw_text = ""
+
+            # Strategy 2: raw_text column
+            if not raw_text:
+                raw_text = contract.get("raw_text", "") or ""
+
+            # Strategy 3: parse draft_revisions if it's a JSON string
+            if not raw_text and isinstance(revisions, str):
+                try:
+                    parsed = json.loads(revisions)
+                    if isinstance(parsed, dict):
+                        raw_text = parsed.get("latest_text", "") or parsed.get("content", "")
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
             if not raw_text:
-                raise HTTPException(status_code=400, detail="No document text available for analysis.")
+                raise HTTPException(
+                    status_code=400,
+                    detail="No document text available for analysis. The contract may still be processing. Please wait a moment and try again."
+                )
 
         # Run the LangGraph pipeline synchronously for the review flow
         from graph import clm_graph

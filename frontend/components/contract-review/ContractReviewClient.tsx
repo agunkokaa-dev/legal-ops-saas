@@ -68,6 +68,7 @@ export default function ContractReviewClient({
     // ── Core State ──
     const [reviewData, setReviewData] = useState<ReviewData | null>(null)
     const [isLoading, setIsLoading] = useState(true)
+    const [loadingPhase, setLoadingPhase] = useState<'checking' | 'analyzing' | 'finalizing'>('checking')
     const [error, setError] = useState<string | null>(null)
 
     // ── Interaction State ──
@@ -80,25 +81,32 @@ export default function ContractReviewClient({
         try {
             setIsLoading(true)
             setError(null)
+            setLoadingPhase('checking')
             const token = await getToken()
             const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '')
 
             // Try to get cached review first
             if (!forceRefresh) {
-                const cached = await fetch(`${apiUrl}/api/v1/review/${contractId}`, {
-                    headers: { Authorization: `Bearer ${token}` }
-                })
-                if (cached.ok) {
-                    const data = await cached.json()
-                    if (data.found) {
-                        setReviewData(data.review)
-                        setIsLoading(false)
-                        return
+                try {
+                    const cached = await fetch(`${apiUrl}/api/v1/review/${contractId}`, {
+                        headers: { Authorization: `Bearer ${token}` }
+                    })
+                    if (cached.ok) {
+                        const data = await cached.json()
+                        if (data.found && data.review) {
+                            setReviewData(data.review)
+                            setIsLoading(false)
+                            return
+                        }
                     }
+                } catch (cacheErr) {
+                    console.warn('Cache check failed, proceeding to fresh analysis:', cacheErr)
                 }
             }
 
-            // Run fresh analysis
+            // No cached data — run fresh analysis
+            setLoadingPhase('analyzing')
+
             const res = await fetch(`${apiUrl}/api/v1/review/analyze`, {
                 method: 'POST',
                 headers: {
@@ -110,9 +118,10 @@ export default function ContractReviewClient({
 
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}))
-                throw new Error(err.detail || 'Failed to analyze contract')
+                throw new Error(err.detail || `Analysis failed (HTTP ${res.status})`)
             }
 
+            setLoadingPhase('finalizing')
             const data = await res.json()
             setReviewData(data.review)
         } catch (e: any) {
@@ -221,6 +230,12 @@ export default function ContractReviewClient({
 
     // ── Loading State ──
     if (isLoading) {
+        const phaseMessages = {
+            checking: { title: 'Checking for Cached Review', subtitle: 'Looking up existing analysis data...' },
+            analyzing: { title: 'AI is Analyzing This Document', subtitle: 'Running 7-Agent LangGraph Pipeline — this may take 30-60 seconds...' },
+            finalizing: { title: 'Finalizing Results', subtitle: 'Structuring findings and insights...' }
+        }
+        const phase = phaseMessages[loadingPhase]
         return (
             <div className="flex-1 flex flex-col items-center justify-center bg-[#0a0a0a] gap-6">
                 <div className="relative">
@@ -230,20 +245,22 @@ export default function ContractReviewClient({
                     </div>
                 </div>
                 <div className="text-center">
-                    <p className="text-white font-serif text-lg mb-1">Analyzing Contract</p>
-                    <p className="text-zinc-500 text-xs tracking-wide">Running 7-Agent AI Pipeline...</p>
+                    <p className="text-white font-serif text-lg mb-1">{phase.title}</p>
+                    <p className="text-zinc-500 text-xs tracking-wide">{phase.subtitle}</p>
                 </div>
-                <div className="flex gap-2 mt-2">
-                    {['Ingestion', 'Compliance', 'Risk', 'Negotiation', 'Drafting', 'Obligations', 'Classification'].map((step, i) => (
-                        <div key={step} className="flex flex-col items-center gap-1">
-                            <div
-                                className="w-2 h-2 rounded-full bg-[#d4af37] animate-pulse"
-                                style={{ animationDelay: `${i * 200}ms` }}
-                            />
-                            <span className="text-[9px] text-zinc-600 tracking-wider">{step}</span>
-                        </div>
-                    ))}
-                </div>
+                {loadingPhase === 'analyzing' && (
+                    <div className="flex gap-2 mt-2">
+                        {['Ingestion', 'Compliance', 'Risk', 'Negotiation', 'Drafting', 'Obligations', 'Classification'].map((step, i) => (
+                            <div key={step} className="flex flex-col items-center gap-1">
+                                <div
+                                    className="w-2 h-2 rounded-full bg-[#d4af37] animate-pulse"
+                                    style={{ animationDelay: `${i * 200}ms` }}
+                                />
+                                <span className="text-[9px] text-zinc-600 tracking-wider">{step}</span>
+                            </div>
+                        ))}
+                    </div>
+                )}
             </div>
         )
     }
@@ -355,7 +372,7 @@ export default function ContractReviewClient({
                                 <QuickInsightPanel
                                     insights={reviewData.quick_insights}
                                     findings={reviewData.findings}
-                                    onFindingClick={(f) => {
+                                    onFindingClick={(f: ReviewFinding) => {
                                         setSelectedFinding(f)
                                         setScrollToFinding(f.finding_id)
                                         setTimeout(() => setScrollToFinding(null), 500)
