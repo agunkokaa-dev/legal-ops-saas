@@ -50,7 +50,7 @@ export default function ContractDetailClient({
 
     const parsedDraftText = useMemo(() => {
         if (!contract?.draft_revisions) return "";
-        
+
         let rawDraft = contract.draft_revisions;
         if (typeof rawDraft === 'string') {
             try {
@@ -59,15 +59,15 @@ export default function ContractDetailClient({
                 return rawDraft;
             }
         }
-        
+
         if (rawDraft?.latest_text) return rawDraft.latest_text;
-        
+
         if (Array.isArray(rawDraft)) {
-            return rawDraft.map((item: any, index: number) => 
+            return rawDraft.map((item: any, index: number) =>
                 `📌 PASAL REVISI ${index + 1}\n\n[Isu Awal]:\n${item.original_issue}\n\n[Saran Redaksi AI]:\n${item.neutral_rewrite}`
             ).join('\n\n' + '─'.repeat(40) + '\n\n');
         }
-        
+
         return typeof rawDraft === 'string' ? rawDraft : JSON.stringify(rawDraft);
     }, [contract?.draft_revisions]);
 
@@ -76,10 +76,10 @@ export default function ContractDetailClient({
         try {
             const token = await getToken();
             const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
-            
+
             const res = await fetch(`${apiUrl}/api/v1/drafting/apply-suggestion`, {
                 method: 'POST',
-                headers: { 
+                headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`
                 },
@@ -89,12 +89,12 @@ export default function ContractDetailClient({
                     neutral_rewrite: neutralRewrite
                 })
             });
-            
+
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
                 throw new Error(errData.detail || "Failed to apply suggestion");
             }
-            
+
             toast.success("AI suggestion applied successfully.", {
                 style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
             });
@@ -150,7 +150,7 @@ export default function ContractDetailClient({
             const blob = doc.output('blob');
             const url = URL.createObjectURL(blob);
             setPdfBlobUrl(url);
-            
+
             console.log("Generated PDF Blob URL:", url);
         } catch (error) {
             console.error("Error generating PDF:", error);
@@ -161,9 +161,9 @@ export default function ContractDetailClient({
 
     useEffect(() => {
         if ((contract?.status === 'Review' || contract?.status === 'Pending Review') && !isLockedForReview && parsedDraftText) {
-            handleLockForReview(); 
+            handleLockForReview();
         }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [contract?.status, parsedDraftText, isLockedForReview]);
 
     const confirmUnlock = () => {
@@ -216,46 +216,38 @@ export default function ContractDetailClient({
                     />
                 ) : (
                     <div className="w-full h-full flex flex-col bg-[#0a0a0a] p-6">
-                            {/* Dynamic Banner */}
-                            <div className="w-full bg-[#d4af37]/10 border border-[#d4af37]/30 text-[#d4af37] px-4 py-3 rounded-lg mb-4 flex items-center justify-between flex-shrink-0 shadow-lg">
-                                <div className="flex flex-col">
-                                    <span className="text-xs font-bold uppercase tracking-wider flex items-center gap-2">
-                                        📝 Live Draft Mode
-                                    </span>
-                                    <span className="text-[10px] text-[#d4af37]/70 italic hidden md:inline mt-0.5">
-                                        HTML Reflow Enabled. Lock the document to apply highlights.
-                                    </span>
-                                </div>
-                                <div className="flex items-center gap-2">
-                                    <a
-                                        href={`/dashboard/contracts/${contract.id}/review`}
-                                        className="px-4 py-1.5 bg-gradient-to-r from-[#d4af37] to-[#bda036] text-black rounded text-xs font-bold transition-all uppercase tracking-wider flex items-center gap-2 hover:shadow-[0_0_15px_rgba(212,175,55,0.3)] hover:scale-[1.02]"
-                                    >
-                                        <span className="material-symbols-outlined text-[16px]">shield</span> Enter Review Mode
-                                    </a>
-                                    <button 
-                                        onClick={handleLockForReview}
-                                        className="px-4 py-1.5 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 border border-[#d4af37]/50 rounded text-xs font-bold transition-colors uppercase tracking-wider flex items-center gap-2"
-                                    >
-                                        <span className="material-symbols-outlined text-[16px]">lock</span> Lock for Review
-                                    </button>
-                                </div>
+                        {/* Dynamic Banner */}
+                        <div className="w-full bg-[#d4af37]/10 border border-[#d4af37]/30 text-[#d4af37] px-4 py-3 rounded-lg mb-4 flex items-center justify-between flex-shrink-0 shadow-lg">
+                            <div className="flex flex-col">
+                                <span className="text-xs font-bold uppercase tracking-wider flex items-center gap-2">
+                                    Live Draft Mode
+                                </span>
+                                <span className="text-[10px] text-[#d4af37]/70 italic hidden md:inline mt-0.5">
+                                    HTML Reflow Enabled. Lock the document to apply highlights.
+                                </span>
                             </div>
+                                <button 
+                                    onClick={handleLockForReview}
+                                    className="px-4 py-1.5 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 border border-[#d4af37]/50 rounded text-xs font-bold transition-colors uppercase tracking-wider flex items-center gap-2"
+                                >
+                                    <span className="material-symbols-outlined text-[16px]">lock</span> Lock for Review
+                                </button>
+                        </div>
 
-                            {/* Live Draft Document Viewer */}
-                            <div className="w-full h-full bg-[#141414] p-4 md:p-8 overflow-y-auto rounded-xl border border-white/5 flex justify-center shadow-inner relative">
-                                <div className="w-full max-w-[850px] bg-white text-black p-12 md:p-16 rounded shadow-2xl min-h-[1056px]">
-                                    <div 
-                                        className="font-serif leading-relaxed text-[15px] prose prose-sm prose-invert max-w-none whitespace-pre-wrap prose-p:my-2 prose-headings:my-4 prose-headings:text-[#d4af37] prose-strong:text-[#d4af37] prose-a:text-[#d4af37]"
-                                        style={{ whiteSpace: 'pre-wrap' }}
-                                    >
-                                        <ReactMarkdown 
-                                            remarkPlugins={[remarkGfm]} 
-                                            children={parsedDraftText || "No draft content available."} 
-                                        />
-                                    </div>
+                        {/* Live Draft Document Viewer */}
+                        <div className="w-full h-full bg-[#141414] p-4 md:p-8 overflow-y-auto rounded-xl border border-white/5 flex justify-center shadow-inner relative">
+                            <div className="w-full max-w-[850px] bg-white text-black p-12 md:p-16 rounded shadow-2xl min-h-[1056px]">
+                                <div
+                                    className="font-serif leading-relaxed text-[15px] prose prose-sm prose-invert max-w-none whitespace-pre-wrap prose-p:my-2 prose-headings:my-4 prose-headings:text-[#d4af37] prose-strong:text-[#d4af37] prose-a:text-[#d4af37]"
+                                    style={{ whiteSpace: 'pre-wrap' }}
+                                >
+                                    <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                        children={parsedDraftText || "No draft content available."}
+                                    />
                                 </div>
                             </div>
+                        </div>
                     </div>
                 )}
             </div>

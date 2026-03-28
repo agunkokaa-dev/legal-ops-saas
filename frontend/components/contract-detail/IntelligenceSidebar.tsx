@@ -144,6 +144,19 @@ export default function IntelligenceSidebar({
 
     return (
         <div className="flex flex-col h-full w-[400px] bg-surface border-l border-white/10 z-10 flex-shrink-0">
+            {/* AI REVIEW MODE BANNER */}
+            <div className="flex-none p-4 bg-[#0a0a0a] border-b border-white/5 flex flex-col items-center justify-center">
+                <a
+                    href={`/dashboard/contracts/${contract?.id}/review`}
+                    className="w-full py-2.5 bg-gradient-to-r from-[#d4af37] to-[#bda036] text-black rounded text-xs font-bold transition-all uppercase tracking-wider flex items-center justify-center gap-2 mb-2 hover:shadow-[0_0_15px_rgba(212,175,55,0.3)] hover:scale-[1.02]"
+                >
+                    <span className="material-symbols-outlined text-[16px]">shield</span> Enter AI Review Mode
+                </a>
+                <p className="text-[10px] text-zinc-500 font-medium tracking-wide">
+                    Launch immersive risk analysis workspace
+                </p>
+            </div>
+
             {/* LOCKED FOR REVIEW BANNER */}
             {isLocked && (
                 <div className="flex-none auto-h p-4 border-b border-white/10 bg-[#d4af37]/10 flex flex-col gap-2">
