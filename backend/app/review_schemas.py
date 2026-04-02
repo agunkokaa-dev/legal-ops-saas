@@ -227,3 +227,78 @@ class ReviewResponse(BaseModel):
     raw_document: str = Field(
         description="The original clean document text. NEVER modified by AI."
     )
+
+
+# ─────────────────────────────────────────────
+# War Room (Phase 2): Smart Diff Models
+# ─────────────────────────────────────────────
+
+class DiffDeviation(BaseModel):
+    """A single clause-level difference between V1 and V2."""
+    deviation_id: str = Field(
+        default_factory=lambda: str(uuid.uuid4()),
+        description="Unique ID for this deviation."
+    )
+    title: str = Field(
+        description="Short, impactful label (e.g. 'Liability Cap Reduced', 'Termination Added')."
+    )
+    category: Literal["Added", "Removed", "Modified", "Unchanged-Risk"] = Field(
+        description="What type of change occurred."
+    )
+    severity: Literal["critical", "warning", "info"] = Field(
+        description="Severity based on business impact and playbook deviation."
+    )
+    v1_text: str = Field(
+        description="Exact verbatim text of the clause in V1 (empty if added in V2)."
+    )
+    v2_text: str = Field(
+        description="Exact verbatim text of the clause in V2 (empty if removed in V2)."
+    )
+    v2_coordinates: Optional[TextCoordinate] = Field(
+        default=None,
+        description="Position in V2 raw_text. Optional if the clause was removed."
+    )
+    impact_analysis: str = Field(
+        description="Detailed explanation of what this change means for the business."
+    )
+    playbook_violation: Optional[str] = Field(
+        default=None,
+        description="Which playbook rule is violated, if any."
+    )
+    counterparty_intent: Optional[str] = Field(
+        default=None,
+        description="Analysis of WHY the counterparty made this change — their likely motivation, strategic objective, and what they are trying to achieve or avoid."
+    )
+
+class BATNAFallback(BaseModel):
+    """An AI-generated BATNA fallback clause for a deviation."""
+    deviation_id: str = Field(
+        description="Must match exactly the deviation_id from the deviations array."
+    )
+    fallback_clause: str = Field(
+        description="The detailed, exact text of the suggested compromise clause."
+    )
+    reasoning: str = Field(
+        description="Explanation of why this is a strong middle-ground position."
+    )
+    leverage_points: list[str] = Field(
+        default_factory=list,
+        description="Bullet points of negotiation leverage to use when proposing this fallback."
+    )
+
+class SmartDiffResult(BaseModel):
+    """Structured output for the Smart Diff Agent."""
+    deviations: list[DiffDeviation] = Field(
+        default_factory=list,
+        description="List of significant differences found."
+    )
+    batna_fallbacks: list[BATNAFallback] = Field(
+        default_factory=list,
+        description="Strategic fallbacks generated for high-severity deviations."
+    )
+    risk_delta: float = Field(
+        description="V2 risk score minus V1 risk score."
+    )
+    summary: str = Field(
+        description="A 2-3 sentence executive summary of the negotiation position."
+    )

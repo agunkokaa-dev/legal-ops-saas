@@ -128,6 +128,9 @@ async def list_contracts(
 
         if status_filters:
             query = query.in_("status", status_filters)
+        else:
+            # Default: exclude ARCHIVED (and other terminal statuses) from global queries
+            query = query.neq("status", "ARCHIVED").neq("status", "EXPIRED").neq("status", "TERMINATED")
 
         query = query.order("created_at", desc=True)
         result = query.execute()
@@ -349,6 +352,7 @@ async def upload_contract(
     file: UploadFile = File(...),
     matter_id: str = Form(None),
     contract_id: str = Form(None),
+    parent_contract_id: str = Form(None),
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase)
 ):
@@ -376,11 +380,13 @@ async def upload_contract(
             raise HTTPException(status_code=400, detail="Kami tidak dapat membaca dokumen ini. Pastikan PDF tidak dienkripsi atau berupa gambar hasil scan tanpa OCR.")
 
         if not contract_id:
-            contract_id = str(uuid.uuid4())
+            contract_id = parent_contract_id if parent_contract_id else str(uuid.uuid4())
+        elif parent_contract_id:
+            contract_id = parent_contract_id
 
         # ── War Room: Version-Aware Fuzzy Match ──
         version_candidate = None
-        if matter_id:
+        if matter_id and not parent_contract_id:
             try:
                 existing_contracts = admin_supabase.table("contracts") \
                     .select("id, title") \
@@ -513,7 +519,13 @@ async def confirm_version_link(
                 .eq("id", payload.parent_contract_id) \
                 .execute()
             
-            print(f"✅ [War Room] Linked version V{next_version} to parent contract {payload.parent_contract_id}")
+            # [HOTFIX] Cleanup orphaned child contract shell
+            admin_supabase.table("contracts") \
+                .delete() \
+                .eq("id", payload.new_contract_id) \
+                .execute()
+            
+            print(f"✅ [War Room] Linked version V{next_version} to parent contract {payload.parent_contract_id}. Orphaned contract {payload.new_contract_id} deleted.")
         else:
             print(f"⚠️ [War Room] No version snapshot found for new contract {payload.new_contract_id} — pipeline may still be running.")
         

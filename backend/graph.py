@@ -693,3 +693,260 @@ try:
 except Exception as e:
     print(f"FATAL: Failed to compile LangGraph: {e}")
     clm_graph = None
+
+# ==========================================
+# Phase 2: On-Demand Smart Diff Agent
+# ==========================================
+from app.review_schemas import SmartDiffResult, TextCoordinate
+import re
+from difflib import SequenceMatcher
+
+
+def strip_markdown(text: str) -> str:
+    """
+    Strips common markdown formatting characters from text to enable
+    fuzzy matching when the LLM injects markdown into its output.
+    """
+    # Remove bold/italic markers
+    text = re.sub(r'\*{1,3}', '', text)
+    # Remove heading markers
+    text = re.sub(r'^#{1,6}\s*', '', text, flags=re.MULTILINE)
+    # Remove list markers at line start (-, +, *)
+    text = re.sub(r'^\s*[-+*]\s+', '', text, flags=re.MULTILINE)
+    # Remove blockquote markers
+    text = re.sub(r'^>\s*', '', text, flags=re.MULTILINE)
+    # Remove inline code backticks
+    text = re.sub(r'`+', '', text)
+    # Remove strikethrough tildes
+    text = re.sub(r'~~', '', text)
+    # Remove underscores used for emphasis (but keep word-internal ones)
+    text = re.sub(r'(?<![\w])_|_(?![\w])', '', text)
+    # Normalize whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def fuzzy_find_substring(haystack: str, needle: str, threshold: float = 0.75) -> tuple:
+    """
+    Finds the best approximate match of `needle` within `haystack`
+    using SequenceMatcher. Returns (start, end) character indices
+    if the best match exceeds `threshold`, else (-1, -1).
+    """
+    if not needle or not haystack:
+        return (-1, -1)
+
+    needle_len = len(needle)
+    best_ratio = 0.0
+    best_start = -1
+
+    # Sliding window with some flexibility on the window size
+    # Check windows from 80% to 120% of needle length
+    min_window = max(1, int(needle_len * 0.8))
+    max_window = min(len(haystack), int(needle_len * 1.3))
+
+    # Step through the haystack in chunks for efficiency
+    step = max(1, needle_len // 10)
+
+    for window_size in range(min_window, max_window + 1, max(1, (max_window - min_window) // 5)):
+        for i in range(0, len(haystack) - window_size + 1, step):
+            candidate = haystack[i:i + window_size]
+            ratio = SequenceMatcher(None, needle, candidate).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_start = i
+                best_window = window_size
+
+    if best_ratio >= threshold and best_start >= 0:
+        # Refine: re-scan character-by-character around the best match
+        refine_start = max(0, best_start - step)
+        refine_end = min(len(haystack), best_start + best_window + step)
+        final_best_ratio = best_ratio
+        final_start = best_start
+        final_end = best_start + best_window
+
+        for i in range(refine_start, min(refine_end, len(haystack) - min_window + 1)):
+            for ws in range(min_window, min(max_window + 1, len(haystack) - i + 1)):
+                candidate = haystack[i:i + ws]
+                ratio = SequenceMatcher(None, needle, candidate).ratio()
+                if ratio > final_best_ratio:
+                    final_best_ratio = ratio
+                    final_start = i
+                    final_end = i + ws
+
+        return (final_start, final_end)
+
+    return (-1, -1)
+
+def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: float, playbook_rules_text: str, prior_rounds_context: str = None) -> dict:
+    """
+    On-demand agent that compares V1 and V2 raw texts, applies playbook rules,
+    and returns a structured SmartDiffResult containing deviations and BATNAs.
+    Uses gpt-4o as requested for maximum reasoning capability.
+    Optionally accepts prior_rounds_context for multi-round pattern detection.
+    """
+    # Build multi-round context block if available
+    rounds_block = ""
+    if prior_rounds_context:
+        rounds_block = f"""
+    MULTI-ROUND NEGOTIATION HISTORY (Previous Rounds):
+    {prior_rounds_context}
+
+    Use this history to detect counterparty concession patterns. For example:
+    - Did they concede on Payment Terms in V2 but push harder on IP in V3?
+    - Are they slowly escalating liability shifts across rounds?
+    - Have they consistently ignored your Playbook positions on specific clauses?
+    Note any such patterns in your analysis.
+    """
+
+    prompt = f"""
+    You are a Senior Contract Negotiation Analyst and Counterparty Strategist performing a V1 vs V2 comparison.
+
+    TASK: Compare the PREVIOUS VERSION (V1) against the CURRENT VERSION (V2) of this contract.
+
+    For each significant difference (added, removed, or materially modified clause):
+    1. Assess its business impact.
+    2. Check if the V2 approach violates the COMPANY PLAYBOOK RULES.
+    3. Generate a BATNA fallback clause (a strategic compromise position).
+    4. Provide the exact verbatim text of the V2 clause (or V1 if removed) and its character coordinates.
+    5. **COUNTERPARTY INTENT (CRITICAL)**: For each deviation, analyze WHY the counterparty made this change.
+       Think like a Senior Lawyer advising your client:
+       - What is the counterparty trying to achieve or avoid?
+       - Are they shifting liability, reducing obligations, expanding rights, or protecting against a specific risk?
+       - Reference specific Playbook Rules if the intent appears to circumvent them.
+       - Example: "Counterparty is shifting indemnification burden to avoid exposure under Playbook Rule 2.1 (Mutual Indemnity Required)."
+       Populate this analysis in the `counterparty_intent` field for each deviation.
+
+    VITAL STRICT INSTRUCTION FOR `v2_text`:
+    The `v2_text` field MUST be an EXACT verbatim copy-paste from the V2 TEXT below.
+    DO NOT add any markdown formatting (**, *, #, -, +, >, `, ~) to the v2_text.
+    DO NOT paraphrase, summarize, or modify the text in any way.
+    Copy the EXACT characters as they appear in the V2 TEXT.
+
+    VITAL STRICT INSTRUCTION FOR `v2_coordinates`:
+    You MUST provide the EXACT `start_char` and `end_char` index mapping for where `v2_text` occurs within the V2 TEXT provided below. The indices are 0-based.
+    If the deviation is a 'Removed' clause, leave `v2_coordinates` completely empty/null, since it no longer exists in V2.
+    For 'Added' and 'Modified' clauses, you MUST provide precise coordinates relative to the V2 TEXT block.
+
+    {COORDINATE_INSTRUCTION}
+    {rounds_block}
+
+    V1 RISK SCORE: {v1_risk_score}
+
+    COMPANY PLAYBOOK RULES:
+    {playbook_rules_text}
+
+    V1 TEXT:
+    {v1_raw_text}
+
+    V2 TEXT:
+    {v2_raw_text}
+    """
+
+    try:
+        response = client.beta.chat.completions.parse(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a strategic Diff Engine that identifies deviations, evaluates playbook compliance, and generates BATNA compromises."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format=SmartDiffResult
+        )
+        parsed_result = response.choices[0].message.parsed
+        
+        # ================================================================
+        # 3-TIER RAG ANCHORING: Ensure V2 coordinates map correctly
+        # Tier 1: Exact match
+        # Tier 2: Markdown-stripped match
+        # Tier 3: Fuzzy substring match (SequenceMatcher)
+        # ================================================================
+        for dev in parsed_result.deviations:
+            if dev.category in ["Added", "Modified"] and dev.v2_text:
+                # ── Tier 1: Exact string match ──
+                idx = v2_raw_text.find(dev.v2_text)
+                
+                if idx != -1:
+                    dev.v2_coordinates = TextCoordinate(
+                        start_char=idx,
+                        end_char=idx + len(dev.v2_text),
+                        source_text=dev.v2_text
+                    )
+                    print(f"  ✅ Tier 1 (Exact) anchored: '{dev.title[:40]}' at [{idx}:{idx + len(dev.v2_text)}]")
+                else:
+                    # ── Tier 2: Markdown-stripped match ──
+                    stripped_v2_text = strip_markdown(dev.v2_text)
+                    stripped_raw = strip_markdown(v2_raw_text)
+                    idx_strip = stripped_raw.find(stripped_v2_text)
+                    
+                    if idx_strip != -1:
+                        # Map the stripped index back to the original text
+                        # by finding the approximate position using ratio
+                        ratio = idx_strip / max(len(stripped_raw), 1)
+                        approx_start = int(ratio * len(v2_raw_text))
+                        
+                        # Search a window around the approximate position for exact boundaries
+                        search_start = max(0, approx_start - 200)
+                        search_end = min(len(v2_raw_text), approx_start + len(dev.v2_text) + 200)
+                        search_window = v2_raw_text[search_start:search_end]
+                        
+                        # Try to find the stripped text in the original window
+                        best_start, best_end = fuzzy_find_substring(
+                            search_window, dev.v2_text, threshold=0.70
+                        )
+                        if best_start != -1:
+                            actual_start = search_start + best_start
+                            actual_end = search_start + best_end
+                            matched_text = v2_raw_text[actual_start:actual_end]
+                            dev.v2_coordinates = TextCoordinate(
+                                start_char=actual_start,
+                                end_char=actual_end,
+                                source_text=matched_text
+                            )
+                            print(f"  ✅ Tier 2 (Stripped) anchored: '{dev.title[:40]}' at [{actual_start}:{actual_end}]")
+                        else:
+                            # Fallback: use the LLM's coordinates if plausible
+                            if dev.v2_coordinates and dev.v2_coordinates.start_char < len(v2_raw_text):
+                                print(f"  ⚠️ Tier 2 partial: '{dev.title[:40]}' — using LLM coordinates")
+                            else:
+                                dev.v2_coordinates = None
+                                print(f"  ⚠️ Tier 2 failed: '{dev.title[:40]}' — trying Tier 3")
+                                
+                                # ── Tier 3: Fuzzy substring match ──
+                                fuzzy_start, fuzzy_end = fuzzy_find_substring(
+                                    v2_raw_text, dev.v2_text, threshold=0.75
+                                )
+                                if fuzzy_start != -1:
+                                    matched_text = v2_raw_text[fuzzy_start:fuzzy_end]
+                                    dev.v2_coordinates = TextCoordinate(
+                                        start_char=fuzzy_start,
+                                        end_char=fuzzy_end,
+                                        source_text=matched_text
+                                    )
+                                    print(f"  ✅ Tier 3 (Fuzzy) anchored: '{dev.title[:40]}' at [{fuzzy_start}:{fuzzy_end}]")
+                                else:
+                                    dev.v2_coordinates = None
+                                    print(f"  ❌ All tiers failed: '{dev.title[:40]}' — UNMAPPED")
+                    else:
+                        # Stripped match failed entirely, go straight to Tier 3
+                        fuzzy_start, fuzzy_end = fuzzy_find_substring(
+                            v2_raw_text, dev.v2_text, threshold=0.75
+                        )
+                        if fuzzy_start != -1:
+                            matched_text = v2_raw_text[fuzzy_start:fuzzy_end]
+                            dev.v2_coordinates = TextCoordinate(
+                                start_char=fuzzy_start,
+                                end_char=fuzzy_end,
+                                source_text=matched_text
+                            )
+                            print(f"  ✅ Tier 3 (Fuzzy) anchored: '{dev.title[:40]}' at [{fuzzy_start}:{fuzzy_end}]")
+                        else:
+                            dev.v2_coordinates = None
+                            print(f"  ❌ All tiers failed: '{dev.title[:40]}' — UNMAPPED")
+            elif dev.category == "Removed":
+                dev.v2_coordinates = None  # Removed clauses have no V2 position
+                
+        return parsed_result.model_dump()
+    except Exception as e:
+        print(f"Smart Diff Agent Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise e

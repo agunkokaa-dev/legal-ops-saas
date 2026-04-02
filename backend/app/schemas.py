@@ -191,3 +191,7 @@ class ConfirmVersionLinkRequest(BaseModel):
     new_contract_id: str
     parent_contract_id: str
 
+class DiffRequest(BaseModel):
+    v1_version_id: Optional[str] = None
+    v2_version_id: Optional[str] = None
+
