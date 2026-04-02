@@ -58,10 +58,6 @@ export default async function ContractDetailPage({ params }: { params: Promise<{
 
     return (
         <main className="flex-1 flex flex-col h-full overflow-hidden bg-background relative w-full">
-            {/* Header */}
-            <ContractHeader initialContract={contract} formattedDate={formattedDate} />
-
-            {/* Main Content Area */}
             <ContractDetailClient
                 pdfUrl={pdfUrl}
                 contract={contract}
@@ -70,6 +66,7 @@ export default async function ContractDetailPage({ params }: { params: Promise<{
                 clientName={clientName}
                 graphDocs={graphDocs}
                 graphRels={graphRels}
+                formattedDate={formattedDate}
             />
         </main>
     );

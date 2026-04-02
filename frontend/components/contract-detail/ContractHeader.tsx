@@ -11,10 +11,14 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
 export default function ContractHeader({
     initialContract,
-    formattedDate
+    formattedDate,
+    actionMenu,
+    children
 }: {
     initialContract: any,
-    formattedDate: string
+    formattedDate: string,
+    actionMenu?: React.ReactNode,
+    children?: React.ReactNode
 }) {
     const [contract, setContract] = useState(initialContract)
     const [isEditModalOpen, setIsEditModalOpen] = useState(false)
@@ -83,12 +87,16 @@ export default function ContractHeader({
                         >
                             <span className="material-symbols-outlined text-sm">edit</span>
                         </button>
+                        {actionMenu}
                     </div>
                     <p className="text-text-muted text-[11px] mt-0.5">
                         Client • 4 • Last modified: {formattedDate}
                     </p>
                 </div>
             </div>
+
+            {/* Right Side / Actions */}
+            {children}
 
             {/* Edit Contract Modal (Rendered inline to keep things simple) */}
             {isEditModalOpen && (

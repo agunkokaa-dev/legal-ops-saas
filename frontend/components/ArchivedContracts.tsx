@@ -71,7 +71,7 @@ export default function ArchivedContracts() {
             setIsLoading(true);
             setError(null);
             try {
-                const token = await getToken({ template: 'supabase' });
+                const token = await getToken();
                 const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
                 const res = await fetch(
                     `${apiUrl}/api/contracts?tab=${encodeURIComponent(activeTab)}`,
@@ -116,7 +116,7 @@ export default function ArchivedContracts() {
         if (!selectedContractId) return;
         setIsArchiving(true);
         try {
-            const token = await getToken({ template: 'supabase' });
+            const token = await getToken();
             const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
             const res = await fetch(
                 `${apiUrl}/api/contracts/${selectedContractId}/archive`,

@@ -10,7 +10,7 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABAS
 const supabaseAdmin = createClient(supabaseUrl, supabaseKey)
 
 // 1. Upload Document
-export async function uploadDocument(matterId: string, formData: FormData) {
+export async function uploadDocument(matterId: string, formData: FormData, parentContractId?: string) {
     const { userId, orgId } = await auth()
     if (!userId) return { error: "Unauthorized" }
 
@@ -37,7 +37,46 @@ export async function uploadDocument(matterId: string, formData: FormData) {
             .upload(filePath, file)
 
         if (storageError) throw storageError
+        // --- EXPLICIT V2 UPLOAD TRACK ---
+        if (parentContractId) {
+            // Optimistically update the parent's version_count so the UI unlocks the War Room button instantly!
+            const { data: parentDoc } = await supabaseAdmin
+                .from('contracts')
+                .select('version_count')
+                .eq('id', parentContractId)
+                .single()
+                
+            const currentVC = parentDoc?.version_count || 1;
+            
+            await supabaseAdmin
+                .from('contracts')
+                .update({ 
+                    version_count: currentVC + 1,
+                    title: file.name,
+                    file_url: filePath,
+                    file_type: file.type,
+                    file_size: file.size
+                })
+                .eq('id', parentContractId)
 
+            // Trigger FastAPI with parentContractId signal (NO new row created)
+            let ingestRes = null;
+            try {
+                // Pass parent as contractId to be safe, plus parentContractId
+                ingestRes = await triggerSmartIngestion(formData, matterId, parentContractId, parentContractId);
+            } catch (err) {
+                console.error("🔥 ERROR DURING AI EXTRACTION BACKGROUND TASK:", err)
+            }
+            
+            revalidatePath(`/dashboard/matters/${matterId}`)
+            revalidatePath(`/dashboard/contracts/${parentContractId}`)
+            return { 
+                success: true, 
+                versionCandidate: ingestRes?.data?.version_candidate || null 
+            }
+        }
+
+        // --- ORIGINAL V1 UPLOAD TRACK ---
         // Insert into DB
         const { data: newDoc, error: dbError } = await supabaseAdmin
             .from('contracts')
@@ -83,7 +122,7 @@ export async function uploadDocument(matterId: string, formData: FormData) {
         // Since LangGraph runs in a true BackgroundTask now, this await only takes ~1s.
         let ingestRes = null;
         try {
-            ingestRes = await triggerSmartIngestion(formData, matterId, newDoc.id);
+            ingestRes = await triggerSmartIngestion(formData, matterId, newDoc.id, parentContractId);
         } catch (err) {
             console.error("🔥 ERROR DURING AI EXTRACTION BACKGROUND TASK:", err)
         }
@@ -112,6 +151,7 @@ export async function getMatterDocuments(matterId: string) {
             .select('*')
             .eq('matter_id', matterId)
             .eq('tenant_id', tenantId)
+            .neq('status', 'ARCHIVED')
             .order('created_at', { ascending: false })
 
         if (error) throw error
@@ -129,17 +169,10 @@ export async function deleteDocument(documentId: string, fileUrl: string, matter
     const tenantId = orgId || userId
 
     try {
-        // Delete physical file from Storage
-        const { error: storageError } = await supabaseAdmin.storage
-            .from('matter-files')
-            .remove([fileUrl])
-
-        if (storageError) throw storageError
-
-        // Delete record from DB
+        // Soft delete record from DB to prevent foreign key constraint violations
         const { error: dbError } = await supabaseAdmin
             .from('contracts')
-            .delete()
+            .update({ status: 'ARCHIVED' })
             .eq('id', documentId)
             .eq('tenant_id', tenantId)
 

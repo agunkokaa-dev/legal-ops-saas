@@ -48,6 +48,7 @@ export default async function DashboardPage() {
                     .from('contracts')
                     .select('id, title, status, contract_value, currency, created_at, end_date, risk_level')
                     .eq('tenant_id', tenantId)
+                    .neq('status', 'ARCHIVED')
                     .order('created_at', { ascending: false })
 
                 console.log("Fetched docs:", data?.length, "for tenant:", tenantId)

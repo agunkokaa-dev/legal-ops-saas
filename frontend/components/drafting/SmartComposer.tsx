@@ -9,6 +9,22 @@ import HistoryPanel from "./HistoryPanel";
 import { toast, Toaster } from 'sonner';
 import type { RevisionSnapshot, DraftRevisionsPayload } from '@/types/history';
 
+interface NegotiationIssue {
+  id: string;
+  deviation_id: string;
+  title: string;
+  category: string;
+  severity: string;
+  status: string;
+  v1_text?: string;
+  v2_text?: string;
+  batna?: {
+    fallback_clause: string;
+    reasoning: string;
+    leverage_points?: string[];
+  };
+}
+
 interface SmartComposerProps {
   matterId: string;
   taskTitle: string;
@@ -16,6 +32,7 @@ interface SmartComposerProps {
   mode?: string;
   contractId?: string;
   focusFindingId?: string;
+  draftId?: string;
   onClose: () => void;
 }
 
@@ -26,6 +43,7 @@ export default function SmartComposer({
   mode,
   contractId,
   focusFindingId,
+  draftId,
   onClose,
 }: SmartComposerProps) {
   const { getToken } = useAuth();
@@ -42,7 +60,8 @@ export default function SmartComposer({
   const [currentContractId, setCurrentContractId] = useState<string | null>(null);
   const [playbookCategories, setPlaybookCategories] = useState<string[]>([]);
   const [selectedPlaybook, setSelectedPlaybook] = useState<string>('');
-  const [activeTab, setActiveTab] = useState<'docs' | 'library' | 'history'>('docs');
+  const [activeTab, setActiveTab] = useState<'docs' | 'library' | 'history' | 'warroom'>(mode === 'warroom' ? 'warroom' : 'docs');
+  const [negotiationIssues, setNegotiationIssues] = useState<NegotiationIssue[]>([]);
   const [textSelection, setTextSelection] = useState<{ text: string; x: number; y: number; start: number; end: number } | null>(null);
   const [activeRange, setActiveRange] = useState<{ start: number; end: number } | null>(null);
   const [rewriteMode, setRewriteMode] = useState(false);
@@ -67,7 +86,53 @@ export default function SmartComposer({
         const token = await getToken();
         const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
         
-        if (mode === 'review' && contractId) {
+        if (mode === 'warroom' && contractId) {
+          // ── War Room → Composer Bridge ──
+          // 1. Fetch the V3 draft text from contract_versions
+          if (draftId) {
+            const vRes = await fetch(`${baseUrl}/api/v1/negotiation/${contractId}/versions`, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (vRes.ok) {
+              const vData = await vRes.json();
+              const targetVersion = (vData.versions || []).find((v: any) => v.id === draftId);
+              if (targetVersion?.raw_text) {
+                setDraftText(targetVersion.raw_text);
+              } else {
+                // Fallback: use the latest version's text
+                const latest = (vData.versions || []).slice(-1)[0];
+                if (latest?.raw_text) setDraftText(latest.raw_text);
+              }
+            }
+          }
+          setCurrentContractId(contractId);
+
+          // 2. Fetch negotiation issues with BATNA context
+          try {
+            const issuesRes = await fetch(`${baseUrl}/api/v1/negotiation/${contractId}/issues`, {
+              headers: { Authorization: `Bearer ${token}` }
+            });
+            if (issuesRes.ok) {
+              const issuesData = await issuesRes.json();
+              setNegotiationIssues(issuesData.issues || []);
+
+              // 3. Populate chat history with BATNA context summary
+              const openIssues = (issuesData.issues || []).filter((i: any) => i.status === 'open' || i.status === 'under_review');
+              if (openIssues.length > 0) {
+                setChatHistory([
+                  {
+                    role: 'assistant',
+                    content: `📋 **War Room Context Loaded**\n\nYou have **${openIssues.length}** active deviations from the negotiation round. Check the War Room tab in the sidebar to view BATNA strategies and apply suggested clauses.`,
+                    suggestion: null
+                  }
+                ]);
+              }
+            }
+          } catch (issueErr) {
+            console.error('[Composer] Failed to fetch negotiation issues:', issueErr);
+          }
+
+        } else if (mode === 'review' && contractId) {
           // Special Review-to-Draft flow: fetch from the review endpoint
           const res = await fetch(`${baseUrl}/api/v1/review/${contractId}`, {
             headers: { Authorization: `Bearer ${token}` }
@@ -134,7 +199,7 @@ export default function SmartComposer({
       }
     };
     loadExistingDraft();
-  }, [matterId, mode, contractId, focusFindingId]);
+  }, [matterId, mode, contractId, focusFindingId, draftId]);
 
   React.useEffect(() => {
     const fetchPlaybooks = async () => {

@@ -155,7 +155,7 @@ export async function uploadDocument(formData: FormData) {
 }
 
 // 3. Smart Ingestion Background Action
-export async function triggerSmartIngestion(formData: FormData, matterId: string, contractId: string) {
+export async function triggerSmartIngestion(formData: FormData, matterId: string, contractId: string, parentContractId?: string) {
     const { userId, orgId, getToken } = await auth()
     const tenantId = orgId || userId
 
@@ -175,6 +175,9 @@ export async function triggerSmartIngestion(formData: FormData, matterId: string
         backendFormData.append('tenant_id', tenantId)
         backendFormData.append('matter_id', matterId)
         backendFormData.append('contract_id', contractId)
+        if (parentContractId) {
+            backendFormData.append('parent_contract_id', parentContractId)
+        }
 
         const response = await fetch(`${FASTAPI_URL}/api/upload`, {
             method: 'POST',

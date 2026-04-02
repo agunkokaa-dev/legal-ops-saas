@@ -1,8 +1,13 @@
 'use client'
 import { useState } from 'react'
+import { confirmVersion } from '@/app/actions/documentActions';
+import { toast } from 'sonner';
 
 export default function DocumentList({ documents }: { documents: any[] }) {
     const [selectedDoc, setSelectedDoc] = useState<any | null>(null)
+    const [linkingDoc, setLinkingDoc] = useState<any | null>(null)
+    const [selectedParentId, setSelectedParentId] = useState<string>("")
+    const [isLinking, setIsLinking] = useState(false)
 
     const getRiskColor = (risk: string) => {
         switch (risk?.toLowerCase()) {
@@ -23,6 +28,22 @@ export default function DocumentList({ documents }: { documents: any[] }) {
         return `${day}/${month}/${year}`;
     };
 
+    const handleLinkSubmit = async () => {
+        if (!linkingDoc || !selectedParentId) return;
+        setIsLinking(true);
+        try {
+            const res = await confirmVersion(linkingDoc.id, selectedParentId);
+            if (res.error) throw new Error(res.error);
+            toast.success("Version successfully linked!");
+            setLinkingDoc(null);
+            setSelectedParentId("");
+        } catch (e: any) {
+            toast.error(e.message || "Failed to link version");
+        } finally {
+            setIsLinking(false);
+        }
+    };
+
     return (
         <>
             <div className="bg-surface border border-surface-border rounded overflow-hidden">
@@ -36,13 +57,14 @@ export default function DocumentList({ documents }: { documents: any[] }) {
                             <tr>
                                 <th className="px-6 py-3 font-medium">Document</th>
                                 <th className="px-6 py-3 font-medium">Date</th>
-                                <th className="px-6 py-3 font-medium text-right">Risk Status</th>
+                                <th className="px-6 py-3 font-medium text-center">Risk Status</th>
+                                <th className="px-6 py-3 font-medium text-right w-20">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-surface-border text-sm">
                             {documents.length === 0 ? (
                                 <tr>
-                                    <td colSpan={3} className="px-6 py-8 text-center text-text-muted">No documents found.</td>
+                                    <td colSpan={4} className="px-6 py-8 text-center text-text-muted">No documents found.</td>
                                 </tr>
                             ) : (
                                 documents.map((doc) => (
@@ -55,13 +77,22 @@ export default function DocumentList({ documents }: { documents: any[] }) {
                                             <span className="material-symbols-outlined text-primary/70 group-hover:text-primary transition-colors">description</span>
                                             {doc.title || 'Unknown Document'}
                                         </td>
-                                        <td className="px-6 py-4 text-text-muted whitespace-nowrap font-mono text-xs">
+                                        <td className="px-6 py-4 text-text-muted whitespace-nowrap font-mono text-xs" suppressHydrationWarning>
                                             {formatDateStrict(doc.created_at)}
                                         </td>
-                                        <td className="px-6 py-4 text-right">
+                                        <td className="px-6 py-4 text-center">
                                             <span className={`px-3 py-1 rounded-full text-xs font-bold tracking-wide uppercase ${getRiskColor(doc.risk_level)}`}>
                                                 {doc.risk_level || 'Pending'}
                                             </span>
+                                        </td>
+                                        <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); setLinkingDoc(doc); }}
+                                                className="text-text-muted hover:text-[#d4af37] transition-colors p-1"
+                                                title="Link as Version"
+                                            >
+                                                <span className="material-symbols-outlined text-[16px]">link</span>
+                                            </button>
                                         </td>
                                     </tr>
                                 ))
@@ -140,6 +171,41 @@ export default function DocumentList({ documents }: { documents: any[] }) {
                                     </div>
                                 )}
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Linking Modal */}
+            {linkingDoc && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setLinkingDoc(null)}>
+                    <div className="bg-[#111] border border-surface-border p-6 rounded-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+                        <h3 className="text-[#d4af37] font-serif text-lg mb-2">Link as New Version</h3>
+                        <p className="text-sm text-text-muted mb-6">Select the parent document. "{linkingDoc.title}" will become the newly active version (V2+) for the selected parent contract.</p>
+                        
+                        <div className="flex flex-col gap-2 mb-6">
+                            <label className="text-xs text-text-muted font-semibold uppercase tracking-widest">Parent Document</label>
+                            <select 
+                                className="w-full bg-[#0a0a0a] border border-surface-border p-3 rounded text-sm text-white focus:outline-none focus:border-[#d4af37]"
+                                value={selectedParentId}
+                                onChange={e => setSelectedParentId(e.target.value)}
+                            >
+                                <option value="">-- Select Parent Document --</option>
+                                {documents.filter(d => d.id !== linkingDoc.id).map(d => (
+                                    <option key={d.id} value={d.id}>{d.title}</option>
+                                ))}
+                            </select>
+                        </div>
+                        
+                        <div className="flex justify-end gap-3 lg:mt-4">
+                            <button className="px-4 py-2 text-sm text-text-muted hover:text-white" onClick={() => setLinkingDoc(null)}>Cancel</button>
+                            <button 
+                                disabled={!selectedParentId || isLinking}
+                                onClick={handleLinkSubmit}
+                                className="px-4 py-2 bg-[#d4af37]/20 border border-[#d4af37]/40 text-[#d4af37] rounded text-sm font-bold tracking-wider uppercase disabled:opacity-50"
+                            >
+                                {isLinking ? "Linking..." : "Confirm Link"}
+                            </button>
                         </div>
                     </div>
                 </div>

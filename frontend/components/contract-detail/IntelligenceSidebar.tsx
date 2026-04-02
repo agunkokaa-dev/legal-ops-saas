@@ -6,10 +6,12 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { deleteNote } from '@/app/actions/noteActions'
 import { createTask } from '@/app/actions/taskActions'
 import { toast } from 'sonner'
+import ContractGenealogyTab from './ContractGenealogyTab'
 import GenealogyGraph from '../genealogy/GenealogyGraph'
 import ClauseAssistant from './ClauseAssistant'
 import ObligationsTab from './ObligationsTab'
 import ReactMarkdown from 'react-markdown'
+import Link from 'next/link'
 
 export default function IntelligenceSidebar({
     contract,
@@ -21,7 +23,6 @@ export default function IntelligenceSidebar({
     onNoteClick,
     onNoteDeleted,
     isLocked = false,
-    onUnlock,
     currentDraftVersion = null,
     onApplySuggestion
 }: {
@@ -34,11 +35,11 @@ export default function IntelligenceSidebar({
     onNoteClick?: (noteId: string) => void,
     onNoteDeleted?: () => void,
     isLocked?: boolean,
-    onUnlock?: () => void,
     currentDraftVersion?: string | null,
     onApplySuggestion?: (originalText: string, newText: string) => Promise<void>
 }) {
     const [activeTab, setActiveTab] = useState<'Analysis' | 'Obligations' | 'Notes' | 'Genealogy' | 'Assistant'>('Analysis')
+    const [genealogyView, setGenealogyView] = useState<'family' | 'versions'>('family')
     const [isSaving, setIsSaving] = useState(false)
     const { getToken } = useAuth();
 
@@ -101,38 +102,6 @@ export default function IntelligenceSidebar({
 
     return (
         <div className="flex flex-col h-full w-[400px] bg-surface border-l border-white/10 z-10 flex-shrink-0">
-            {/* AI REVIEW MODE BANNER */}
-            <div className="flex-none p-4 bg-[#0a0a0a] border-b border-white/5 flex flex-col items-center justify-center">
-                <a
-                    href={`/dashboard/contracts/${contract?.id}/review`}
-                    className="w-full py-2.5 bg-gradient-to-r from-[#d4af37] to-[#bda036] text-black rounded text-xs font-bold transition-all uppercase tracking-wider flex items-center justify-center gap-2 mb-2 hover:shadow-[0_0_15px_rgba(212,175,55,0.3)] hover:scale-[1.02]"
-                >
-                    <span className="material-symbols-outlined text-[16px]">shield</span> Enter AI Review Mode
-                </a>
-                <p className="text-[10px] text-zinc-500 font-medium tracking-wide">
-                    Launch immersive risk analysis workspace
-                </p>
-            </div>
-
-            {/* EDIT IN SMART COMPOSER BANNER */}
-            {isLocked && (
-                <div className="flex-none auto-h p-4 border-b border-white/10 bg-[#d4af37]/10 flex flex-col gap-2">
-                    <div className="flex items-center gap-2 text-[#d4af37]">
-                        <span className="material-symbols-outlined text-[16px]">draw</span>
-                        <span className="text-xs font-bold uppercase tracking-wider">Drafting Mode Available</span>
-                    </div>
-                    <p className="text-[10px] text-[#d4af37]/70 leading-relaxed mb-1">
-                        This document is available for deep-work editing in the Smart Composer.
-                    </p>
-                    <button
-                        onClick={onUnlock}
-                        className="w-full py-1.5 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 border border-[#d4af37]/50 rounded text-xs font-bold text-[#d4af37] transition-colors flex items-center justify-center gap-2"
-                    >
-                        <span></span> Edit in Smart Composer
-                    </button>
-                </div>
-            )}
-
             {/* HEADER: flex-none ensures it NEVER gets crushed by the body */}
             <div className="flex-none flex overflow-x-auto scrollbar-hide border-b border-white/10 w-full px-2">
                 {['Analysis', 'Obligations', 'Notes', 'Genealogy', 'Assistant'].map((tab) => (
@@ -227,32 +196,55 @@ export default function IntelligenceSidebar({
                                             Detailed risk analysis, aggressive highlighting, and AI suggestions are now handled in the dedicated Review Workspace.
                                         </p>
                                     </div>
-                                    <a
-                                        href={`/dashboard/contracts/${contract?.id}/review`}
-                                        className="w-full py-2 bg-[#d4af37]/10 hover:bg-[#d4af37]/20 border border-[#d4af37]/30 rounded text-[10px] font-bold text-[#d4af37] uppercase tracking-widest transition-all"
-                                    >
-                                        Go to Review Workspace
-                                    </a>
+                                    
+                                    {(!contract?.status || contract?.status?.toLowerCase().includes('processing') || contract?.status?.toLowerCase().includes('ingest') || contract?.status === 'In Progress') ? (
+                                        <button disabled className="w-full py-2 bg-neutral-900 border border-neutral-800 rounded text-[10px] font-bold text-neutral-500 uppercase tracking-widest cursor-not-allowed flex items-center justify-center gap-2">
+                                            <span className="material-symbols-outlined text-[14px] animate-spin">sync</span> AI is Analyzing V2...
+                                        </button>
+                                    ) : (
+                                        <a
+                                            href={`/dashboard/contracts/${contract?.id}/review`}
+                                            className="w-full py-2 bg-[#d4af37]/10 hover:bg-[#d4af37]/20 border border-[#d4af37]/30 rounded text-[10px] font-bold text-[#d4af37] uppercase tracking-widest transition-all block text-center"
+                                        >
+                                            Go to Review Workspace
+                                        </a>
+                                    )}
                                 </div>
 
                                 {/* War Room: Version History Card */}
                                 {contract?.version_count && contract.version_count > 1 && (
-                                    <div className="mt-4 p-4 rounded-xl bg-[#0a0a0a] border border-white/10 flex items-center gap-4 group hover:border-[#d4af37]/30 transition-colors cursor-pointer">
-                                        <div className="w-10 h-10 rounded-full bg-[#d4af37]/10 flex items-center justify-center shrink-0">
-                                            <span className="material-symbols-outlined text-[#d4af37] text-lg">difference</span>
+                                    (!contract?.status || contract?.status?.toLowerCase().includes('processing') || contract?.status?.toLowerCase().includes('ingest') || contract?.status === 'In Progress') ? (
+                                        <div className="mt-4 p-4 rounded-xl bg-[#050505] border border-neutral-800/50 flex items-center gap-4 opacity-50 cursor-not-allowed">
+                                            <div className="w-10 h-10 rounded-full bg-neutral-900 flex items-center justify-center shrink-0">
+                                                <span className="material-symbols-outlined text-neutral-600 text-lg">sync</span>
+                                            </div>
+                                            <div className="flex flex-col flex-1 min-w-0">
+                                                <span className="text-neutral-500 font-serif font-bold text-xs animate-pulse tracking-wider">
+                                                    [ 🔄 AI Processing V{contract.version_count}... ]
+                                                </span>
+                                                <span className="text-[10px] text-neutral-600">
+                                                    Please wait for diff to generate
+                                                </span>
+                                            </div>
                                         </div>
-                                        <div className="flex flex-col flex-1 min-w-0">
-                                            <span className="text-white font-serif font-bold text-xs group-hover:text-[#d4af37] transition-colors">
-                                                Version History
-                                            </span>
-                                            <span className="text-[10px] text-text-muted">
-                                                {contract.version_count} versions tracked
-                                            </span>
-                                        </div>
-                                        <div className="bg-[#d4af37]/20 text-[#d4af37] text-[10px] font-bold px-2.5 py-1 rounded-full">
-                                            V{contract.version_count}
-                                        </div>
-                                    </div>
+                                    ) : (
+                                        <Link href={`/dashboard/contracts/${contract?.id}/war-room`} className="mt-4 p-4 rounded-xl bg-[#0a0a0a] border border-white/10 flex items-center gap-4 group hover:border-[#d4af37]/30 transition-colors cursor-pointer block">
+                                            <div className="w-10 h-10 rounded-full bg-[#d4af37]/10 flex items-center justify-center shrink-0">
+                                                <span className="material-symbols-outlined text-[#d4af37] text-lg">difference</span>
+                                            </div>
+                                            <div className="flex flex-col flex-1 min-w-0">
+                                                <span className="text-white font-serif font-bold text-xs group-hover:text-[#d4af37] transition-colors">
+                                                    Negotiation War Room
+                                                </span>
+                                                <span className="text-[10px] text-text-muted">
+                                                    Compare {contract.version_count} versions
+                                                </span>
+                                            </div>
+                                            <div className="bg-[#d4af37]/20 text-[#d4af37] text-[10px] font-bold px-2.5 py-1 rounded-full">
+                                                V{contract.version_count}
+                                            </div>
+                                        </Link>
+                                    )
                                 )}
                             </div>
                         </motion.div>
@@ -351,14 +343,40 @@ export default function IntelligenceSidebar({
                             animate={{ opacity: 1, x: 0 }}
                             exit={{ opacity: 0, x: -20 }}
                             transition={{ duration: 0.25, ease: "easeInOut" }}
-                            className="h-full flex flex-col overflow-hidden"
+                            className="h-full flex flex-col overflow-hidden bg-[#050505]"
                         >
-                            <div className="flex flex-col flex-1 h-full">
-                                <GenealogyGraph
-                                    documents={graphDocs}
-                                    relationships={graphRels}
-                                    currentContractId={contract?.id}
-                                />
+                            {/* Toggle Header */}
+                            <div className="flex items-center justify-center p-4 border-b border-white/5 shrink-0">
+                                <div className="bg-[#141414] p-1 rounded-lg border border-white/5 flex items-center gap-1">
+                                    <button 
+                                        onClick={() => setGenealogyView('family')}
+                                        className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${
+                                            genealogyView === 'family' ? 'bg-[#D4AF37]/10 text-[#D4AF37]' : 'text-zinc-500 hover:text-zinc-300'
+                                        }`}
+                                    >
+                                        Document Family
+                                    </button>
+                                    <button 
+                                        onClick={() => setGenealogyView('versions')}
+                                        className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${
+                                            genealogyView === 'versions' ? 'bg-[#D4AF37]/10 text-[#D4AF37]' : 'text-zinc-500 hover:text-zinc-300'
+                                        }`}
+                                    >
+                                        Version History
+                                    </button>
+                                </div>
+                            </div>
+                            
+                            <div className="flex-1 overflow-hidden relative">
+                                {genealogyView === 'family' ? (
+                                    <GenealogyGraph
+                                        documents={graphDocs}
+                                        relationships={graphRels}
+                                        currentContractId={contract?.id}
+                                    />
+                                ) : (
+                                    <ContractGenealogyTab contractId={contract?.id} />
+                                )}
                             </div>
                         </motion.div>
                     )}

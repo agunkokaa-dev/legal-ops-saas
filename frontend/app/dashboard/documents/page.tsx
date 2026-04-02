@@ -177,6 +177,7 @@ export default function DocumentsPage() {
                     .from("contracts")
                     .select("*")
                     .eq("tenant_id", tenantId)
+                    .neq("status", "ARCHIVED")
                     .order("created_at", { ascending: false });
 
                 if (error) {
