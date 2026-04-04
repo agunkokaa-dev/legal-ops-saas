@@ -566,6 +566,17 @@ export default function SmartComposer({
           >
             {isSaved ? 'DRAFT SAVED! ✓' : 'SAVE DRAFT'}
           </button>
+          
+          {currentContractId && (
+            <button
+              onClick={() => router.push(`/dashboard/bilingual/${currentContractId}`)}
+              className="relative overflow-hidden border border-blue-500/40 bg-[#0a0a0a] text-blue-400 hover:bg-blue-500/10 hover:border-blue-400 px-6 py-2 rounded text-[10px] font-extrabold tracking-[0.1em] uppercase transition-all duration-300 shadow-[0_0_15px_rgba(59,130,246,0.05)] hover:shadow-[0_0_25px_rgba(59,130,246,0.2)]"
+              title="Open the Bilingual Editor (Bahasa Indonesia & English)"
+            >
+              Bilingual Editor
+            </button>
+          )}
+
           <button
             onClick={handleAudit}
             disabled={isAuditing}

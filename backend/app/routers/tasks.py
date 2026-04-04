@@ -207,7 +207,7 @@ async def create_tasks_from_template(req: ApplyTemplateRequest, claims: dict = D
     try:
         tenant_id = claims["verified_tenant_id"]
 
-        res = supabase.table("task_template_items").select("*").eq("template_id", req.template_id).order("position").execute()
+        res = supabase.table("task_template_items").select("*").eq("template_id", req.template_id).eq("tenant_id", tenant_id).order("position").execute()
         template_items = res.data
         if not template_items:
             raise HTTPException(status_code=404, detail="Template is empty or not found.")
@@ -227,7 +227,7 @@ async def create_tasks_from_template(req: ApplyTemplateRequest, claims: dict = D
                 "due_date": due_date.isoformat() if due_date else None,
             })
 
-        tasks_res = supabase.table("tasks").insert(new_tasks_payload).execute()
+        tasks_res = supabase.table("tasks").insert([{**t, "tenant_id": tenant_id} for t in new_tasks_payload]).execute()
         created_tasks = tasks_res.data
 
         all_new_sub_tasks = []
@@ -257,7 +257,7 @@ async def create_tasks_from_template(req: ApplyTemplateRequest, claims: dict = D
             log_payload["task_id"] = first_task_id
             
         try:
-             supabase.table("activity_logs").insert(log_payload).execute()
+             supabase.table("activity_logs").insert({**log_payload, "tenant_id": tenant_id}).execute()
         except Exception:
              pass
 
@@ -274,16 +274,15 @@ async def create_tasks_from_template(req: ApplyTemplateRequest, claims: dict = D
 @router.post("/ai/task-assistant")
 async def ask_task_assistant(req: TaskAssistantRequest, claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
     try:
-        # Prioritize tenant_id from request body (usually contains the Clerk orgId)
-        # over the one from the token (which might be the userId iforg context isn't fully set).
-        tenant_id = req.tenant_id or claims.get("verified_tenant_id")
+        # SECURITY: tenant_id MUST come exclusively from the verified JWT — never from the request body.
+        tenant_id = claims["verified_tenant_id"]
         
         source = req.source_page or "dashboard"
         document_id = getattr(req, "document_id", None)
         
         task_context_str = "Unknown Task"
         try:
-            task_resp = supabase.table("tasks").select("title, description").eq("id", req.task_id).execute()
+            task_resp = supabase.table("tasks").select("title, description").eq("id", req.task_id).eq("tenant_id", tenant_id).execute()
             if task_resp.data:
                 t_title = task_resp.data[0].get('title', '')
                 t_desc = task_resp.data[0].get('description', '')
@@ -298,13 +297,13 @@ async def ask_task_assistant(req: TaskAssistantRequest, claims: dict = Depends(v
         if source == "document" and document_id:
             contract_ids_to_search = [document_id]
             try:
-                doc_resp = supabase.table("contracts").select("id, title, matter_id").eq("id", document_id).execute()
+                doc_resp = supabase.table("contracts").select("id, title, matter_id").eq("id", document_id).eq("tenant_id", tenant_id).execute()
                 if doc_resp.data:
                     doc_record = doc_resp.data[0]
                     contract_titles[document_id] = doc_record.get("title", "Target Document")
                     real_matter_id = doc_record.get("matter_id")
                     if real_matter_id:
-                        siblings_resp = supabase.table("contracts").select("id, title").eq("matter_id", real_matter_id).execute()
+                        siblings_resp = supabase.table("contracts").select("id, title").eq("matter_id", real_matter_id).eq("tenant_id", tenant_id).execute()
                         if siblings_resp.data:
                             for record in siblings_resp.data:
                                 if record["id"] not in contract_ids_to_search:
@@ -316,7 +315,7 @@ async def ask_task_assistant(req: TaskAssistantRequest, claims: dict = Depends(v
                 contract_titles[document_id] = "Target Document"
         else:
             try:
-                contracts_resp = supabase.table("contracts").select("id, title").eq("matter_id", req.matter_id).execute()
+                contracts_resp = supabase.table("contracts").select("id, title").eq("matter_id", req.matter_id).eq("tenant_id", tenant_id).execute()
                 if contracts_resp.data:
                     for record in contracts_resp.data:
                         contract_ids_to_search.append(record["id"])

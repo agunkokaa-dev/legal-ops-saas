@@ -68,13 +68,20 @@ async def get_playbook_categories(claims: dict = Depends(verify_clerk_token)):
     print("🔥 [BACKEND] Endpoint /categories hit!")
     try:
         tenant_id = claims["verified_tenant_id"]
-        res = admin_supabase.table("company_playbooks").select("category").or_(f"tenant_id.eq.{tenant_id},tenant_id.is.null").execute()
-        print(f"🔥 [BACKEND] Supabase response: {res.data}")
-        
-        if not res.data:
+
+        # Fetch tenant-specific playbook categories (strict isolation)
+        tenant_res = admin_supabase.table("company_playbooks").select("category").eq("tenant_id", tenant_id).execute()
+
+        # Fetch global/system playbook categories (tenant_id IS NULL = shared system rules)
+        global_res = admin_supabase.table("company_playbooks").select("category").is_("tenant_id", "null").execute()
+
+        all_rows = (tenant_res.data or []) + (global_res.data or [])
+        print(f"🔥 [BACKEND] Supabase response: {all_rows}")
+
+        if not all_rows:
             return {"categories": []}
-            
-        categories = list(set(item["category"] for item in res.data if item.get("category")))
+
+        categories = list(set(item["category"] for item in all_rows if item.get("category")))
         return {"categories": sorted(categories)}
     except Exception as e:
         print(f"🚨 [BACKEND] CRITICAL ERROR: {str(e)}")

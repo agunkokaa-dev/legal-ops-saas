@@ -29,7 +29,7 @@ async def create_template(
             "matter_type": request.matter_type
         }
         
-        header_res = supabase.table("task_templates").insert(header_payload).execute()
+        header_res = supabase.table("task_templates").insert({**header_payload, "tenant_id": tenant_id}).execute()
         
         if not header_res.data:
             raise HTTPException(status_code=500, detail="Failed to create template header")
@@ -40,6 +40,7 @@ async def create_template(
             items_payload = []
             for item in request.items:
                 items_payload.append({
+                    "tenant_id": tenant_id,
                     "template_id": template_id,
                     "title": item.title,
                     "description": item.description,
@@ -48,7 +49,7 @@ async def create_template(
                     "procedural_steps": item.procedural_steps
                 })
                 
-            items_res = supabase.table("task_template_items").insert(items_payload).execute()
+            items_res = supabase.table("task_template_items").insert([{**it, "tenant_id": tenant_id} for it in items_payload]).execute()
             
             if not items_res.data:
                  print("Warning: Template created but items failed to insert natively.")

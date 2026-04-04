@@ -13,4 +13,4 @@ pymupdf
 markdownify
 langgraph
 langchain-openai
-langchain-core
+langchain-corereportlab

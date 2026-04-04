@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { OrganizationSwitcher, UserButton } from '@clerk/nextjs'
 import { ListTodo } from 'lucide-react'
@@ -35,12 +36,30 @@ export default function Sidebar() {
 
     return (
         <nav className="w-20 lg:w-64 border-r border-surface-border bg-surface flex flex-col shrink-0 transition-all duration-300">
-            <div className="h-16 flex items-center px-4 border-b border-surface-border">
-                <div className="flex items-center gap-3">
-                    <div className="text-primary material-symbols-outlined text-[28px]">gavel</div>
-                    <span className="font-display text-xl font-medium tracking-wide hidden lg:block">CLAUSE</span>
+            <Link href="/dashboard" className="flex items-center px-4 py-6 border-b border-surface-border hover:opacity-80 transition-opacity whitespace-nowrap overflow-hidden">
+                {/* Icon-only view on small sidebar, full logo on wide sidebar */}
+                <div className="hidden lg:flex items-center">
+                    <Image
+                        src="/logo-clause.png"
+                        alt="Clause Logo"
+                        width={120}
+                        height={40}
+                        className="object-contain"
+                        priority
+                    />
                 </div>
-            </div>
+                {/* Compact icon on small sidebar */}
+                <div className="flex lg:hidden items-center">
+                    <Image
+                        src="/logo-clause.png"
+                        alt="Clause"
+                        width={32}
+                        height={32}
+                        className="object-contain"
+                        priority
+                    />
+                </div>
+            </Link>
             <div className="flex-1 overflow-y-auto py-6 flex flex-col gap-2 px-3">
                 {navItems.map((item) => {
                     const active = isActive(item.href, item.exact)

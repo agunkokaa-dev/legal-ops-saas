@@ -193,7 +193,7 @@ async def escalate_issue(
             "source_document_name": contract_id,
         }
 
-        task_res = admin_supabase.table("tasks").insert(task_payload).execute()
+        task_res = admin_supabase.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
 
         if not task_res.data:
             raise HTTPException(status_code=500, detail="Failed to create task.")
@@ -205,6 +205,7 @@ async def escalate_issue(
                 "linked_task_id": task_id
             }) \
             .eq("id", payload.issue_id) \
+            .eq("tenant_id", tenant_id) \
             .execute()
 
         # Log activity
@@ -396,7 +397,7 @@ async def generate_smart_diff(
                 })
             
             if issues_payload:
-                issues_res = admin_supabase.table("negotiation_issues").insert(issues_payload).execute()
+                issues_res = admin_supabase.table("negotiation_issues").insert([{**iss, "tenant_id": tenant_id} for iss in issues_payload]).execute()
                 inserted_issues = issues_res.data or []
                 
                 # Replace the ephemeral deviation_ids with the REAL Supabase UUIDs
@@ -414,6 +415,7 @@ async def generate_smart_diff(
         admin_supabase.table("contract_versions") \
             .update({"pipeline_output": pipeline_output}) \
             .eq("id", v2.get("id")) \
+            .eq("tenant_id", tenant_id) \
             .execute()
 
         # 7. Track this as a negotiation round with REAL IDs
@@ -440,7 +442,7 @@ async def generate_smart_diff(
             # Catch backend failures correctly: update document status to failed
             admin_supabase.table("contracts").update({
                 "status": "Failed"
-            }).eq("id", contract_id).execute()
+            }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
         except Exception as update_err:
             print(f"Warning: Failed to set contract status to Failed: {update_err}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -530,7 +532,7 @@ async def update_issue_status(
                 "risk_score": latest_v.get("risk_score", 0.0),
                 "risk_level": latest_v.get("risk_level", "Unknown"),
             }
-            res_insert = admin_supabase.table("contract_versions").insert(draft_payload).execute()
+            res_insert = admin_supabase.table("contract_versions").insert({**draft_payload, "tenant_id": tenant_id}).execute()
             if res_insert.data:
                 draft_version = res_insert.data[0]
 
@@ -593,7 +595,7 @@ async def update_issue_status(
             elif payload.status == 'escalated':
                 # Create Kanban Approval Task
                 try:
-                    fetch_matter_id = admin_supabase.table("contracts").select("matter_id").eq("id", contract_id).execute()
+                    fetch_matter_id = admin_supabase.table("contracts").select("matter_id").eq("id", contract_id).eq("tenant_id", tenant_id).execute()
                     matter_id = fetch_matter_id.data[0].get("matter_id") if fetch_matter_id.data else None
                     task_payload = {
                         "tenant_id": tenant_id,
@@ -603,10 +605,10 @@ async def update_issue_status(
                         "status": "backlog",
                         "priority": "high",
                     }
-                    task_res = admin_supabase.table("tasks").insert(task_payload).execute()
+                    task_res = admin_supabase.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
                     if task_res.data:
                         linked_task_id = task_res.data[0]["id"]
-                        admin_supabase.table("negotiation_issues").update({"linked_task_id": linked_task_id}).eq("id", issue_id).execute()
+                        admin_supabase.table("negotiation_issues").update({"linked_task_id": linked_task_id}).eq("id", issue_id).eq("tenant_id", tenant_id).execute()
                 except Exception as e:
                     print(f"Failed to create escalation task: {e}")
 
@@ -616,7 +618,7 @@ async def update_issue_status(
                     "raw_text": draft_text,
                     "risk_score": draft_version.get("risk_score"),
                     "risk_level": draft_version.get("risk_level")
-                }).eq("id", draft_version["id"]).execute()
+                }).eq("id", draft_version["id"]).eq("tenant_id", tenant_id).execute()
 
 
         # Append new audit entry
@@ -648,6 +650,7 @@ async def update_issue_status(
         admin_supabase.table("negotiation_issues") \
             .update(update_payload) \
             .eq("id", issue_id) \
+            .eq("tenant_id", tenant_id) \
             .execute()
 
         # Log activity

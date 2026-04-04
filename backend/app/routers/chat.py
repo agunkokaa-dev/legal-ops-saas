@@ -85,13 +85,16 @@ async def async_qdrant_search(collection: str, vector: list, limit: int, query_f
         logging.error(traceback.format_exc())
         return []
 
-async def async_fetch_full_document(contract_id: str, max_chars: int = 8000) -> str:
+async def async_fetch_full_document(contract_id: str, tenant_id: str, max_chars: int = 8000) -> str:
     """Offloads the synchronous Qdrant scroll call to fetch the full document text."""
     try:
         response = await asyncio.to_thread(
             qdrant.scroll,
             collection_name=COLLECTION_NAME,
-            scroll_filter=Filter(must=[FieldCondition(key="contract_id", match=MatchValue(value=contract_id))]),
+            scroll_filter=Filter(must=[
+                FieldCondition(key="contract_id", match=MatchValue(value=contract_id)),
+                FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))
+            ]),
             limit=15, # 15 chunks x ~1000 chars = plenty to reach max_chars
             with_payload=True
         )
@@ -150,7 +153,7 @@ async def chat_with_clause(
         valid_contracts: dict = {}
         if contract_ids:
             try:
-                supabase_response = supabase.table("contracts").select("*").in_("id", contract_ids).execute()
+                supabase_response = supabase.table("contracts").select("*").in_("id", contract_ids).eq("tenant_id", tenant_id).execute()
                 for record in supabase_response.data:
                     valid_contracts[str(record['id'])] = record
             except Exception as e:
@@ -164,8 +167,8 @@ async def chat_with_clause(
                 if rels_resp.data:
                     parent_ids = list(set([r["parent_id"] for r in rels_resp.data if r.get("parent_id")]))
                     if parent_ids:
-                        # Fetch parent contract metadata
-                        parent_docs_resp = admin_supabase.table("contracts").select("id, title, risk_level, document_category, contract_value").in_("id", parent_ids).execute()
+                        # Fetch parent contract metadata — scoped to tenant
+                        parent_docs_resp = admin_supabase.table("contracts").select("id, title, risk_level, document_category, contract_value").in_("id", parent_ids).eq("tenant_id", tenant_id).execute()
                         parent_docs = {str(d["id"]): d for d in (parent_docs_resp.data or [])}
 
                         # Fetch parent vector chunks for context
@@ -323,7 +326,7 @@ async def chat_clause_assistant(
         contract_ids_to_search = []
         if request.matterId:
             try:
-                response = supabase.table("contracts").select("id").eq("matter_id", request.matterId).execute()
+                response = supabase.table("contracts").select("id").eq("matter_id", request.matterId).eq("tenant_id", tenant_id).execute()
                 if response.data:
                     contract_ids_to_search = [record["id"] for record in response.data]
             except Exception as e:
@@ -353,7 +356,7 @@ async def chat_clause_assistant(
         # Fetch titles
         contract_titles = {}
         try:
-            resp = supabase.table("contracts").select("id, title, document_category").in_("id", contract_ids_to_search).execute()
+            resp = supabase.table("contracts").select("id, title, document_category").in_("id", contract_ids_to_search).eq("tenant_id", tenant_id).execute()
             if resp.data:
                 for record in resp.data:
                     contract_titles[record["id"]] = record.get("title", "Unknown Document")
@@ -363,13 +366,13 @@ async def chat_clause_assistant(
         # 2. Fetch Historical Context (Agent Analysis)
         historical_context = ""
         try:
-            clauses_resp = supabase.table("contract_clauses").select("*").in_("contract_id", contract_ids_to_search).execute()
+            clauses_resp = supabase.table("contract_clauses").select("*").in_("contract_id", contract_ids_to_search).eq("tenant_id", tenant_id).execute()
             if clauses_resp.data:
                 historical_context += "--- HISTORICAL AGENT ANALYSIS (CLAUSES) ---\n"
                 for clause in clauses_resp.data:
                     historical_context += f"- [Doc: {clause.get('contract_id')}] Type: {clause.get('clause_type', 'Unknown')} | AI Finding: {clause.get('ai_summary', '')}\n"
 
-            obs_resp = supabase.table("contract_obligations").select("*").in_("contract_id", contract_ids_to_search).execute()
+            obs_resp = supabase.table("contract_obligations").select("*").in_("contract_id", contract_ids_to_search).eq("tenant_id", tenant_id).execute()
             if obs_resp.data:
                 historical_context += "\n--- HISTORICAL AGENT ANALYSIS (OBLIGATIONS) ---\n"
                 for ob in obs_resp.data:
@@ -381,8 +384,12 @@ async def chat_clause_assistant(
         question_vector = await async_embed(request.message)
 
         # 4. Dual RAG Retrieval (NON-BLOCKING, PARALLEL)
+        # SECURITY: Contract filter must include tenant_id to prevent cross-tenant vector access
         contract_filter = Filter(
-            must=[FieldCondition(key="contract_id", match=models.MatchAny(any=contract_ids_to_search))]
+            must=[
+                FieldCondition(key="contract_id", match=models.MatchAny(any=contract_ids_to_search)),
+                FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))
+            ]
         )
 
         # Run contract search, law search, and playbook search IN PARALLEL
@@ -415,8 +422,8 @@ async def chat_clause_assistant(
         
         try:
             # Fetch full text concurrently
-            primary_tasks = [async_fetch_full_document(cid) for cid in primary_docs]
-            parent_tasks = [async_fetch_full_document(cid) for cid in parent_docs]
+            primary_tasks = [async_fetch_full_document(cid, tenant_id) for cid in primary_docs]
+            parent_tasks = [async_fetch_full_document(cid, tenant_id) for cid in parent_docs]
             
             primary_texts = await asyncio.gather(*primary_tasks)
             parent_texts = await asyncio.gather(*parent_tasks)

@@ -101,13 +101,8 @@ async def analyze_contract(
                 .limit(1) \
                 .execute()
 
-            if not contract_res.data:
-                # Fallback: try without tenant filter (some contracts created before tenant enforcement)
-                contract_res = admin_supabase.table("contracts") \
-                    .select("draft_revisions, title, matter_id, tenant_id") \
-                    .eq("id", payload.contract_id) \
-                    .limit(1) \
-                    .execute()
+            # SECURITY: The tenant-bypass fallback has been intentionally removed.
+            # If a contract is not found for this tenant, it does not exist for this user.
 
             if not contract_res.data:
                 raise HTTPException(status_code=404, detail="Contract not found. Please verify the contract ID.")
@@ -172,7 +167,7 @@ async def analyze_contract(
         }
 
         try:
-            admin_supabase.table("contract_reviews").insert(review_record).execute()
+            admin_supabase.table("contract_reviews").insert({**review_record, "tenant_id": tenant_id}).execute()
             print(f"✅ [Review] Stored review {review_id} with {len(findings)} findings.")
         except Exception as e:
             print(f"⚠️ [Review] Failed to store review: {e}")
@@ -212,7 +207,7 @@ async def analyze_contract(
                         "playbook_reference": f.get("playbook_reference")
                     })
                 if issue_rows:
-                    admin_supabase.table("negotiation_issues").insert(issue_rows).execute()
+                    admin_supabase.table("negotiation_issues").insert([{**r, "tenant_id": tenant_id} for r in issue_rows]).execute()
                     print(f"✅ [War Room] Persisted {len(issue_rows)} negotiation issues for contract {payload.contract_id}")
         except Exception as ni_err:
             print(f"⚠️ [War Room] Failed to persist negotiation issues (non-fatal): {ni_err}")
@@ -265,7 +260,7 @@ async def create_task_from_finding(
             "source_document_name": payload.contract_id,
         }
 
-        res = admin_supabase.table("tasks").insert(task_payload).execute()
+        res = admin_supabase.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
 
         if not res.data:
             raise HTTPException(status_code=500, detail="Failed to create task.")
@@ -470,6 +465,7 @@ async def accept_finding(
                 "raw_document": updated_document
             }) \
             .eq("id", review["id"]) \
+            .eq("tenant_id", tenant_id) \
             .execute()
 
         # Also update the contract's draft_revisions

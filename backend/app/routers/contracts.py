@@ -40,13 +40,19 @@ router = APIRouter()
 # ASYNC WRAPPERS & CALLBACKS
 # =====================================================================
 
-def handle_task_result(task: asyncio.Task, contract_id: str):
+def handle_task_result(task: asyncio.Task, contract_id: str, tenant_id: str = None):
     try:
         exc = task.exception()
         if exc:
             print(f"🚨 [BACKGROUND TASK FAILED] Contract {contract_id}: {exc}")
             # Update status to Failed so UI doesn't hang forever
-            admin_supabase.table("contracts").update({"status": "Failed"}).eq("id", contract_id).execute()
+            # NOTE: tenant_id is included here but may be None for truly orphaned tasks
+            # (e.g., if background task itself crashed before tenant_id was captured).
+            # The eq("id", ...) filter is safe here since this fires after our own task creation.
+            q = admin_supabase.table("contracts").update({"status": "Failed"}).eq("id", contract_id)
+            if tenant_id:
+                q = q.eq("tenant_id", tenant_id)
+            q.execute()
     except asyncio.CancelledError:
         print(f"⚠️ [BACKGROUND TASK CANCELLED] Contract {contract_id}")
 
@@ -191,13 +197,13 @@ async def process_contract_background(
         }
         
         print(f"[SUPABASE UPDATE] Checking if contract_id: {contract_id} already exists (Admin Client).")
-        existing = admin_supabase.table("contracts").select("id").eq("id", contract_id).execute()
+        existing = admin_supabase.table("contracts").select("id").eq("id", contract_id).eq("tenant_id", tenant_id).execute()
         
         if existing.data and len(existing.data) > 0:
             print(f"[SUPABASE UPDATE] Existing record found. Sending exact payload to update():")
             print(json.dumps(update_payload, indent=2, default=str))
             try:
-                res = admin_supabase.table("contracts").update(update_payload).eq("id", contract_id).execute()
+                res = admin_supabase.table("contracts").update(update_payload).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
                 print(f"[SUPABASE UPDATE] Success! Response: {res.data}")
             except Exception as e:
                 print(f"!!! [SUPABASE UPDATE ERROR] Exceptions swallowed during update(): {e}")
@@ -261,6 +267,7 @@ async def process_contract_background(
             admin_supabase.table("contracts") \
                 .update({"version_count": next_version, "latest_version_id": version_id}) \
                 .eq("id", contract_id) \
+                .eq("tenant_id", tenant_id) \
                 .execute()
             
             print(f"✅ [War Room] Persisted version V{next_version} (id={version_id}) for contract {contract_id}")
@@ -429,7 +436,7 @@ async def upload_contract(
                 text_content=text_content
             )
         )
-        task.add_done_callback(functools.partial(handle_task_result, contract_id=contract_id))
+        task.add_done_callback(functools.partial(handle_task_result, contract_id=contract_id, tenant_id=tenant_id))
         print(f"[ENDPOINT SUCCESS] Background task scheduled for contract_id: {contract_id}. Returning 200 immediately.")
 
         response = {
@@ -508,6 +515,7 @@ async def confirm_version_link(
                     "version_number": next_version
                 }) \
                 .eq("id", version_row["id"]) \
+                .eq("tenant_id", tenant_id) \
                 .execute()
             
             # Update parent contract tracking
@@ -517,12 +525,14 @@ async def confirm_version_link(
                     "latest_version_id": version_row["id"]
                 }) \
                 .eq("id", payload.parent_contract_id) \
+                .eq("tenant_id", tenant_id) \
                 .execute()
             
             # [HOTFIX] Cleanup orphaned child contract shell
             admin_supabase.table("contracts") \
                 .delete() \
                 .eq("id", payload.new_contract_id) \
+                .eq("tenant_id", tenant_id) \
                 .execute()
             
             print(f"✅ [War Room] Linked version V{next_version} to parent contract {payload.parent_contract_id}. Orphaned contract {payload.new_contract_id} deleted.")
@@ -632,7 +642,8 @@ Return a JSON object containing an array called 'obligations' with keys:
                 "compliance_flag": ob.get("compliance_flag", "SAFE")
             })
             
-        db_res = supabase.table("contract_obligations").insert(insert_payload).execute()
+        # Each element in insert_payload already contains "tenant_id": tenant_id
+        db_res = supabase.table("contract_obligations").insert([{**ob, "tenant_id": tenant_id} for ob in insert_payload]).execute()
         
         return {
             "status": "success", 

@@ -4,43 +4,75 @@ Reusable auth and database dependencies injected into all routers.
 """
 import os
 import jwt
+import logging
+from datetime import datetime, timezone
 from fastapi import Header, HTTPException, Depends
 from supabase import create_client, Client
 from app.config import CLERK_PEM_KEY, SUPABASE_URL, SUPABASE_ANON_KEY
 
+auth_logger = logging.getLogger("pariana.auth")
+logging.basicConfig(level=logging.INFO)
+
 
 async def verify_clerk_token(
     authorization: str = Header(None),
-    x_tenant_id: str = Header(None)
 ) -> dict:
     """
     Validates the Clerk JWT from the Authorization header.
     Returns the decoded payload with `verified_tenant_id` injected.
+
+    Tenant identity is derived exclusively from the cryptographically signed JWT claims:
+      - `org_id` (Clerk Organization) takes precedence
+      - `sub` (Clerk user ID) is used as fallback for solo users
+
+    The header-based tenant override has been intentionally removed. Header-based
+    tenant overrides allow any authenticated user to impersonate another tenant,
+    bypassing JWT-level isolation entirely.
     """
     if not authorization or not authorization.startswith("Bearer "):
+        auth_logger.warning(
+            "AUTH_REJECT | reason=missing_or_malformed_header | ts=%s",
+            datetime.now(timezone.utc).isoformat()
+        )
         raise HTTPException(status_code=401, detail="Missing or invalid token")
-        
+
     token = authorization.split(" ")[1]
-    
+    # Log only a non-sensitive token prefix for correlation — never the full token
+    token_prefix = token[:20] if len(token) >= 20 else "<short>"
+
     if not CLERK_PEM_KEY:
         # FAIL HARD - Do NOT decode with verify_signature=False
-        print("🚨 CRITICAL: CLERK_PEM_KEY is missing from environment!")
+        auth_logger.critical("AUTH_CONFIG_ERROR | CLERK_PEM_KEY missing from environment | ts=%s",
+            datetime.now(timezone.utc).isoformat())
         raise HTTPException(status_code=500, detail="Server authentication configuration error.")
 
     try:
         claims = jwt.decode(token, CLERK_PEM_KEY, algorithms=["RS256"])
-        print("🔥 JWT CLAIMS:", claims)
-        
-        # Consistent tenant extraction: Prioritize explicit frontend context, fallback to token claims
-        tenant_id = x_tenant_id or claims.get("org_id") or claims.get("sub")
+
+        # Tenant identity comes exclusively from JWT claims — never from request headers.
+        tenant_id = claims.get("org_id") or claims.get("sub")
         if not tenant_id:
+            auth_logger.warning(
+                "AUTH_REJECT | reason=no_tenant_identity | token_prefix=%s | ts=%s",
+                token_prefix, datetime.now(timezone.utc).isoformat()
+            )
             raise HTTPException(status_code=401, detail="No valid tenant identity found in token")
-            
+
         claims["verified_tenant_id"] = tenant_id
         return claims
     except jwt.ExpiredSignatureError:
+        auth_logger.warning(
+            "AUTH_REJECT | reason=token_expired | token_prefix=%s | ts=%s",
+            token_prefix, datetime.now(timezone.utc).isoformat()
+        )
         raise HTTPException(status_code=401, detail="Token has expired")
+    except HTTPException:
+        raise
     except Exception as e:
+        auth_logger.warning(
+            "AUTH_REJECT | reason=invalid_token | error=%s | token_prefix=%s | ts=%s",
+            type(e).__name__, token_prefix, datetime.now(timezone.utc).isoformat()
+        )
         raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
 
