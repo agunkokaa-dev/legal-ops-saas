@@ -2,6 +2,9 @@
 
 import { useRef, useEffect, useMemo, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import rehypeRaw from 'rehype-raw'
 import ScrollbarMarkers from './ScrollbarMarkers'
 import FindingPopover from './FindingPopover'
 
@@ -52,60 +55,125 @@ const ACCEPTED_COLORS = {
     dot: 'bg-green-500',
 }
 
-interface TextSegment {
-    type: 'text' | 'finding'
-    content: string
+// ── Layer 1: Validate coordinates against source_text ──
+interface ValidatedRange {
     start: number
     end: number
-    finding?: ReviewFinding
+    finding_id: string
 }
 
-function buildSegments(rawDocument: string, findings: ReviewFinding[]): TextSegment[] {
-    if (!rawDocument) return []
+function validateCoordinates(rawDocument: string, findings: ReviewFinding[]): ValidatedRange[] {
+    const validated: ValidatedRange[] = []
 
-    const sorted = [...findings]
-        .filter(f => f.coordinates && f.coordinates.start_char >= 0 && f.coordinates.end_char > f.coordinates.start_char)
-        .sort((a, b) => a.coordinates.start_char - b.coordinates.start_char)
+    for (const finding of findings) {
+        if (!finding.coordinates) continue
+        const { start_char, end_char, source_text } = finding.coordinates
+        if (start_char < 0 || end_char <= start_char) continue
 
-    const segments: TextSegment[] = []
-    let cursor = 0
+        let finalStart = start_char
+        let finalEnd = Math.min(end_char, rawDocument.length)
 
-    for (const finding of sorted) {
-        const start = finding.coordinates.start_char
-        const end = Math.min(finding.coordinates.end_char, rawDocument.length)
+        // Layer 2: Check if the indices actually match the expected source_text
+        if (source_text && source_text.length > 0) {
+            const sliced = rawDocument.slice(finalStart, finalEnd)
+            const normalizedSlice = sliced.replace(/\s+/g, ' ').trim()
+            const normalizedSource = source_text.replace(/\s+/g, ' ').trim()
 
-        if (start < cursor) continue
-
-        if (start > cursor) {
-            segments.push({
-                type: 'text',
-                content: rawDocument.slice(cursor, start),
-                start: cursor,
-                end: start,
-            })
+            if (!normalizedSlice.includes(normalizedSource) && !normalizedSource.includes(normalizedSlice)) {
+                // Indices are stale/wrong — use indexOf fallback
+                const fallbackIdx = rawDocument.indexOf(source_text)
+                if (fallbackIdx !== -1) {
+                    finalStart = fallbackIdx
+                    finalEnd = fallbackIdx + source_text.length
+                } else {
+                    // Try normalized search as last resort
+                    const normDoc = rawDocument.replace(/\s+/g, ' ')
+                    const normIdx = normDoc.indexOf(normalizedSource)
+                    if (normIdx !== -1) {
+                        // Map normalized index back — approximate, but better than nothing
+                        finalStart = normIdx
+                        finalEnd = normIdx + normalizedSource.length
+                    } else {
+                        // Cannot locate this finding in the document at all — skip it
+                        continue
+                    }
+                }
+            }
         }
 
-        segments.push({
-            type: 'finding',
-            content: rawDocument.slice(start, end),
-            start,
-            end,
-            finding,
-        })
+        // Clamp to document bounds
+        finalStart = Math.max(0, finalStart)
+        finalEnd = Math.min(rawDocument.length, finalEnd)
+        if (finalEnd <= finalStart) continue
 
-        cursor = end
+        validated.push({ start: finalStart, end: finalEnd, finding_id: finding.finding_id })
     }
 
-    if (cursor < rawDocument.length) {
-        segments.push({
-            type: 'text',
-            content: rawDocument.slice(cursor),
-            start: cursor,
-            end: rawDocument.length,
-        })
+    return validated
+}
+
+// ── Layer 3: Merge overlapping ranges ──
+interface MergedRange {
+    start: number
+    end: number
+    finding_ids: string[]
+}
+
+function mergeOverlappingRanges(ranges: ValidatedRange[]): MergedRange[] {
+    if (ranges.length === 0) return []
+
+    // Sort ascending by start
+    const sorted = [...ranges].sort((a, b) => a.start - b.start || a.end - b.end)
+
+    const merged: MergedRange[] = []
+    let current: MergedRange = {
+        start: sorted[0].start,
+        end: sorted[0].end,
+        finding_ids: [sorted[0].finding_id],
     }
 
-    return segments
+    for (let i = 1; i < sorted.length; i++) {
+        const next = sorted[i]
+        if (next.start < current.end) {
+            // Overlap detected — merge
+            current.end = Math.max(current.end, next.end)
+            current.finding_ids.push(next.finding_id)
+        } else {
+            merged.push(current)
+            current = { start: next.start, end: next.end, finding_ids: [next.finding_id] }
+        }
+    }
+    merged.push(current)
+
+    return merged
+}
+
+// ── Main injection: reverse loop with validated, merged ranges ──
+function buildInjectedMarkdown(rawDocument: string, findings: ReviewFinding[]): string {
+    if (!rawDocument) return ''
+
+    // Step 1: Validate all coordinates
+    const validated = validateCoordinates(rawDocument, findings)
+
+    // Step 2: Merge overlapping ranges
+    const merged = mergeOverlappingRanges(validated)
+
+    // Step 3: Sort DESCENDING for reverse injection (bottom-up)
+    merged.sort((a, b) => b.start - a.start)
+
+    let modified = rawDocument
+
+    for (const range of merged) {
+        const text = modified.slice(range.start, range.end)
+        // Use the first finding_id as the primary (for click/scroll targeting)
+        // Store all IDs as a comma-separated attribute for multi-finding awareness
+        const primaryId = range.finding_ids[0]
+        const allIds = range.finding_ids.join(',')
+        const tag = `<mark data-finding-id="${primaryId}" data-all-finding-ids="${allIds}">${text}</mark>`
+        modified = modified.slice(0, range.start) + tag + modified.slice(range.end)
+    }
+
+    return modified
 }
 
 export default function DocumentViewer({
@@ -138,9 +206,9 @@ export default function DocumentViewer({
         rect: DOMRect
     } | null>(null)
 
-    // ── Build text segments ──
-    const segments = useMemo(
-        () => buildSegments(rawDocument, findings),
+    // ── Build markdown with injected marks ──
+    const injectedMarkdown = useMemo(
+        () => buildInjectedMarkdown(rawDocument, findings),
         [rawDocument, findings]
     )
 
@@ -197,47 +265,69 @@ export default function DocumentViewer({
                 {/* A4-style paper container */}
                 <div className="max-w-[800px] mx-auto bg-white rounded-lg shadow-2xl shadow-black/40 min-h-[1056px]">
                     <div className="p-12 md:p-16">
-                        <div className="font-serif text-[15px] leading-relaxed text-black" style={{ whiteSpace: 'pre-wrap' }}>
-                            {segments.map((seg, idx) => {
-                                if (seg.type === 'text') {
-                                    return <span key={`t-${idx}`}>{seg.content}</span>
-                                }
+                        <div className="prose prose-sm max-w-none text-black">
+                            <ReactMarkdown
+                                remarkPlugins={[remarkGfm]}
+                                rehypePlugins={[rehypeRaw]}
+                                components={{
+                                    mark: ({ node, children, ...props }: any) => {
+                                        const primaryId = props['data-finding-id']
+                                        const allIdsStr: string = props['data-all-finding-ids'] || primaryId
+                                        const allIds = allIdsStr.split(',').filter(Boolean)
 
-                                const finding = seg.finding!
-                                const isSelected = selectedFinding?.finding_id === finding.finding_id
-                                const isPopoverOpen = popoverTarget?.finding.finding_id === finding.finding_id
-                                const isAccepted = finding.status === 'accepted'
-                                const colors = isAccepted ? ACCEPTED_COLORS : SEVERITY_COLORS[finding.severity]
+                                        // Find all associated findings
+                                        const associatedFindings = allIds
+                                            .map(id => findings.find(f => f.finding_id === id))
+                                            .filter(Boolean) as ReviewFinding[]
 
-                                return (
-                                    <mark
-                                        key={`f-${finding.finding_id}`}
-                                        ref={(el) => setFindingRef(finding.finding_id, el)}
-                                        data-finding-id={finding.finding_id}
-                                        className={`
-                                            relative cursor-pointer transition-all duration-300 rounded-sm
-                                            border-l-4 px-1 -mx-1
-                                            ${colors.bg} ${colors.border} ${colors.hoverBg}
-                                            ${isSelected || isPopoverOpen ? 'ring-2 ring-[#d4af37] ring-offset-1 ring-offset-white shadow-lg' : ''}
-                                        `}
-                                        style={{
-                                            backgroundColor: isAccepted
-                                                ? 'rgba(34, 197, 94, 0.08)'
-                                                : finding.severity === 'critical'
-                                                    ? 'rgba(239, 68, 68, 0.08)'
-                                                    : finding.severity === 'warning'
-                                                        ? 'rgba(245, 158, 11, 0.08)'
-                                                        : 'rgba(59, 130, 246, 0.08)',
-                                            color: 'inherit',
-                                        }}
-                                        onClick={(e) => handleFindingClick(finding, e)}
-                                        onMouseEnter={() => onFindingHover(finding)}
-                                        onMouseLeave={() => onFindingHover(null)}
-                                    >
-                                        {seg.content}
-                                    </mark>
-                                )
-                            })}
+                                        if (associatedFindings.length === 0) return <mark {...props}>{children}</mark>
+
+                                        // Pick highest severity for styling: critical > warning > info
+                                        const severityPriority = { critical: 3, warning: 2, info: 1 }
+                                        const primaryFinding = associatedFindings.reduce((best, f) =>
+                                            (severityPriority[f.severity] || 0) > (severityPriority[best.severity] || 0) ? f : best
+                                        , associatedFindings[0])
+
+                                        const isSelected = allIds.some(id => selectedFinding?.finding_id === id)
+                                        const isPopoverOpen = allIds.some(id => popoverTarget?.finding.finding_id === id)
+                                        const isAccepted = primaryFinding.status === 'accepted'
+                                        const colors = isAccepted ? ACCEPTED_COLORS : SEVERITY_COLORS[primaryFinding.severity]
+
+                                        return (
+                                            <mark
+                                                ref={(el) => {
+                                                    // Register ref for every finding_id so scroll-to works for any
+                                                    allIds.forEach(id => setFindingRef(id, el))
+                                                }}
+                                                data-finding-id={primaryId}
+                                                className={`
+                                                    relative cursor-pointer transition-all duration-300 rounded-sm
+                                                    border-l-4 px-1 -mx-1
+                                                    ${colors.bg} ${colors.border} ${colors.hoverBg}
+                                                    ${isSelected || isPopoverOpen ? 'ring-2 ring-[#d4af37] ring-offset-1 ring-offset-white shadow-lg' : ''}
+                                                `}
+                                                style={{
+                                                    backgroundColor: isAccepted
+                                                        ? 'rgba(34, 197, 94, 0.08)'
+                                                        : primaryFinding.severity === 'critical'
+                                                            ? 'rgba(239, 68, 68, 0.08)'
+                                                            : primaryFinding.severity === 'warning'
+                                                                ? 'rgba(245, 158, 11, 0.08)'
+                                                                : 'rgba(59, 130, 246, 0.08)',
+                                                    color: 'inherit',
+                                                }}
+                                                onClick={(e) => handleFindingClick(primaryFinding, e)}
+                                                onMouseEnter={() => onFindingHover(primaryFinding)}
+                                                onMouseLeave={() => onFindingHover(null)}
+                                            >
+                                                {children}
+                                            </mark>
+                                        )
+                                    }
+                                }}
+                            >
+                                {injectedMarkdown}
+                            </ReactMarkdown>
                         </div>
                     </div>
                 </div>

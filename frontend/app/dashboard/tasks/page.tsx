@@ -123,11 +123,15 @@ export default function TasksDashboardPage() {
 
         try {
             // Change this URL if your FastAPI is running on a different port/address
-            const API_URL = 'http://173.212.240.143:8000/api/v1/ai/task-assistant';
+            const API_URL = process.env.NEXT_PUBLIC_API_URL ? `${process.env.NEXT_PUBLIC_API_URL}/api/v1/ai/task-assistant` : 'http://173.212.240.143:8000/api/v1/ai/task-assistant';
+            const token = await getToken();
 
             const response = await fetch(API_URL, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
                 body: JSON.stringify({
                     tenant_id: tenantId,
                     matter_id: activeAiTask.matter_id,
@@ -136,7 +140,10 @@ export default function TasksDashboardPage() {
                 })
             });
 
-            if (!response.ok) throw new Error(`Server responded with ${response.status}`);
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || `Server responded with ${response.status}`);
+            }
 
             const data = await response.json();
 
@@ -365,13 +372,20 @@ export default function TasksDashboardPage() {
         if (!tenantId) return;
         try {
             const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+            const token = await getToken();
             const response = await fetch(`${backendUrl}/api/v1/tasks/from-template?tenant_id=${tenantId}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
                 body: JSON.stringify({ template_id: templateId, matter_id: matterId })
             });
 
-            if (!response.ok) throw new Error("Failed to apply template");
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || "Failed to apply template");
+            }
 
             setIsSopModalOpen(false);
             await fetchTasks();
@@ -507,7 +521,7 @@ export default function TasksDashboardPage() {
 
         try {
             const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-            const token = await session?.getToken({ template: 'supabase' });
+            const token = await getToken();
             const res = await fetch(`${backendUrl}/api/v1/ai/task-assistant`, {
                 method: 'POST',
                 headers: {
@@ -517,7 +531,10 @@ export default function TasksDashboardPage() {
                 body: JSON.stringify({ message: userMessage, task_id: selectedTask?.id || "current_task_id", matter_id: selectedTask?.matter_id || "current_matter_id" })
             });
 
-            if (!res.ok) throw new Error("Failed to fetch AI response");
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || "Failed to fetch AI response");
+            }
 
             const data = await res.json();
             const reply = data.reply || data.response || "I couldn't process that request at this moment.";
@@ -1632,8 +1649,6 @@ export default function TasksDashboardPage() {
                     onClose={() => setDraftingTask(null)} 
                 />
             )}
-
-            <Toaster position="top-right" expand={false} richColors theme="dark" />
         </div >
     );
 }

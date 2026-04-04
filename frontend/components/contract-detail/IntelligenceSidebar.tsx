@@ -185,67 +185,7 @@ export default function IntelligenceSidebar({
                                     </div>
                                 </div>
 
-                                {/* Review Workspace Promotion */}
-                                <div className="mt-4 p-5 rounded-xl bg-[#0a0a0a] border border-[#d4af37]/20 flex flex-col items-center text-center gap-4">
-                                    <div className="w-12 h-12 rounded-full bg-[#d4af37]/10 flex items-center justify-center">
-                                        <span className="material-symbols-outlined text-[#d4af37] text-2xl">shield_with_heart</span>
-                                    </div>
-                                    <div className="flex flex-col gap-1">
-                                        <h4 className="text-white font-serif font-bold text-sm">Enhanced Review Mode</h4>
-                                        <p className="text-[11px] text-text-muted leading-relaxed px-4">
-                                            Detailed risk analysis, aggressive highlighting, and AI suggestions are now handled in the dedicated Review Workspace.
-                                        </p>
-                                    </div>
-                                    
-                                    {(!contract?.status || contract?.status?.toLowerCase().includes('processing') || contract?.status?.toLowerCase().includes('ingest') || contract?.status === 'In Progress') ? (
-                                        <button disabled className="w-full py-2 bg-neutral-900 border border-neutral-800 rounded text-[10px] font-bold text-neutral-500 uppercase tracking-widest cursor-not-allowed flex items-center justify-center gap-2">
-                                            <span className="material-symbols-outlined text-[14px] animate-spin">sync</span> AI is Analyzing V2...
-                                        </button>
-                                    ) : (
-                                        <a
-                                            href={`/dashboard/contracts/${contract?.id}/review`}
-                                            className="w-full py-2 bg-[#d4af37]/10 hover:bg-[#d4af37]/20 border border-[#d4af37]/30 rounded text-[10px] font-bold text-[#d4af37] uppercase tracking-widest transition-all block text-center"
-                                        >
-                                            Go to Review Workspace
-                                        </a>
-                                    )}
-                                </div>
 
-                                {/* War Room: Version History Card */}
-                                {contract?.version_count && contract.version_count > 1 && (
-                                    (!contract?.status || contract?.status?.toLowerCase().includes('processing') || contract?.status?.toLowerCase().includes('ingest') || contract?.status === 'In Progress') ? (
-                                        <div className="mt-4 p-4 rounded-xl bg-[#050505] border border-neutral-800/50 flex items-center gap-4 opacity-50 cursor-not-allowed">
-                                            <div className="w-10 h-10 rounded-full bg-neutral-900 flex items-center justify-center shrink-0">
-                                                <span className="material-symbols-outlined text-neutral-600 text-lg">sync</span>
-                                            </div>
-                                            <div className="flex flex-col flex-1 min-w-0">
-                                                <span className="text-neutral-500 font-serif font-bold text-xs animate-pulse tracking-wider">
-                                                    [ 🔄 AI Processing V{contract.version_count}... ]
-                                                </span>
-                                                <span className="text-[10px] text-neutral-600">
-                                                    Please wait for diff to generate
-                                                </span>
-                                            </div>
-                                        </div>
-                                    ) : (
-                                        <Link href={`/dashboard/contracts/${contract?.id}/war-room`} className="mt-4 p-4 rounded-xl bg-[#0a0a0a] border border-white/10 flex items-center gap-4 group hover:border-[#d4af37]/30 transition-colors cursor-pointer block">
-                                            <div className="w-10 h-10 rounded-full bg-[#d4af37]/10 flex items-center justify-center shrink-0">
-                                                <span className="material-symbols-outlined text-[#d4af37] text-lg">difference</span>
-                                            </div>
-                                            <div className="flex flex-col flex-1 min-w-0">
-                                                <span className="text-white font-serif font-bold text-xs group-hover:text-[#d4af37] transition-colors">
-                                                    Negotiation War Room
-                                                </span>
-                                                <span className="text-[10px] text-text-muted">
-                                                    Compare {contract.version_count} versions
-                                                </span>
-                                            </div>
-                                            <div className="bg-[#d4af37]/20 text-[#d4af37] text-[10px] font-bold px-2.5 py-1 rounded-full">
-                                                V{contract.version_count}
-                                            </div>
-                                        </Link>
-                                    )
-                                )}
                             </div>
                         </motion.div>
                     )}
@@ -348,25 +288,23 @@ export default function IntelligenceSidebar({
                             {/* Toggle Header */}
                             <div className="flex items-center justify-center p-4 border-b border-white/5 shrink-0">
                                 <div className="bg-[#141414] p-1 rounded-lg border border-white/5 flex items-center gap-1">
-                                    <button 
+                                    <button
                                         onClick={() => setGenealogyView('family')}
-                                        className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${
-                                            genealogyView === 'family' ? 'bg-[#D4AF37]/10 text-[#D4AF37]' : 'text-zinc-500 hover:text-zinc-300'
-                                        }`}
+                                        className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${genealogyView === 'family' ? 'bg-[#D4AF37]/10 text-[#D4AF37]' : 'text-zinc-500 hover:text-zinc-300'
+                                            }`}
                                     >
                                         Document Family
                                     </button>
-                                    <button 
+                                    <button
                                         onClick={() => setGenealogyView('versions')}
-                                        className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${
-                                            genealogyView === 'versions' ? 'bg-[#D4AF37]/10 text-[#D4AF37]' : 'text-zinc-500 hover:text-zinc-300'
-                                        }`}
+                                        className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${genealogyView === 'versions' ? 'bg-[#D4AF37]/10 text-[#D4AF37]' : 'text-zinc-500 hover:text-zinc-300'
+                                            }`}
                                     >
                                         Version History
                                     </button>
                                 </div>
                             </div>
-                            
+
                             <div className="flex-1 overflow-hidden relative">
                                 {genealogyView === 'family' ? (
                                     <GenealogyGraph

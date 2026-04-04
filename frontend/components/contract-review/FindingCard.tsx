@@ -84,10 +84,20 @@ export default function FindingCard({
         }
     }
 
-    const handleConvert = async () => {
+    const handleConvert = async (e: React.MouseEvent) => {
+        e.preventDefault()
+        e.stopPropagation()
+        console.log('[Convert to Task] Button clicked for finding:', finding.finding_id)
+        
         setIsConverting(true)
         try {
+            if (!onConvertToTask) {
+                throw new Error("onConvertToTask prop is missing!")
+            }
             await onConvertToTask(finding)
+            console.log('[Convert to Task] Conversion complete.')
+        } catch (err) {
+            console.error('[Convert to Task] Conversion error:', err)
         } finally {
             setIsConverting(false)
         }
@@ -213,14 +223,15 @@ export default function FindingCard({
                         </button>
                     )}
                     <button
+                        type="button"
                         onClick={handleConvert}
                         disabled={isConverting}
-                        className="w-full py-2.5 bg-transparent border border-white/10 text-zinc-400 hover:text-white hover:border-white/20 text-xs font-bold uppercase tracking-[0.12em] rounded-xl transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                        className="w-full py-2.5 bg-transparent border border-white/10 text-zinc-400 hover:text-white hover:border-white/20 text-xs font-bold uppercase tracking-[0.12em] rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                     >
                         {isConverting ? (
                             <>
                                 <span className="w-3 h-3 border-2 border-zinc-400/20 border-t-zinc-400 rounded-full animate-spin" />
-                                Creating...
+                                Converting...
                             </>
                         ) : (
                             <>

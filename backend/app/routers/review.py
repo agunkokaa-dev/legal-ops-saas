@@ -42,11 +42,10 @@ class AcceptFindingRequest(BaseModel):
 
 
 class CreateTaskFromFindingRequest(BaseModel):
-    matter_id: str
+    matter_id: Optional[str] = None
     contract_id: str
-    finding_title: str
-    finding_description: str
-
+    finding: dict
+    initial_status: Optional[str] = "backlog"
 
 # ──────────────────────────────────────────────
 # POST /analyze — Run or retrieve review analysis
@@ -235,6 +234,77 @@ async def analyze_contract(
         raise
     except Exception as e:
         print(f"❌ Review Analyze Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ──────────────────────────────────────────────
+# POST /from-finding — Create task from finding
+# ──────────────────────────────────────────────
+
+@router.post("/from-finding")
+async def create_task_from_finding(
+    payload: CreateTaskFromFindingRequest,
+    claims: dict = Depends(verify_clerk_token),
+):
+    """Creates a single task on the Kanban board from a review finding."""
+    try:
+        tenant_id = claims["verified_tenant_id"]
+
+        task_payload = {
+            "id": str(uuid.uuid4()),
+            "tenant_id": tenant_id,
+            "matter_id": payload.matter_id,
+            "title": f"[Review] {payload.finding.get('title', 'Unknown')[:80]}",
+            "description": (
+                f"**Source:** AI Contract Review\n\n"
+                f"**Contract ID:** {payload.contract_id}\n\n"
+                f"**Finding:**\n{payload.finding.get('description', '')}"
+            ),
+            "status": payload.initial_status or "backlog",
+            "priority": "high",
+            "source_document_name": payload.contract_id,
+        }
+
+        res = admin_supabase.table("tasks").insert(task_payload).execute()
+
+        if not res.data:
+            raise HTTPException(status_code=500, detail="Failed to create task.")
+
+        # Log activity
+        try:
+            admin_supabase.table("activity_logs").insert({
+                "tenant_id": tenant_id,
+                "matter_id": payload.matter_id,
+                "task_id": task_payload["id"],
+                "action": f"Task created from review finding: {payload.finding.get('title', '')[:60]}",
+                "actor_name": "Review System"
+            }).execute()
+        except Exception:
+            pass
+
+        # ── War Room: Link task to negotiation_issue if it exists ──
+        try:
+            finding_id = payload.finding.get('finding_id')
+            if finding_id:
+                admin_supabase.table("negotiation_issues") \
+                    .update({"status": "escalated", "linked_task_id": task_payload["id"]}) \
+                    .eq("finding_id", finding_id) \
+                    .eq("contract_id", payload.contract_id) \
+                    .eq("tenant_id", tenant_id) \
+                    .execute()
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "task_id": task_payload["id"],
+            "message": "Task created and added to Backlog."
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Create Task From Finding Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -447,72 +517,3 @@ async def accept_finding(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ──────────────────────────────────────────────
-# POST /from-finding — Create task from finding
-# ──────────────────────────────────────────────
-
-@router.post("/from-finding")
-async def create_task_from_finding(
-    payload: CreateTaskFromFindingRequest,
-    claims: dict = Depends(verify_clerk_token),
-):
-    """Creates a single task on the Kanban board from a review finding."""
-    try:
-        tenant_id = claims["verified_tenant_id"]
-
-        task_payload = {
-            "id": str(uuid.uuid4()),
-            "tenant_id": tenant_id,
-            "matter_id": payload.matter_id,
-            "title": f"[Review] {payload.finding_title[:80]}",
-            "description": (
-                f"**Source:** AI Contract Review\n\n"
-                f"**Contract ID:** {payload.contract_id}\n\n"
-                f"**Finding:**\n{payload.finding_description}"
-            ),
-            "status": "backlog",
-            "priority": "high",
-            "source_document_name": payload.contract_id,
-        }
-
-        res = admin_supabase.table("tasks").insert(task_payload).execute()
-
-        if not res.data:
-            raise HTTPException(status_code=500, detail="Failed to create task.")
-
-        # Log activity
-        try:
-            admin_supabase.table("activity_logs").insert({
-                "tenant_id": tenant_id,
-                "matter_id": payload.matter_id,
-                "task_id": task_payload["id"],
-                "action": f"Task created from review finding: {payload.finding_title[:60]}",
-                "actor_name": "Review System"
-            }).execute()
-        except Exception:
-            pass
-
-        # ── War Room: Link task to negotiation_issue if it exists ──
-        try:
-            if hasattr(payload, 'finding_id') and payload.finding_id:
-                admin_supabase.table("negotiation_issues") \
-                    .update({"status": "escalated", "linked_task_id": task_payload["id"]}) \
-                    .eq("finding_id", payload.finding_id) \
-                    .eq("contract_id", payload.contract_id) \
-                    .eq("tenant_id", tenant_id) \
-                    .execute()
-        except Exception:
-            pass
-
-        return {
-            "status": "success",
-            "task_id": task_payload["id"],
-            "message": "Task created and added to Backlog."
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Create Task From Finding Error: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))

@@ -33,7 +33,7 @@ export default function ClauseLibrarySettings() {
     const fetchClauses = async () => {
         try {
             setIsLoading(true);
-            const token = await getToken({ template: 'supabase' });
+            const token = await getToken();
             const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
             const res = await fetch(`${apiUrl}/api/v1/clauses`, {
                 headers: {
@@ -72,7 +72,7 @@ export default function ClauseLibrarySettings() {
 
         setIsSubmitting(true);
         try {
-            const token = await getToken({ template: 'supabase' });
+            const token = await getToken();
             const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
             
             const res = await fetch(`${apiUrl}/api/v1/clauses`, {

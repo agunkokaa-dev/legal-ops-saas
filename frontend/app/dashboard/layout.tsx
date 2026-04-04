@@ -5,6 +5,7 @@ import AssistantSidebar from '@/components/AssistantSidebar'
 import { ChevronLeft, ChevronRight, GripVertical } from 'lucide-react'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { usePathname } from 'next/navigation'
+import { Toaster } from 'sonner'
 
 export default function DashboardLayout({
     children,

@@ -1,4 +1,5 @@
 import { ClerkProvider } from '@clerk/nextjs'
+import { Toaster } from 'sonner'
 import './globals.css'
 
 export default function RootLayout({
@@ -17,6 +18,7 @@ export default function RootLayout({
         </head>
         <body className="bg-background text-white font-sans antialiased h-screen w-screen overflow-hidden" suppressHydrationWarning>
           {children}
+          <Toaster position="top-right" expand={false} richColors theme="dark" />
         </body>
       </html>
     </ClerkProvider>

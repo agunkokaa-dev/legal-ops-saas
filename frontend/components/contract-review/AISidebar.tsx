@@ -36,46 +36,51 @@ interface QuickInsight {
 
 type SeverityGroup = 'critical' | 'warning' | 'info' | 'summary' | 'resolved'
 
-const SEVERITY_CONFIG: Record<string, { icon: string; label: string; color: string; bg: string; border: string; glow: string }> = {
+const SEVERITY_CONFIG: Record<string, { icon: string; label: string; color: string; bg: string; border: string; glow: string; badge: string }> = {
     critical: {
         icon: 'error',
         label: 'Critical Risks',
-        color: 'text-red-400',
-        bg: 'bg-red-500/8',
-        border: 'border-red-500/20 hover:border-red-500/40',
-        glow: 'hover:shadow-[0_0_20px_rgba(239,68,68,0.08)]',
+        color: 'text-zinc-300',
+        bg: 'bg-[#141414]',
+        border: 'border border-zinc-800/40 border-l-2 border-l-rose-900/60',
+        glow: '',
+        badge: 'bg-rose-950/40 text-rose-400/80',
     },
     warning: {
         icon: 'warning',
         label: 'Potential Issues',
-        color: 'text-amber-400',
-        bg: 'bg-amber-500/8',
-        border: 'border-amber-500/20 hover:border-amber-500/40',
-        glow: 'hover:shadow-[0_0_20px_rgba(245,158,11,0.08)]',
+        color: 'text-zinc-400',
+        bg: 'bg-[#141414]',
+        border: 'border border-zinc-800/40 border-l-2 border-l-amber-900/60',
+        glow: '',
+        badge: 'bg-amber-950/40 text-amber-500/80',
     },
     info: {
         icon: 'info',
         label: 'Informational',
-        color: 'text-blue-400',
-        bg: 'bg-blue-500/8',
-        border: 'border-blue-500/20 hover:border-blue-500/40',
-        glow: 'hover:shadow-[0_0_20px_rgba(59,130,246,0.08)]',
+        color: 'text-zinc-400',
+        bg: 'bg-[#141414]',
+        border: 'border border-zinc-800/40 border-l-2 border-l-blue-900/60',
+        glow: '',
+        badge: 'bg-blue-950/40 text-blue-400/80',
     },
     summary: {
         icon: 'description',
         label: 'Contract Summary',
-        color: 'text-[#d4af37]',
-        bg: 'bg-[#d4af37]/5',
-        border: 'border-[#d4af37]/15 hover:border-[#d4af37]/30',
-        glow: 'hover:shadow-[0_0_20px_rgba(212,175,55,0.06)]',
+        color: 'text-zinc-400',
+        bg: 'bg-[#141414]',
+        border: 'border border-zinc-800/40 border-l-2 border-l-zinc-700/60',
+        glow: '',
+        badge: 'bg-zinc-800/40 text-zinc-400',
     },
     resolved: {
         icon: 'check_circle',
         label: 'Resolved',
-        color: 'text-green-400',
-        bg: 'bg-green-500/5',
-        border: 'border-green-500/15 hover:border-green-500/30',
+        color: 'text-zinc-500',
+        bg: 'bg-[#141414]',
+        border: 'border border-zinc-800/40 border-l-2 border-l-green-900/60',
         glow: '',
+        badge: 'bg-green-950/40 text-green-500/80',
     },
 }
 
@@ -114,7 +119,7 @@ export default function AISidebar({
             {/* AI Directive Header */}
             <div className="flex-shrink-0 p-5 pb-4 border-b border-white/5">
                 <div className="flex items-start gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#d4af37]/20 to-[#d4af37]/5 border border-[#d4af37]/20 flex items-center justify-center flex-shrink-0">
+                    <div className="w-9 h-9 rounded-xl bg-[#141414] border border-[#d4af37]/20 flex items-center justify-center flex-shrink-0">
                         <span className="material-symbols-outlined text-[#d4af37] text-lg" style={{ fontVariationSettings: "'FILL' 1" }}>
                             psychology
                         </span>
@@ -252,9 +257,7 @@ function ActionBlock({
     return (
         <motion.div
             layout
-            className={`rounded-xl border transition-all duration-300 overflow-hidden ${config.bg} ${config.border} ${config.glow} ${
-                isPrimary && !isExpanded ? 'ring-1 ring-red-500/20 animate-pulse-subtle' : ''
-            }`}
+            className={`rounded-md transition-all duration-300 overflow-hidden ${config.bg} ${config.border} ${config.glow}`}
         >
             <button
                 onClick={onToggle}
@@ -267,10 +270,10 @@ function ActionBlock({
                     >
                         {config.icon}
                     </span>
-                    <span className="text-white text-[13px] font-semibold">{config.label}</span>
+                    <span className={`${config.color} text-[13px] font-semibold transition-colors`}>{config.label}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                    <span className={`text-[10px] font-bold ${config.color} px-2 py-0.5 rounded-full ${config.bg}`}>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${config.badge}`}>
                         {count} {countLabel || ''}
                     </span>
                     <motion.span
@@ -330,7 +333,7 @@ function FindingList({
                     onClick={() => onFindingClick(f)}
                 >
                     <div className="flex-1 min-w-0">
-                        <p className="text-white text-[12px] font-medium truncate group-hover:text-[#d4af37] transition-colors">
+                        <p className="text-zinc-300 text-[12px] font-medium truncate group-hover:text-[#d4af37] transition-colors">
                             {f.title}
                         </p>
                         <p className="text-zinc-600 text-[10px] mt-0.5 truncate">{f.category}</p>

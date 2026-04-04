@@ -4,12 +4,13 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@clerk/nextjs'
 import { toast } from 'sonner'
-import { AnimatePresence } from 'framer-motion'
+import { AnimatePresence, motion } from 'framer-motion'
 import HeroOverlay from './HeroOverlay'
 import DocumentViewer from './DocumentViewer'
 import AISidebar from './AISidebar'
 import FindingCard from './FindingCard'
 import Link from 'next/link'
+import { createTask } from '@/app/actions/taskActions'
 
 // ── Types ──
 interface TextCoordinate {
@@ -239,39 +240,46 @@ export default function ContractReviewClient({
         }
     }, [contractId, getToken, router])
 
-    // ── Convert to Task ──
+    // ── Convert to Task (uses proven Server Action — same as Notes→Task) ──
     const handleConvertToTask = useCallback(async (finding: ReviewFinding) => {
         try {
-            const token = await getToken()
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+            const autoTitle = finding.title.length > 80
+                ? finding.title.substring(0, 80) + '...'
+                : finding.title
 
-            const res = await fetch(`${apiUrl}/api/v1/review/from-finding`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`
-                },
-                body: JSON.stringify({
-                    matter_id: matterId,
-                    contract_id: contractId,
-                    finding_title: finding.title,
-                    finding_description: finding.description
-                })
+            const res = await createTask({
+                title: `[Review] ${autoTitle}`,
+                description: (
+                    `**Source:** AI Contract Review\n\n` +
+                    `**Contract ID:** ${contractId}\n\n` +
+                    `**Severity:** ${finding.severity}\n\n` +
+                    `**Category:** ${finding.category}\n\n` +
+                    `**Finding:**\n${finding.description}`
+                ),
+                status: 'backlog',
+                matterId: matterId,
             })
 
-            if (!res.ok) throw new Error('Failed to create task')
+            if (res.error) {
+                console.error('API REJECTED:', res.error)
+                throw new Error(res.error)
+            }
 
-            toast.success('Task created and added to Backlog!', {
+            toast.success('✅ Task successfully added to Backlog.', {
                 style: { background: '#1a1a1a', border: '1px solid #d4af37', color: '#fff' },
+                duration: 6000,
                 action: {
-                    label: 'View Tasks',
-                    onClick: () => router.push(`/dashboard/tasks`)
+                    label: 'Open Task Management',
+                    onClick: () => router.push('/dashboard/tasks')
                 }
             })
         } catch (e: any) {
-            toast.error(e.message || 'Failed to create task')
+            toast.error(`❌ Failed to create task: ${e.message || 'Unknown error'}`, {
+                style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' }
+            })
+            throw e
         }
-    }, [matterId, contractId, getToken, router])
+    }, [matterId, contractId, router])
 
     // ── Edit in Drafting (Review-to-Draft Bridge) ──
     const handleEditInDrafting = useCallback((finding: ReviewFinding) => {
@@ -387,8 +395,20 @@ export default function ContractReviewClient({
 
             {/* ── Main Content ── */}
             <div className="flex flex-1 overflow-hidden relative">
-                {/* ── Center: Document Viewer ── */}
-                <div className="flex-1 h-full min-w-0 overflow-hidden relative">
+                {/* ── Panel 1: Left Navigation Sidebar ── */}
+                <div className="w-[320px] h-full flex-shrink-0 overflow-hidden border-r border-white/5 bg-[#0a0a0a] z-10 shadow-[4px_0_24px_rgba(0,0,0,0.5)]">
+                    <AISidebar
+                        banner={reviewData.banner}
+                        findings={reviewData.findings}
+                        quickInsights={reviewData.quick_insights}
+                        selectedFinding={selectedFinding}
+                        onFindingClick={handleFindingClick}
+                        onConvertToTask={handleConvertToTask}
+                    />
+                </div>
+
+                {/* ── Panel 2: Center Document Viewer ── */}
+                <div className="flex-1 h-full min-w-0 overflow-hidden relative bg-[#121212]">
                     <DocumentViewer
                         rawDocument={reviewData.raw_document}
                         findings={reviewData.findings}
@@ -403,8 +423,8 @@ export default function ContractReviewClient({
                     />
                 </div>
 
-                {/* ── Right Sidebar ── */}
-                <div className="w-[380px] h-full flex-shrink-0 overflow-hidden border-l border-white/5">
+                {/* ── Panel 3: Right Co-Counsel Area ── */}
+                <div className="w-[360px] h-full flex-shrink-0 overflow-hidden border-l border-white/5 bg-[#0a0a0a] z-10 shadow-[-4px_0_24px_rgba(0,0,0,0.5)]">
                     <AnimatePresence mode="wait">
                         {selectedFinding ? (
                             <FindingCard
@@ -422,15 +442,19 @@ export default function ContractReviewClient({
                                 onWizardNext={wizardMode ? handleWizardNext : undefined}
                             />
                         ) : (
-                            <AISidebar
-                                key="sidebar"
-                                banner={reviewData.banner}
-                                findings={reviewData.findings}
-                                quickInsights={reviewData.quick_insights}
-                                selectedFinding={selectedFinding}
-                                onFindingClick={handleFindingClick}
-                                onConvertToTask={handleConvertToTask}
-                            />
+                            <motion.div
+                                key="empty"
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                className="flex flex-col items-center justify-center h-full text-zinc-500 p-8 text-center"
+                            >
+                                <span className="material-symbols-outlined text-4xl mb-4 opacity-40">analytics</span>
+                                <h3 className="text-white font-serif font-bold text-sm mb-2">Select an Issue</h3>
+                                <p className="text-[12px] leading-relaxed">
+                                    Click any finding from the left panel to review AI-generated risk analysis and suggestions.
+                                </p>
+                            </motion.div>
                         )}
                     </AnimatePresence>
                 </div>

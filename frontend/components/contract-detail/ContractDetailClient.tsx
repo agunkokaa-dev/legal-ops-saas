@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@clerk/nextjs'
 import { toast } from 'sonner'
@@ -9,6 +9,11 @@ import PDFViewerWrapper from './PDFViewerWrapper'
 import jsPDF from 'jspdf'
 import { uploadDocument } from '@/app/actions/documentActions';
 import ContractHeader from './ContractHeader';
+import Link from 'next/link';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import { createNote } from '@/app/actions/noteActions';
 
 export default function ContractDetailClient({
     pdfUrl,
@@ -66,12 +71,225 @@ export default function ContractDetailClient({
 
         if (Array.isArray(rawDraft)) {
             return rawDraft.map((item: any, index: number) =>
-                `📌 PASAL REVISI ${index + 1}\n\n[Isu Awal]:\n${item.original_issue}\n\n[Saran Redaksi AI]:\n${item.neutral_rewrite}`
-            ).join('\n\n' + '─'.repeat(40) + '\n\n');
+                `\ud83d\udccc PASAL REVISI ${index + 1}\n\n[Isu Awal]:\n${item.original_issue}\n\n[Saran Redaksi AI]:\n${item.neutral_rewrite}`
+            ).join('\n\n' + '\u2500'.repeat(40) + '\n\n');
         }
 
         return typeof rawDraft === 'string' ? rawDraft : JSON.stringify(rawDraft);
     }, [contract?.draft_revisions]);
+
+    // ── Markdown Index Mapper: bridges clean browser text ↔ raw markdown positions ──
+    // Strips markdown syntax and builds a char-by-char index map: plainIndex → rawIndex
+    const { plainText, plainToRaw } = useMemo(() => {
+        if (!parsedDraftText) return { plainText: '', plainToRaw: [] as number[] };
+
+        const raw = parsedDraftText;
+        let plain = '';
+        const map: number[] = []; // map[plainIndex] = rawIndex
+
+        let i = 0;
+        while (i < raw.length) {
+            // Skip ** (bold markers)
+            if (raw[i] === '*' && raw[i + 1] === '*') { i += 2; continue; }
+            // Skip * (italic markers)
+            if (raw[i] === '*' && raw[i + 1] !== '*') { i += 1; continue; }
+            // Skip __ (bold alt markers)
+            if (raw[i] === '_' && raw[i + 1] === '_') { i += 2; continue; }
+            // Skip heading markers at start of line (### )
+            if (raw[i] === '#') {
+                let hEnd = i;
+                while (hEnd < raw.length && raw[hEnd] === '#') hEnd++;
+                if (hEnd < raw.length && raw[hEnd] === ' ') { i = hEnd + 1; continue; }
+            }
+            // Skip ~~ (strikethrough)
+            if (raw[i] === '~' && raw[i + 1] === '~') { i += 2; continue; }
+            // Skip ` (inline code backtick)
+            if (raw[i] === '`' && !(raw[i + 1] === '`' && raw[i + 2] === '`')) { i += 1; continue; }
+
+            // Regular character — include in plain text and record mapping
+            map.push(i);
+            plain += raw[i];
+            i++;
+        }
+
+        return { plainText: plain, plainToRaw: map };
+    }, [parsedDraftText]);
+
+    // Text Selection / Note Creation state for Markdown viewer
+    const [selectedText, setSelectedText] = useState('');
+    const [pendingStartChar, setPendingStartChar] = useState(-1);
+    const [pendingEndChar, setPendingEndChar] = useState(-1);
+    const [selectionPos, setSelectionPos] = useState<{ x: number; y: number } | null>(null);
+    const [noteComment, setNoteComment] = useState('');
+    const [isSavingNote, setIsSavingNote] = useState(false);
+    const markdownContainerRef = useRef<HTMLDivElement>(null);
+
+    const handleTextSelection = useCallback(() => {
+        const sel = window.getSelection();
+        const text = sel?.toString().trim();
+        if (!text || text.length < 3 || !sel?.rangeCount) return;
+
+        const range = sel.getRangeAt(0);
+        const rect = range.getBoundingClientRect();
+
+        // ── Calculate start_char/end_char using the plainText index mapper ──
+        let start_char = -1;
+        let end_char = -1;
+
+        if (plainText && plainToRaw.length > 0) {
+            // Step 1: Get DOM offset using pre-range
+            let innerTextStart = 0;
+            if (markdownContainerRef.current) {
+                try {
+                    const preRange = document.createRange();
+                    preRange.selectNodeContents(markdownContainerRef.current);
+                    preRange.setEnd(range.startContainer, range.startOffset);
+                    innerTextStart = preRange.toString().length;
+                } catch { /* fallback below */ }
+            }
+
+            // Step 2: Find all occurrences in plainText (clean ↔ clean = always matches)
+            const allOccurrences: number[] = [];
+            let searchFrom = 0;
+            while (searchFrom < plainText.length) {
+                const idx = plainText.indexOf(text, searchFrom);
+                if (idx === -1) break;
+                allOccurrences.push(idx);
+                searchFrom = idx + 1;
+            }
+
+            if (allOccurrences.length > 0) {
+                // Step 3: Disambiguate — pick occurrence closest to DOM position
+                const bestPlainIdx = allOccurrences.reduce((best, curr) =>
+                    Math.abs(curr - innerTextStart) < Math.abs(best - innerTextStart) ? curr : best
+                );
+                // Step 4: Map plain indices → raw markdown indices
+                start_char = plainToRaw[bestPlainIdx] ?? -1;
+                const endPlainIdx = bestPlainIdx + text.length - 1;
+                end_char = endPlainIdx < plainToRaw.length
+                    ? (plainToRaw[endPlainIdx] ?? -1) + 1
+                    : parsedDraftText.length;
+            }
+        }
+
+        console.log(`[Note Selection] quote="${text.substring(0, 40)}..." start_char=${start_char} end_char=${end_char}`);
+
+        setSelectedText(text);
+        setPendingStartChar(start_char);
+        setPendingEndChar(end_char);
+        setSelectionPos({ x: rect.left + rect.width / 2, y: rect.top - 10 });
+        setNoteComment('');
+    }, [plainText, plainToRaw, parsedDraftText]);
+
+    const handleSaveNote = useCallback(async () => {
+        if (!selectedText || !contract?.id) return;
+        setIsSavingNote(true);
+        try {
+            const { error } = await createNote({
+                contractId: contract.id,
+                quote: selectedText,
+                comment: noteComment,
+                positionData: {
+                    boundingRect: null,
+                    rects: [],
+                    pageNumber: 1,
+                    // Store coordinates for reliable re-highlighting
+                    start_char: pendingStartChar >= 0 ? pendingStartChar : undefined,
+                    end_char: pendingEndChar >= 0 ? pendingEndChar : undefined,
+                },
+                draftVersion: currentDraftVersion || undefined,
+            });
+            if (error) throw new Error(error);
+            toast.success('Note saved!', {
+                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+            });
+            setSelectedText('');
+            setPendingStartChar(-1);
+            setPendingEndChar(-1);
+            setSelectionPos(null);
+            setNoteComment('');
+            window.getSelection()?.removeAllRanges();
+            router.refresh();
+        } catch (e: any) {
+            toast.error(e.message || 'Failed to save note');
+        } finally {
+            setIsSavingNote(false);
+        }
+    }, [selectedText, noteComment, pendingStartChar, pendingEndChar, contract?.id, currentDraftVersion, router]);
+
+    const dismissNotePopup = useCallback(() => {
+        setSelectedText('');
+        setPendingStartChar(-1);
+        setPendingEndChar(-1);
+        setSelectionPos(null);
+        setNoteComment('');
+        window.getSelection()?.removeAllRanges();
+    }, []);
+
+
+    // ── Note Highlight Injection Pipeline (coordinate-first, plainText-fallback) ──
+    const injectedDraftText = useMemo(() => {
+        if (!parsedDraftText) return '';
+        if (!notes || notes.length === 0) return parsedDraftText;
+
+        interface NoteRange { start: number; end: number; noteId: string }
+        const ranges: NoteRange[] = [];
+
+        for (const note of notes) {
+            const pos = typeof note.position_data === 'string'
+                ? JSON.parse(note.position_data)
+                : note.position_data;
+
+            const quote = note.quote;
+            if (!quote || quote.length < 3) continue;
+
+            // ── Priority 1: Use stored coordinates (exact, fast) ──
+            const sc = pos?.start_char;
+            const ec = pos?.end_char;
+
+            if (typeof sc === 'number' && typeof ec === 'number' &&
+                sc >= 0 && ec > sc && ec <= parsedDraftText.length) {
+                ranges.push({ start: sc, end: ec, noteId: String(note.id) });
+                continue;
+            }
+
+            // ── Priority 2: Search in plainText (clean↔clean), map back via plainToRaw ──
+            if (plainText && plainToRaw.length > 0) {
+                const plainIdx = plainText.indexOf(quote);
+                if (plainIdx !== -1) {
+                    const rawStart = plainToRaw[plainIdx];
+                    const rawEndPlain = plainIdx + quote.length - 1;
+                    const rawEnd = rawEndPlain < plainToRaw.length
+                        ? plainToRaw[rawEndPlain] + 1
+                        : parsedDraftText.length;
+                    if (typeof rawStart === 'number') {
+                        ranges.push({ start: rawStart, end: rawEnd, noteId: String(note.id) });
+                        continue;
+                    }
+                }
+            }
+
+            // ── Priority 3: Last resort — direct indexOf (handles plain text docs) ──
+            const directIdx = parsedDraftText.indexOf(quote);
+            if (directIdx !== -1) {
+                ranges.push({ start: directIdx, end: directIdx + quote.length, noteId: String(note.id) });
+            }
+        }
+
+        if (ranges.length === 0) return parsedDraftText;
+
+        // Sort DESCENDING — reverse injection to avoid index shifting
+        ranges.sort((a, b) => b.start - a.start);
+
+        let modified = parsedDraftText;
+        for (const range of ranges) {
+            const text = modified.slice(range.start, range.end);
+            const tag = `<mark data-note-id="${range.noteId}" style="background:rgba(253,224,71,0.5);border-radius:2px;padding:0 1px;">${text}</mark>`;
+            modified = modified.slice(0, range.start) + tag + modified.slice(range.end);
+        }
+
+        return modified;
+    }, [parsedDraftText, notes, plainText, plainToRaw]);
 
     const handleApplySuggestion = async (originalIssue: string, neutralRewrite: string) => {
         if (!contract?.id) return;
@@ -111,54 +329,7 @@ export default function ContractDetailClient({
         setIsLockedForReview(true);
         const newVersion = generateHash(parsedDraftText);
         setCurrentDraftVersion(newVersion);
-
-        try {
-            const doc = new jsPDF({
-                orientation: 'portrait',
-                unit: 'pt',
-                format: 'a4'
-            });
-
-            const pageHeight = doc.internal.pageSize.getHeight();
-            const pageWidth = doc.internal.pageSize.getWidth();
-
-            // Explicitly draw a white rectangle to prevent transparent dark-mode black text
-            doc.setFillColor(255, 255, 255);
-            doc.rect(0, 0, pageWidth, pageHeight, 'F');
-
-            doc.setFont("helvetica", "normal");
-            doc.setFontSize(11);
-
-            const margin = 50;
-            const maxLineWidth = pageWidth - (margin * 2);
-
-            // Strip HTML tags if any exist (since jspdf doesn't render HTML natively)
-            let plainText = parsedDraftText.replace(/<[^>]*>?/gm, '');
-
-            const lines = doc.splitTextToSize(plainText || "No content available.", maxLineWidth);
-            let cursorY = margin + 20;
-
-            for (let i = 0; i < lines.length; i++) {
-                if (cursorY + 16 > pageHeight - margin) {
-                    doc.addPage();
-                    doc.setFillColor(255, 255, 255);
-                    doc.rect(0, 0, pageWidth, pageHeight, 'F');
-                    cursorY = margin + 20;
-                }
-                doc.text(lines[i], margin, cursorY);
-                cursorY += 16;
-            }
-
-            const blob = doc.output('blob');
-            const url = URL.createObjectURL(blob);
-            setPdfBlobUrl(url);
-
-            console.log("Generated PDF Blob URL:", url);
-        } catch (error) {
-            console.error("Error generating PDF:", error);
-            setIsLockedForReview(false);
-            alert("Failed to generated PDF for Review Mode.");
-        }
+        // Removed jsPDF logic as we now render Markdown directly
     };
 
     useEffect(() => {
@@ -181,13 +352,13 @@ export default function ContractDetailClient({
                 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
                 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
                 const headers = { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` };
-                
+
                 const res = await fetch(`${supabaseUrl}/rest/v1/contracts?id=eq.${liveContract.id}&select=*`, { headers });
                 const [data] = await res.json();
-                
+
                 if (data && data.status !== liveContract.status) {
                     setLiveContract(data);
-                    
+
                     const newStatus = data.status.toLowerCase();
                     if (!newStatus.includes('processing') && !newStatus.includes('ingesting')) {
                         toast.success("✅ AI Analysis Complete. The War Room is ready.", {
@@ -201,9 +372,9 @@ export default function ContractDetailClient({
             }
         };
 
-        const isProcessing = liveContract?.status?.toLowerCase().includes('processing') || 
-                             liveContract?.status?.toLowerCase().includes('ingesting') ||
-                             liveContract?.status === 'In Progress';
+        const isProcessing = liveContract?.status?.toLowerCase().includes('processing') ||
+            liveContract?.status?.toLowerCase().includes('ingesting') ||
+            liveContract?.status === 'In Progress';
 
         if (isProcessing) {
             interval = setInterval(checkStatus, 3000);
@@ -217,19 +388,19 @@ export default function ContractDetailClient({
 
     const handleUploadV2 = async (file: File) => {
         if (!file || !contract?.id || !contract?.matter_id) return;
-        
+
         toast.loading("Uploading Version 2...", { id: "upload-v2" });
-        
+
         try {
             const formData = new FormData();
             formData.append('file', file);
-            
+
             const res = await uploadDocument(contract.matter_id, formData, contract.id);
             if (res.error) {
                 toast.error(res.error, { id: "upload-v2" });
                 return;
             }
-            
+
             toast.success("V2 Uploaded! Processing in background...", { id: "upload-v2" });
             router.refresh();
         } catch (err: any) {
@@ -249,12 +420,12 @@ export default function ContractDetailClient({
 
     return (
         <div className="flex flex-col h-full w-full overflow-hidden">
-            <ContractHeader 
-                initialContract={liveContract} 
+            <ContractHeader
+                initialContract={liveContract}
                 formattedDate={formattedDate}
                 actionMenu={
                     <div className="relative ml-2">
-                        <button 
+                        <button
                             onClick={() => setDropdownOpen(!dropdownOpen)}
                             className="flex items-center gap-1.5 px-3 py-1 bg-transparent hover:bg-neutral-800 text-neutral-400 hover:text-white text-[11px] font-bold uppercase tracking-widest rounded transition-colors border border-transparent hover:border-neutral-700"
                         >
@@ -263,26 +434,41 @@ export default function ContractDetailClient({
 
                         {dropdownOpen && (
                             <div className="absolute top-full left-0 mt-2 w-56 bg-neutral-900 border border-neutral-800 rounded-lg shadow-2xl py-1 z-50">
-                                <button 
+                                <button
                                     onClick={() => { setDropdownOpen(false); fileInputRef.current?.click(); }}
-                                    className="w-full text-left px-4 py-2.5 hover:bg-neutral-800 text-neutral-300 hover:text-white text-[11px] uppercase tracking-widest font-semibold flex items-center gap-2 transition-colors"
+                                    className="w-full text-left px-4 py-2.5 hover:bg-neutral-800 text-neutral-300 hover:text-white text-[11px] uppercase tracking-widest font-semibold transition-colors"
                                 >
-                                    <span className="material-symbols-outlined text-[15px] opacity-70">upload_file</span> 
                                     Upload Version 2
                                 </button>
-                                <button 
-                                    onClick={() => { setDropdownOpen(false); router.push(`/dashboard/drafting/${liveContract.matter_id}?contract_id=${liveContract.id}`); }}
-                                    className="w-full text-left px-4 py-2.5 hover:bg-neutral-800 text-neutral-300 hover:text-white text-[11px] uppercase tracking-widest font-semibold flex items-center gap-2 transition-colors"
+                                <button
+                                    onClick={() => { setDropdownOpen(false); router.push(`/dashboard/contracts/${liveContract.id}/review`); }}
+                                    className="w-full text-left px-4 py-2.5 hover:bg-neutral-800 text-neutral-300 hover:text-white text-[11px] uppercase tracking-widest font-semibold transition-colors"
                                 >
-                                    <span className="material-symbols-outlined text-[15px] opacity-70">draw</span> 
+                                    View Contract Review
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        if (liveContract?.version_count && liveContract.version_count >= 2) {
+                                            setDropdownOpen(false);
+                                            router.push(`/dashboard/contracts/${liveContract.id}/war-room`);
+                                        }
+                                    }}
+                                    disabled={!liveContract?.version_count || liveContract.version_count < 2}
+                                    className={`w-full text-left px-4 py-2.5 text-[11px] uppercase tracking-widest font-semibold transition-colors ${(!liveContract?.version_count || liveContract.version_count < 2) ? 'text-neutral-600 cursor-not-allowed' : 'hover:bg-neutral-800 text-neutral-300 hover:text-white'}`}
+                                >
+                                    enter Negotiation War Room
+                                </button>
+                                <button
+                                    onClick={() => { setDropdownOpen(false); router.push(`/dashboard/drafting/${liveContract.matter_id}?contract_id=${liveContract.id}`); }}
+                                    className="w-full text-left px-4 py-2.5 hover:bg-neutral-800 text-neutral-300 hover:text-white text-[11px] uppercase tracking-widest font-semibold transition-colors"
+                                >
                                     Open in Smart Composer
                                 </button>
                                 <div className="my-1 border-t border-neutral-800/80"></div>
-                                <button 
+                                <button
                                     onClick={() => { setDropdownOpen(false); toast('Archive coming soon'); }}
-                                    className="w-full text-left px-4 py-2.5 hover:bg-red-950/30 text-red-500/80 hover:text-red-400 text-[11px] uppercase tracking-widest font-semibold flex items-center gap-2 transition-colors"
+                                    className="w-full text-left px-4 py-2.5 hover:bg-red-950/30 text-red-500/80 hover:text-red-400 text-[11px] uppercase tracking-widest font-semibold transition-colors"
                                 >
-                                    <span className="material-symbols-outlined text-[15px] opacity-70">archive</span> 
                                     Archive Document
                                 </button>
                             </div>
@@ -292,10 +478,10 @@ export default function ContractDetailClient({
             >
                 <div className="flex items-center gap-3 ml-auto">
                     {/* Explicit V2 Upload Input (Hidden but needed) */}
-                    <input 
-                        type="file" 
-                        ref={fileInputRef} 
-                        className="hidden" 
+                    <input
+                        type="file"
+                        ref={fileInputRef}
+                        className="hidden"
                         accept="application/pdf"
                         onChange={(e) => {
                             if (e.target.files && e.target.files[0]) {
@@ -309,40 +495,98 @@ export default function ContractDetailClient({
             </ContractHeader>
 
             <div className="flex flex-1 w-full overflow-hidden bg-background">
-            {/* LEFT: PDF Viewer or Live Draft Viewer */}
-            <div className="flex-1 h-full min-w-0 overflow-hidden relative">
-                {/* War Room: Version Badge */}
-                {liveContract.version_count && liveContract.version_count > 1 && (
-                    <div className="absolute top-3 left-3 z-20 bg-[#d4af37]/90 text-black text-[11px] font-bold px-3 py-1.5 rounded-full shadow-lg flex items-center gap-1.5 backdrop-blur-sm">
-                        <span className="material-symbols-outlined text-[14px]">history</span>
-                        V{liveContract.version_count}
-                    </div>
-                )}
-                <PDFViewerWrapper
-                    fileUrl={isLockedForReview && pdfBlobUrl ? pdfBlobUrl : pdfUrl}
-                    contractId={liveContract.id}
-                    scrollToId={scrollToId}
-                    notes={isLockedForReview ? filteredNotes : notes}
-                    draftVersion={currentDraftVersion}
-                />
+                {/* LEFT: PDF Viewer or Live Draft Viewer */}
+                <div className="flex-1 h-full min-w-0 overflow-hidden relative">
+
+
+                    {isLockedForReview ? (
+                        <div
+                            ref={markdownContainerRef}
+                            className="w-full h-full overflow-y-auto p-12 bg-[#121212] flex justify-center custom-scrollbar items-start relative [&_::selection]:bg-yellow-200 [&_::selection]:text-black"
+                            style={{ userSelect: 'text' }}
+                            onMouseUp={handleTextSelection}
+                        >
+                            <div className="max-w-4xl w-full h-fit min-h-full bg-white text-black p-12 shadow-2xl rounded-sm">
+                                <div className="prose prose-sm max-w-none">
+                                    <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                        rehypePlugins={[rehypeRaw as any]}
+                                    >
+                                        {injectedDraftText}
+                                    </ReactMarkdown>
+                                </div>
+                            </div>
+
+                            {/* Floating Note Creation Popup */}
+                            {selectedText && selectionPos && (
+                                <div
+                                    className="fixed z-[100] animate-in fade-in zoom-in-95 duration-200"
+                                    style={{
+                                        left: Math.min(selectionPos.x - 140, window.innerWidth - 310),
+                                        top: Math.max(selectionPos.y - 180, 20)
+                                    }}
+                                >
+                                    <div className="bg-[#1a1a1a] border border-[#d4af37]/30 p-3 rounded-lg shadow-2xl min-w-[280px]">
+                                        <h4 className="text-xs font-bold text-white mb-2 font-serif flex items-center gap-1.5">
+                                            <span className="material-symbols-outlined text-[#d4af37] text-sm">edit_note</span>
+                                            Create Note from Selection
+                                        </h4>
+                                        <div className="text-[10px] text-zinc-400 mb-2 p-2 bg-white/5 rounded border-l-2 border-[#d4af37]/50 italic max-h-16 overflow-y-auto">
+                                            &ldquo;{selectedText.length > 120 ? selectedText.substring(0, 120) + '...' : selectedText}&rdquo;
+                                        </div>
+                                        <textarea
+                                            value={noteComment}
+                                            autoFocus
+                                            onChange={(e) => setNoteComment(e.target.value)}
+                                            placeholder="Add a comment (optional)..."
+                                            className="w-full bg-[#0e0e0e] border border-white/10 rounded p-2 text-xs text-white placeholder-zinc-600 focus:ring-1 focus:ring-[#d4af37] focus:border-[#d4af37] resize-none h-16 mb-2"
+                                        />
+                                        <div className="flex items-center justify-end gap-2">
+                                            <button
+                                                onClick={dismissNotePopup}
+                                                className="px-3 py-1 text-xs text-zinc-500 hover:text-white transition-colors"
+                                            >
+                                                Cancel
+                                            </button>
+                                            <button
+                                                onClick={handleSaveNote}
+                                                disabled={isSavingNote}
+                                                className="px-3 py-1.5 text-xs bg-[#d4af37] text-black font-bold rounded hover:bg-[#c5a059] transition-colors disabled:opacity-50"
+                                            >
+                                                {isSavingNote ? 'Saving...' : 'Save Note'}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        <PDFViewerWrapper
+                            fileUrl={pdfUrl}
+                            contractId={liveContract.id}
+                            scrollToId={scrollToId}
+                            notes={notes}
+                            draftVersion={currentDraftVersion}
+                        />
+                    )}
+                </div>
+                {/* RIGHT: Sidebar - fixed width, strict height */}
+                <div className="w-[400px] h-full flex-shrink-0 overflow-hidden">
+                    <IntelligenceSidebar
+                        contract={liveContract}
+                        obligations={obligations}
+                        notes={notes} // Send ALL notes to sidebar for fallback rendering
+                        clientName={clientName}
+                        graphDocs={graphDocs}
+                        graphRels={graphRels}
+                        onNoteClick={setScrollToId}
+                        onNoteDeleted={() => router.refresh()}
+                        isLocked={isLockedForReview}
+                        currentDraftVersion={currentDraftVersion}
+                        onApplySuggestion={handleApplySuggestion}
+                    />
+                </div>
             </div>
-            {/* RIGHT: Sidebar - fixed width, strict height */}
-            <div className="w-[400px] h-full flex-shrink-0 overflow-hidden">
-                <IntelligenceSidebar
-                    contract={liveContract}
-                    obligations={obligations}
-                    notes={notes} // Send ALL notes to sidebar for fallback rendering
-                    clientName={clientName}
-                    graphDocs={graphDocs}
-                    graphRels={graphRels}
-                    onNoteClick={setScrollToId}
-                    onNoteDeleted={() => router.refresh()}
-                    isLocked={isLockedForReview}
-                    currentDraftVersion={currentDraftVersion}
-                    onApplySuggestion={handleApplySuggestion}
-                />
-            </div>
-        </div>
         </div>
     )
 }

@@ -19,7 +19,7 @@ export default function IntakePortal() {
   const fetchRecentRequests = async () => {
     if (!isLoaded) return;
     try {
-      const token = await getToken({ template: "supabase" });
+      const token = await getToken();
       if (!token) return;
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
       const res = await fetch(`${apiUrl}/api/v1/intake/requests`, {
@@ -40,7 +40,7 @@ export default function IntakePortal() {
   const fetchMatters = async () => {
     if (!isLoaded) return;
     try {
-      const token = await getToken({ template: "supabase" });
+      const token = await getToken();
       if (!token) return;
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
       const res = await fetch(`${apiUrl}/api/matters`, {
@@ -71,7 +71,7 @@ export default function IntakePortal() {
     setMessage({ type: "", text: "" });
 
     try {
-      const token = await getToken({ template: "supabase" });
+      const token = await getToken();
 
       const payload = {
         request_type: requestType,

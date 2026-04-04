@@ -3,10 +3,11 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 import { Plus, Trash, Save, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
+import { useAuth } from '@clerk/nextjs';
 
 export default function TemplateBuilder() {
-    // Fake tenantId for now, replace with your actual Auth hook (e.g., Clerk or Supabase Auth)
-    const tenantId = "org_3A6SYbyMYBVQuNfUGxGORhtI11b";
+    const { orgId, userId, getToken } = useAuth();
+    const tenantId = orgId || userId;
 
     const [name, setName] = useState('');
     const [matterType, setMatterType] = useState('');
@@ -62,9 +63,15 @@ export default function TemplateBuilder() {
         try {
             // Adjust the URL/Port to match your FastAPI backend
             // Default 127.0.0.1:8000
-            const response = await fetch(`http://127.0.0.1:8000/api/v1/templates?tenant_id=${tenantId}`, {
+            const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+            const apiUrl = backendUrl.replace(/\/$/, "");
+            const token = await getToken();
+            const response = await fetch(`${apiUrl}/api/v1/templates?tenant_id=${tenantId}`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
                 body: JSON.stringify(payload)
             });
 
