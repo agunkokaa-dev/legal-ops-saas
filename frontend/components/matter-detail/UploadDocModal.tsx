@@ -1,9 +1,11 @@
 'use client'
 
 import { useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { uploadDocument } from '@/app/actions/documentActions'
 
 export default function UploadDocModal({ matterId, existingDocs = [] }: { matterId: string, existingDocs?: { id: string, title: string }[] }) {
+    const router = useRouter()
     const [isOpen, setIsOpen] = useState(false)
     const [isUploading, setIsUploading] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -117,6 +119,9 @@ export default function UploadDocModal({ matterId, existingDocs = [] }: { matter
                                                 const { confirmVersion } = await import('@/app/actions/documentActions')
                                                 await confirmVersion(candidateInfo.uploaded_contract_id, candidateInfo.matched_contract_id)
                                                 resetModal()
+                                                // Navigate to the PARENT (surviving) contract, not the deleted orphan
+                                                router.push(`/dashboard/contracts/${candidateInfo.matched_contract_id}`)
+                                                router.refresh()
                                             } catch (err) {
                                                 console.error(err)
                                             } finally {

@@ -46,7 +46,12 @@ class ComplianceFinding(BaseModel):
     """Output schema for Agent 02 (Compliance). Each issue must cite the source."""
     issue: str = Field(description="Description of the compliance violation or risk.")
     category: str = Field(
-        description="Category: 'Order of Precedence', 'Missing Clause', 'Biased Term', 'Regulatory', 'Other'."
+        description=(
+            "Category: 'Order of Precedence', 'Missing Clause', 'Biased Term', 'Regulatory', "
+            "'Statutory Violation', 'Other'. "
+            "Use 'Statutory Violation' ONLY when citing a specific Indonesian law provision "
+            "(e.g. Pasal 31 UU 24/2009). This maps to CRITICAL severity in the review pipeline."
+        )
     )
     source_text: str = Field(
         description="The EXACT verbatim quote from the contract that triggers this issue."

@@ -3,11 +3,12 @@ Pariana Backend - Clause Library Router
 Enterprise Clause Library CRUD with Qdrant vectorization.
 Enforces strict tenant isolation via verify_clerk_token + manual .eq() scoping.
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import List
 import uuid
 
 from app.schemas import ClauseCreate, ClauseResponse, ClauseMatchRequest, ClauseMatchResult
+from app.rate_limiter import limiter
 from app.dependencies import verify_clerk_token
 from app.config import admin_supabase, qdrant, openai_client
 from qdrant_client.http.models import PointStruct, Filter, FieldCondition, MatchValue
@@ -16,7 +17,8 @@ router = APIRouter()
 
 
 @router.get("/clauses", response_model=List[ClauseResponse])
-async def get_clauses(claims: dict = Depends(verify_clerk_token)):
+@limiter.limit("60/minute")
+async def get_clauses(request: Request, claims: dict = Depends(verify_clerk_token)):
     """Fetch all clauses for the authenticated tenant."""
     tenant_id = claims["verified_tenant_id"]
 
@@ -35,7 +37,8 @@ async def get_clauses(claims: dict = Depends(verify_clerk_token)):
 
 
 @router.post("/clauses", response_model=ClauseResponse)
-async def create_clause(clause: ClauseCreate, claims: dict = Depends(verify_clerk_token)):
+@limiter.limit("20/minute")
+async def create_clause(request: Request, clause: ClauseCreate, claims: dict = Depends(verify_clerk_token)):
     """Create a new clause, save to Supabase, and vectorize into Qdrant."""
     tenant_id = claims["verified_tenant_id"]
 
@@ -109,7 +112,8 @@ async def create_clause(clause: ClauseCreate, claims: dict = Depends(verify_cler
 
 
 @router.post("/clauses/match")
-async def match_clause(request: ClauseMatchRequest, claims: dict = Depends(verify_clerk_token)):
+@limiter.limit("20/minute")
+async def match_clause(request: Request, body: ClauseMatchRequest, claims: dict = Depends(verify_clerk_token)):
     """Semantic search: find the best-matching approved clauses for a given vendor text block."""
     tenant_id = claims["verified_tenant_id"]
 
@@ -117,7 +121,7 @@ async def match_clause(request: ClauseMatchRequest, claims: dict = Depends(verif
         # 1. Embed the incoming risky vendor clause
         embedding_response = openai_client.embeddings.create(
             model="text-embedding-3-small",
-            input=request.query_text
+            input=body.query_text
         )
         query_vector = embedding_response.data[0].embedding
 
@@ -125,9 +129,9 @@ async def match_clause(request: ClauseMatchRequest, claims: dict = Depends(verif
         must_conditions = [
             FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))
         ]
-        if request.category:
+        if body.category:
             must_conditions.append(
-                FieldCondition(key="category", match=MatchValue(value=request.category))
+                FieldCondition(key="category", match=MatchValue(value=body.category))
             )
         query_filter = Filter(must=must_conditions)
 
@@ -136,7 +140,7 @@ async def match_clause(request: ClauseMatchRequest, claims: dict = Depends(verif
             collection_name="clause_library_vectors",
             query_vector=query_vector,
             query_filter=query_filter,
-            limit=request.limit,
+            limit=body.limit,
             score_threshold=0.5
         )
 
@@ -184,7 +188,8 @@ async def match_clause(request: ClauseMatchRequest, claims: dict = Depends(verif
 # DELETE THIS ENDPOINT after use.
 # =====================================================================
 @router.post("/clauses/repair-vectors")
-async def repair_clause_vectors(claims: dict = Depends(verify_clerk_token)):
+@limiter.limit("20/minute")
+async def repair_clause_vectors(request: Request, claims: dict = Depends(verify_clerk_token)):
     """
     Temporary maintenance endpoint: re-embeds ALL clauses for the
     authenticated tenant and upserts corrected payloads (with content)

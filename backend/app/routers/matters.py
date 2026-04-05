@@ -8,9 +8,10 @@ Handles:
 Demonstrates the clean dependency injection pattern for all simple CRUD routers.
 """
 import uuid
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from supabase import Client
 
+from app.rate_limiter import limiter
 from app.dependencies import verify_clerk_token, get_tenant_supabase
 from app.schemas import MatterCreate
 
@@ -18,7 +19,9 @@ router = APIRouter()
 
 
 @router.post("/matters")
+@limiter.limit("20/minute")
 async def create_matter(
+    request: Request,
     matter: MatterCreate,
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase)
@@ -39,7 +42,9 @@ async def create_matter(
 
 
 @router.get("/matters")
+@limiter.limit("60/minute")
 async def get_matters(
+    request: Request,
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase)
 ):

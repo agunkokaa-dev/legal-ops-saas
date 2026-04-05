@@ -10,127 +10,36 @@ const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABAS
 const supabaseAdmin = createClient(supabaseUrl, supabaseKey)
 
 // 1. Upload Document
+// Single Writer: the backend (FastAPI) is the sole writer for contract rows and Storage.
+// This action only forwards the file + metadata and reads back the contract_id.
 export async function uploadDocument(matterId: string, formData: FormData, parentContractId?: string) {
-    const { userId, orgId } = await auth()
+    const { userId } = await auth()
     if (!userId) return { error: "Unauthorized" }
 
-    const tenantId = orgId || userId
-
     try {
-        const file = formData.get('file') as File;
-        if (!file) {
-            return { error: "No file provided" }
+        const file = formData.get('file') as File
+        if (!file) return { error: "No file provided" }
+
+        // Delegate the full upload lifecycle (Storage + DB insert/update + genealogy) to FastAPI.
+        const ingestRes = await triggerSmartIngestion(formData, matterId, undefined, parentContractId)
+
+        if (!ingestRes?.success) {
+            return { error: ingestRes?.error || "Upload failed" }
         }
 
-        // Generate safe storage path
-        const fileExt = file.name.split('.').pop()
-        const safeName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_')
-        const filePath = `${tenantId}/${matterId}/${Date.now()}_${safeName}`
-
-        const documentCategory = formData.get('document_category') as string
-        const parentId = formData.get('parent_id') as string
-        const relationshipType = formData.get('relationship_type') as string
-
-        // Upload to Supabase Storage
-        const { error: storageError } = await supabaseAdmin.storage
-            .from('matter-files')
-            .upload(filePath, file)
-
-        if (storageError) throw storageError
-        // --- EXPLICIT V2 UPLOAD TRACK ---
-        if (parentContractId) {
-            // Optimistically update the parent's version_count so the UI unlocks the War Room button instantly!
-            const { data: parentDoc } = await supabaseAdmin
-                .from('contracts')
-                .select('version_count')
-                .eq('id', parentContractId)
-                .single()
-                
-            const currentVC = parentDoc?.version_count || 1;
-            
-            await supabaseAdmin
-                .from('contracts')
-                .update({ 
-                    version_count: currentVC + 1,
-                    title: file.name,
-                    file_url: filePath,
-                    file_type: file.type,
-                    file_size: file.size
-                })
-                .eq('id', parentContractId)
-
-            // Trigger FastAPI with parentContractId signal (NO new row created)
-            let ingestRes = null;
-            try {
-                // Pass parent as contractId to be safe, plus parentContractId
-                ingestRes = await triggerSmartIngestion(formData, matterId, parentContractId, parentContractId);
-            } catch (err) {
-                console.error("🔥 ERROR DURING AI EXTRACTION BACKGROUND TASK:", err)
-            }
-            
-            revalidatePath(`/dashboard/matters/${matterId}`)
-            revalidatePath(`/dashboard/contracts/${parentContractId}`)
-            return { 
-                success: true, 
-                versionCandidate: ingestRes?.data?.version_candidate || null 
-            }
-        }
-
-        // --- ORIGINAL V1 UPLOAD TRACK ---
-        // Insert into DB
-        const { data: newDoc, error: dbError } = await supabaseAdmin
-            .from('contracts')
-            .insert({
-                matter_id: matterId,
-                tenant_id: tenantId,
-                title: file.name,
-                file_url: filePath,
-                file_type: file.type,
-                file_size: file.size,
-                document_category: documentCategory || 'Uncategorized'
-            })
-            .select('id')
-            .single()
-
-        if (dbError || !newDoc) {
-            // Rollback storage upload if DB insert fails
-            await supabaseAdmin.storage.from('matter-files').remove([filePath])
-            throw dbError || new Error("Failed to return new document ID")
-        }
-
-        // --- NEW: GENEALOGY INTEGRATION ---
-        if (parentId) {
-            const { error: relError } = await supabaseAdmin
-                .from('document_relationships')
-                .insert({
-                    tenant_id: tenantId,
-                    parent_id: parentId,
-                    child_id: newDoc.id,
-                    relationship_type: relationshipType || 'related_to'
-                })
-
-            if (relError) {
-                // Rollback both storage and document insert if relationship fails
-                await supabaseAdmin.from('contracts').delete().eq('id', newDoc.id)
-                await supabaseAdmin.storage.from('matter-files').remove([filePath])
-                throw relError
-            }
-        }
-
-        // --- NEW: AI EXTRACTION INTEGRATION ---
-        // Block to get the immediate FastAPI response (which contains version_candidate)
-        // Since LangGraph runs in a true BackgroundTask now, this await only takes ~1s.
-        let ingestRes = null;
-        try {
-            ingestRes = await triggerSmartIngestion(formData, matterId, newDoc.id, parentContractId);
-        } catch (err) {
-            console.error("🔥 ERROR DURING AI EXTRACTION BACKGROUND TASK:", err)
-        }
+        const contractId: string | undefined = ingestRes.data?.contract_id
 
         revalidatePath(`/dashboard/matters/${matterId}`)
-        return { 
-            success: true, 
-            versionCandidate: ingestRes?.data?.version_candidate || null 
+        if (parentContractId) {
+            revalidatePath(`/dashboard/contracts/${parentContractId}`)
+        } else if (contractId) {
+            revalidatePath(`/dashboard/contracts/${contractId}`)
+        }
+
+        return {
+            success: true,
+            contractId,
+            versionCandidate: ingestRes.data?.version_candidate || null,
         }
     } catch (e: any) {
         console.error("🔥 ERROR UPLOADING DOCUMENT:", e)
@@ -162,7 +71,7 @@ export async function getMatterDocuments(matterId: string) {
 }
 
 // 3. Delete Document
-export async function deleteDocument(documentId: string, fileUrl: string, matterId: string) {
+export async function deleteDocument(documentId: string, _fileUrl: string, matterId: string) {
     const { userId, orgId } = await auth()
     if (!userId) return { error: "Unauthorized" }
 
@@ -187,7 +96,7 @@ export async function deleteDocument(documentId: string, fileUrl: string, matter
 }
 
 // 4. Get Document Genealogy
-export async function getDocumentGenealogy(matterId: string) {
+export async function getDocumentGenealogy(_matterId: string) {
     const { userId, orgId } = await auth()
     if (!userId) return { error: "Unauthorized" }
 
@@ -225,6 +134,7 @@ export async function getGraphData(matterId: string) {
             .select('id, title, document_category, contract_value, risk_level')
             .eq('matter_id', matterId)
             .eq('tenant_id', tenantId)
+            .neq('status', 'ARCHIVED')
             .order('created_at', { ascending: true })
 
         if (docsError) throw docsError

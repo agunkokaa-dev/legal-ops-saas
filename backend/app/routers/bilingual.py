@@ -1,6 +1,5 @@
-import time
 from datetime import datetime
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from app.dependencies import verify_clerk_token
 from app.config import admin_supabase, openai_client
@@ -12,31 +11,17 @@ from app.bilingual_schemas import (
     ClauseCreateRequest
 )
 from app.bilingual_agent import run_bilingual_consistency_agent
+from app.rate_limiter import limiter
+from app.task_logger import TaskLogger
 import io
 
 router = APIRouter()
 
-# WARNING: in-memory counter, resets on container restart.
-# Replace with persistent store before public launch.
-rate_limit_store = {}
-RATE_LIMIT_WINDOW_SEC = 60
-RATE_LIMIT_MAX_REQUESTS = 20
-
-def check_rate_limit(tenant_id: str):
-    now = time.time()
-    if tenant_id not in rate_limit_store:
-        rate_limit_store[tenant_id] = []
-    
-    # Prune old requests
-    rate_limit_store[tenant_id] = [req_time for req_time in rate_limit_store[tenant_id] if now - req_time < RATE_LIMIT_WINDOW_SEC]
-    
-    if len(rate_limit_store[tenant_id]) >= RATE_LIMIT_MAX_REQUESTS:
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again in a minute.")
-    
-    rate_limit_store[tenant_id].append(now)
 
 @router.get("/{contract_id}/clauses")
+@limiter.limit("60/minute")
 async def get_clauses(
+    request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -60,7 +45,9 @@ async def get_clauses(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/{contract_id}/clauses")
+@limiter.limit("60/minute")
 async def create_clause(
+    request: Request,
     contract_id: str,
     payload: ClauseCreateRequest,
     claims: dict = Depends(verify_clerk_token),
@@ -89,7 +76,9 @@ async def create_clause(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/{contract_id}/sync-clause")
+@limiter.limit("10/minute")
 async def sync_clause(
+    request: Request,
     contract_id: str,
     payload: ClauseSyncRequest,
     claims: dict = Depends(verify_clerk_token),
@@ -103,9 +92,9 @@ async def sync_clause(
     if not contract.data:
         raise HTTPException(status_code=404, detail="Contract not found")
 
-    check_rate_limit(tenant_id)
     
     try:
+        _logger = TaskLogger(tenant_id=tenant_id, task_type="bilingual_sync", contract_id=contract_id)
         if payload.source_language == "id":
              target_language = "English"
              origin = "Indonesian"
@@ -128,14 +117,19 @@ async def sync_clause(
              ],
              response_format=ClauseSyncResponse
         )
-        return response.choices[0].message.parsed
+        result = response.choices[0].message.parsed
+        _logger.complete(result_summary={"translated_to": target_language})
+        return result
         
     except Exception as e:
+        if '_logger' in locals(): _logger.fail(e)
         print(f"Error in sync-clause: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/{contract_id}/validate-consistency")
+@limiter.limit("5/minute")
 async def validate_consistency(
+    request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -153,13 +147,18 @@ async def validate_consistency(
         raise HTTPException(status_code=400, detail="No active clauses to validate")
         
     try:
+        _logger = TaskLogger(tenant_id=tenant_id, task_type="bilingual_validate", contract_id=contract_id)
         report = run_bilingual_consistency_agent(clauses)
+        _logger.complete(result_summary={"clauses_checked": len(clauses)})
         return {"status": "success", "data": report.model_dump()}
     except Exception as e:
+        if '_logger' in locals(): _logger.fail(e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.patch("/{contract_id}/clause/{clause_id}")
+@limiter.limit("30/minute")
 async def patch_clause(
+    request: Request,
     contract_id: str,
     clause_id: str,
     payload: ClauseUpdateRequest,
@@ -212,7 +211,9 @@ async def patch_clause(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/{contract_id}/finalize")
+@limiter.limit("10/minute")
 async def finalize_contract(
+    request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -257,7 +258,9 @@ async def finalize_contract(
     return {"status": "success", "message": "Contract finalized"}
 
 @router.get("/{contract_id}/export-pdf")
+@limiter.limit("10/minute")
 async def export_pdf(
+    request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
 ):

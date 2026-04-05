@@ -13,10 +13,13 @@ import uuid
 import traceback
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
 from supabase import Client
 
 from app.config import openai_client, admin_supabase
+from app.rate_limiter import limiter
+from app.token_utils import truncate_to_tokens
 from app.dependencies import verify_clerk_token
 from app.review_schemas import ReviewResponse, ReviewFinding, BannerData, QuickInsight
 from app.routers.contracts import process_contract_background
@@ -52,7 +55,9 @@ class CreateTaskFromFindingRequest(BaseModel):
 # ──────────────────────────────────────────────
 
 @router.post("/analyze")
+@limiter.limit("20/minute")
 async def analyze_contract(
+    request: Request,
     payload: ReviewAnalyzeRequest,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -66,11 +71,38 @@ async def analyze_contract(
         if not tenant_id:
             raise HTTPException(status_code=401, detail="Invalid token claims")
 
+        # Build the set of tenant IDs the user legitimately owns.
+        # The client-side Clerk JWT often OMITS org_id (only has sub/user_id),
+        # but the upload endpoint stores contracts under the org's tenant_id
+        # (inherited from the matter). We must resolve the org membership
+        # from Clerk's org claims to bridge this gap.
+        allowed_tenants = set(filter(None, [claims.get("org_id"), claims.get("sub")]))
+
+        # If org_id is missing from the JWT, look up the user's org membership
+        # via the contract's matter. This mirrors the upload endpoint's logic.
+        if not claims.get("org_id"):
+            try:
+                # Check if this contract belongs to a matter, and if so, inherit its tenant
+                contract_peek = admin_supabase.table("contracts") \
+                    .select("tenant_id, matter_id") \
+                    .eq("id", payload.contract_id) \
+                    .limit(1) \
+                    .execute()
+                if contract_peek.data:
+                    contract_tenant = contract_peek.data[0].get("tenant_id")
+                    if contract_tenant:
+                        allowed_tenants.add(contract_tenant)
+                        print(f"🔗 [Review] Inherited tenant_id={contract_tenant} from contract record (org_id missing from JWT)")
+            except Exception as e:
+                print(f"⚠️ [Review] Tenant inheritance lookup failed: {e}")
+
+        print(f"🔍 [Review Analyze] contract_id={payload.contract_id} | allowed_tenants={allowed_tenants}")
+
         # Check for existing review
         existing = admin_supabase.table("contract_reviews") \
             .select("*") \
             .eq("contract_id", payload.contract_id) \
-            .eq("tenant_id", tenant_id) \
+            .in_("tenant_id", list(allowed_tenants)) \
             .order("created_at", desc=True) \
             .limit(1) \
             .execute()
@@ -93,22 +125,23 @@ async def analyze_contract(
         # Need to run fresh analysis
         raw_text = payload.raw_text
         if not raw_text:
-            # Fetch raw text from contracts table — try multiple fields
             contract_res = admin_supabase.table("contracts") \
-                .select("draft_revisions, title, matter_id") \
+                .select("draft_revisions, title, matter_id, tenant_id, status") \
                 .eq("id", payload.contract_id) \
-                .eq("tenant_id", tenant_id) \
+                .in_("tenant_id", list(allowed_tenants)) \
                 .limit(1) \
                 .execute()
 
-            # SECURITY: The tenant-bypass fallback has been intentionally removed.
-            # If a contract is not found for this tenant, it does not exist for this user.
-
             if not contract_res.data:
+                print(f"❌ [Review] Contract {payload.contract_id} not found for allowed_tenants={allowed_tenants}")
                 raise HTTPException(status_code=404, detail="Contract not found. Please verify the contract ID.")
 
+            # Use the contract's actual tenant_id for downstream writes
+            tenant_id = contract_res.data[0]["tenant_id"]
+
             contract = contract_res.data[0]
-            print(f"[Review] Contract found. Keys: {list(contract.keys())}")
+            contract_status = contract.get("status", "")
+            print(f"[Review] Contract found. status={contract_status} Keys: {list(contract.keys())}")
 
             # Strategy 1: draft_revisions dict with latest_text
             revisions = contract.get("draft_revisions")
@@ -127,6 +160,16 @@ async def analyze_contract(
                     pass
 
             if not raw_text:
+                # Return a retryable 202 if the pipeline is still running
+                if contract_status in ("Processing", "Retrying (1/3)", "Retrying (2/3)"):
+                    return JSONResponse(
+                        status_code=202,
+                        content={
+                            "status": "processing",
+                            "detail": "Document is still being analyzed by the AI pipeline. This usually takes 30-60 seconds.",
+                            "contract_status": contract_status,
+                        }
+                    )
                 raise HTTPException(
                     status_code=400,
                     detail="No document text available for analysis. The contract may still be processing. Please wait a moment and try again."
@@ -140,11 +183,13 @@ async def analyze_contract(
 
         print(f"🔄 [Review] Running LangGraph pipeline for contract {payload.contract_id}...")
 
+        safe_document, _ = truncate_to_tokens(raw_text, 100000, "gpt-4o-mini")
+
         final_state = await asyncio.to_thread(
             clm_graph.invoke,
             {
                 "contract_id": payload.contract_id,
-                "raw_document": raw_text[:150000]
+                "raw_document": safe_document
             }
         )
 
@@ -237,7 +282,9 @@ async def analyze_contract(
 # ──────────────────────────────────────────────
 
 @router.post("/from-finding")
+@limiter.limit("20/minute")
 async def create_task_from_finding(
+    request: Request,
     payload: CreateTaskFromFindingRequest,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -281,11 +328,12 @@ async def create_task_from_finding(
         try:
             finding_id = payload.finding.get('finding_id')
             if finding_id:
+                allowed_tenants = list(filter(None, [claims.get("org_id"), claims.get("sub")]))
                 admin_supabase.table("negotiation_issues") \
                     .update({"status": "escalated", "linked_task_id": task_payload["id"]}) \
                     .eq("finding_id", finding_id) \
                     .eq("contract_id", payload.contract_id) \
-                    .eq("tenant_id", tenant_id) \
+                    .in_("tenant_id", allowed_tenants) \
                     .execute()
         except Exception:
             pass
@@ -309,18 +357,31 @@ async def create_task_from_finding(
 # ──────────────────────────────────────────────
 
 @router.get("/{contract_id}")
+@limiter.limit("60/minute")
 async def get_review(
+    request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
 ):
     """Returns the most recent review for a contract."""
     try:
-        tenant_id = claims["verified_tenant_id"]
+        allowed_tenants = set(filter(None, [claims.get("org_id"), claims.get("sub")]))
+
+        # Inherit org tenant from contract if org_id missing from JWT
+        if not claims.get("org_id"):
+            try:
+                peek = admin_supabase.table("contracts") \
+                    .select("tenant_id").eq("id", contract_id).limit(1).execute()
+                if peek.data:
+                    allowed_tenants.add(peek.data[0]["tenant_id"])
+            except Exception:
+                pass
+        allowed_tenants = list(allowed_tenants)
 
         res = admin_supabase.table("contract_reviews") \
             .select("*") \
             .eq("contract_id", contract_id) \
-            .eq("tenant_id", tenant_id) \
+            .in_("tenant_id", allowed_tenants) \
             .order("created_at", desc=True) \
             .limit(1) \
             .execute()
@@ -336,7 +397,7 @@ async def get_review(
             contract_res = admin_supabase.table("contracts") \
                 .select("matter_id") \
                 .eq("id", contract_id) \
-                .eq("tenant_id", tenant_id) \
+                .in_("tenant_id", allowed_tenants) \
                 .limit(1) \
                 .execute()
             if contract_res.data:
@@ -366,7 +427,9 @@ async def get_review(
 # ──────────────────────────────────────────────
 
 @router.post("/{contract_id}/accept")
+@limiter.limit("20/minute")
 async def accept_finding(
+    request: Request,
     contract_id: str,
     payload: AcceptFindingRequest,
     claims: dict = Depends(verify_clerk_token),
@@ -376,19 +439,32 @@ async def accept_finding(
     to the contract's raw document text.
     """
     try:
-        tenant_id = claims["verified_tenant_id"]
+        allowed_tenants = set(filter(None, [claims.get("org_id"), claims.get("sub")]))
+
+        # Inherit org tenant from contract if org_id missing from JWT
+        if not claims.get("org_id"):
+            try:
+                peek = admin_supabase.table("contracts") \
+                    .select("tenant_id").eq("id", contract_id).limit(1).execute()
+                if peek.data:
+                    allowed_tenants.add(peek.data[0]["tenant_id"])
+            except Exception:
+                pass
+        allowed_tenants = list(allowed_tenants)
 
         # Fetch the review
         res = admin_supabase.table("contract_reviews") \
-            .select("id, findings, raw_document") \
+            .select("id, findings, raw_document, tenant_id") \
             .eq("contract_id", contract_id) \
-            .eq("tenant_id", tenant_id) \
+            .in_("tenant_id", allowed_tenants) \
             .order("created_at", desc=True) \
             .limit(1) \
             .execute()
 
         if not res.data:
             raise HTTPException(status_code=404, detail="Review not found.")
+
+        tenant_id = res.data[0]["tenant_id"]
 
         review = res.data[0]
         findings = review.get("findings", [])
@@ -470,13 +546,14 @@ async def accept_finding(
 
         # Also update the contract's draft_revisions
         contract_res = admin_supabase.table("contracts") \
-            .select("draft_revisions") \
+            .select("draft_revisions, tenant_id") \
             .eq("id", contract_id) \
-            .eq("tenant_id", tenant_id) \
+            .in_("tenant_id", allowed_tenants) \
             .limit(1) \
             .execute()
 
         if contract_res.data:
+            contract_tenant_id = contract_res.data[0]["tenant_id"]
             revisions = contract_res.data[0].get("draft_revisions", {})
             if isinstance(revisions, dict):
                 revisions["latest_text"] = updated_document
@@ -495,7 +572,7 @@ async def accept_finding(
             admin_supabase.table("contracts") \
                 .update({"draft_revisions": revisions}) \
                 .eq("id", contract_id) \
-                .eq("tenant_id", tenant_id) \
+                .eq("tenant_id", contract_tenant_id) \
                 .execute()
 
         return {

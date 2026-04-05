@@ -5,9 +5,10 @@ Handles:
   - POST /api/v1/templates         → Create a new SOP template
 """
 import traceback
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from supabase import Client
 
+from app.rate_limiter import limiter
 from app.dependencies import verify_clerk_token, get_tenant_supabase
 from app.schemas import TemplateCreateRequest
 
@@ -15,8 +16,10 @@ router = APIRouter()
 
 
 @router.post("/templates")
+@limiter.limit("20/minute")
 async def create_template(
-    request: TemplateCreateRequest,
+    request: Request,
+    body: TemplateCreateRequest,
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase)
 ):
@@ -25,8 +28,8 @@ async def create_template(
 
         header_payload = {
             "tenant_id": tenant_id,
-            "name": request.name,
-            "matter_type": request.matter_type
+            "name": body.name,
+            "matter_type": body.matter_type
         }
         
         header_res = supabase.table("task_templates").insert({**header_payload, "tenant_id": tenant_id}).execute()
@@ -36,9 +39,9 @@ async def create_template(
             
         template_id = header_res.data[0]["id"]
         
-        if request.items:
+        if body.items:
             items_payload = []
-            for item in request.items:
+            for item in body.items:
                 items_payload.append({
                     "tenant_id": tenant_id,
                     "template_id": template_id,

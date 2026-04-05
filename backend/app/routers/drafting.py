@@ -11,10 +11,11 @@ import asyncio
 import json
 import uuid
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from supabase import Client
 
 from app.config import openai_client, admin_supabase
+from app.rate_limiter import limiter
 from app.dependencies import verify_clerk_token
 from app.schemas import DraftGenerateRequest, DraftAuditRequest, DraftChatRequest, DraftSaveRequest
 from app.routers.contracts import process_contract_background
@@ -27,7 +28,9 @@ router = APIRouter()
 # =====================================================================
 
 @router.post("/generate")
+@limiter.limit("20/minute")
 async def generate_draft(
+    request: Request,
     payload: DraftGenerateRequest,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -78,7 +81,9 @@ async def generate_draft(
 # =====================================================================
 
 @router.post("/audit")
+@limiter.limit("20/minute")
 async def audit_draft(
+    request: Request,
     payload: DraftAuditRequest,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -199,7 +204,9 @@ def get_clause_search_tool(tenant_id: str):
 # =====================================================================
 
 @router.post("/chat")
+@limiter.limit("20/minute")
 async def draft_chat(
+    request: Request,
     payload: DraftChatRequest,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -275,7 +282,9 @@ async def draft_chat(
 # =====================================================================
 
 @router.post("/save")
+@limiter.limit("20/minute")
 async def save_draft(
+    request: Request,
     payload: DraftSaveRequest,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -334,7 +343,9 @@ async def save_draft(
 # =====================================================================
 
 @router.get("/load/{matter_id}")
+@limiter.limit("60/minute")
 async def load_draft(
+    request: Request,
     matter_id: str,
     claims: dict = Depends(verify_clerk_token),
     contract_id: str | None = None,
@@ -417,7 +428,9 @@ async def load_draft(
 from app.schemas import ApplySuggestionRequest
 
 @router.post("/apply-suggestion")
+@limiter.limit("20/minute")
 async def apply_suggestion(
+    request: Request,
     payload: ApplySuggestionRequest,
     claims: dict = Depends(verify_clerk_token),
 ):

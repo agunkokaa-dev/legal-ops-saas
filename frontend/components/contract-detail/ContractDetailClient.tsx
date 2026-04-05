@@ -340,6 +340,9 @@ export default function ContractDetailClient({
     }, [contract?.status, parsedDraftText, isLockedForReview]);
 
     const [liveContract, setLiveContract] = useState(contract);
+    const [taskError, setTaskError] = useState<{ error_summary: string; error_log_id: string | null; attempt?: number } | null>(null);
+    const [errorLogDetail, setErrorLogDetail] = useState<any>(null);
+    const [showDetailedLog, setShowDetailedLog] = useState(false);
 
     // Auto-polling for status updates
     useEffect(() => {
@@ -348,7 +351,6 @@ export default function ContractDetailClient({
 
         const checkStatus = async () => {
             try {
-                // Inline Supabase fetch to avoid dependency issues
                 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
                 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
                 const headers = { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` };
@@ -359,31 +361,65 @@ export default function ContractDetailClient({
                 if (data && data.status !== liveContract.status) {
                     setLiveContract(data);
 
-                    const newStatus = data.status.toLowerCase();
-                    if (!newStatus.includes('processing') && !newStatus.includes('ingesting')) {
-                        toast.success("✅ AI Analysis Complete. The War Room is ready.", {
+                    const newStatus = (data.status || '').toLowerCase();
+                    const isFailed = newStatus === 'failed';
+                    const isRetrying = newStatus.startsWith('retrying');
+
+                    if (isFailed) {
+                        // Extract error info from draft_revisions field
+                        const dr = data.draft_revisions;
+                        const errorLogId = dr?.error_log_id || null;
+                        const errorSummary = dr?.error_summary || 'An unknown error occurred during AI analysis.';
+                        setTaskError({ error_summary: errorSummary, error_log_id: errorLogId });
+                        toast.error('AI Analysis Failed. See the error panel for details.', {
+                            style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' }
+                        });
+                        clearInterval(interval);
+                    } else if (isRetrying) {
+                        toast.loading(`Retrying analysis... (${data.status})`, {
+                            id: 'retry-toast',
                             style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
                         });
+                    } else if (!newStatus.includes('processing') && !newStatus.includes('ingesting') && !newStatus.includes('in progress')) {
+                        toast.success('✅ AI Analysis Complete. The War Room is ready.', {
+                            style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+                        });
+                        clearInterval(interval);
                         router.refresh();
                     }
                 }
             } catch (err) {
-                console.error("Polling error:", err);
+                console.error('Polling error:', err);
             }
         };
 
-        const isProcessing = liveContract?.status?.toLowerCase().includes('processing') ||
-            liveContract?.status?.toLowerCase().includes('ingesting') ||
-            liveContract?.status === 'In Progress';
+        const isProcessing = ['processing', 'ingesting', 'in progress'].some(
+            s => liveContract?.status?.toLowerCase().includes(s)
+        ) || liveContract?.status?.toLowerCase().startsWith('retrying');
 
         if (isProcessing) {
             interval = setInterval(checkStatus, 3000);
         }
 
-        return () => {
-            if (interval) clearInterval(interval);
-        };
+        return () => { if (interval) clearInterval(interval); };
     }, [liveContract?.status, liveContract?.id, router]);
+
+    // Fetch full error log detail on demand
+    const fetchErrorLogDetail = useCallback(async (logId: string) => {
+        try {
+            const token = await getToken();
+            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            const res = await fetch(`${apiUrl}/api/task-logs/${logId}`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setErrorLogDetail(data.log);
+            }
+        } catch (e) {
+            console.error('Failed to fetch error log:', e);
+        }
+    }, [getToken]);
 
 
     const handleUploadV2 = async (file: File) => {
@@ -418,8 +454,94 @@ export default function ContractDetailClient({
 
     const [dropdownOpen, setDropdownOpen] = useState(false);
 
+    // ── Failed State Panel ──
+    const FailedStatePanel = () => (
+        <div className="w-full h-full flex flex-col items-center justify-center bg-[#0d0d0d] p-8">
+            <div className="max-w-lg w-full">
+                {/* Error Header */}
+                <div className="flex items-center gap-3 mb-6">
+                    <div className="w-10 h-10 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center">
+                        <span className="material-symbols-outlined text-red-400 text-xl">error</span>
+                    </div>
+                    <div>
+                        <h3 className="text-white font-bold text-base">AI Analysis Failed</h3>
+                        <p className="text-neutral-500 text-xs">The pipeline encountered an error during processing</p>
+                    </div>
+                </div>
+
+                {/* Error Summary */}
+                <div className="bg-red-950/20 border border-red-500/20 rounded-lg p-4 mb-4">
+                    <p className="text-red-300 text-sm font-mono leading-relaxed">
+                        {taskError?.error_summary || 'Unknown error occurred.'}
+                    </p>
+                </div>
+
+                {/* Agent Progress (if log detail loaded) */}
+                {errorLogDetail?.agent_progress && errorLogDetail.agent_progress.length > 0 && (
+                    <div className="mb-4">
+                        <p className="text-neutral-500 text-xs uppercase tracking-widest mb-2">Pipeline Progress</p>
+                        <div className="space-y-1">
+                            {errorLogDetail.agent_progress.map((step: any, i: number) => (
+                                <div key={i} className="flex items-center gap-2 text-xs">
+                                    <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                                        step.status === 'completed' ? 'bg-green-500' :
+                                        step.status === 'failed' || step.status === 'failed_with_fallback' ? 'bg-red-500' :
+                                        step.status === 'running' ? 'bg-yellow-500 animate-pulse' : 'bg-neutral-600'
+                                    }`} />
+                                    <span className="text-neutral-400 capitalize">{step.agent.replace(/_/g, ' ')}</span>
+                                    {step.duration_ms && <span className="text-neutral-600 ml-auto">{(step.duration_ms / 1000).toFixed(1)}s</span>}
+                                    {step.error && <span className="text-red-400 ml-2 truncate max-w-[200px]">{step.error}</span>}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* Actions */}
+                <div className="flex gap-2">
+                    <button
+                        onClick={() => router.push(`/dashboard/contracts/${liveContract.id}`)}
+                        className="flex-1 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-white bg-neutral-800 hover:bg-neutral-700 rounded border border-neutral-700 transition-colors"
+                    >
+                        Retry Upload
+                    </button>
+                    {taskError?.error_log_id && !errorLogDetail && (
+                        <button
+                            onClick={() => {
+                                setShowDetailedLog(true);
+                                fetchErrorLogDetail(taskError.error_log_id!);
+                            }}
+                            className="flex-1 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-neutral-300 hover:text-white bg-neutral-900 hover:bg-neutral-800 rounded border border-neutral-700 transition-colors"
+                        >
+                            View Full Log
+                        </button>
+                    )}
+                </div>
+
+                {/* Error Traceback (collapsed behind button) */}
+                {showDetailedLog && errorLogDetail && (
+                    <div className="mt-4">
+                        <p className="text-neutral-500 text-xs uppercase tracking-widest mb-2">Error Traceback</p>
+                        <pre className="bg-black/50 border border-neutral-800 rounded p-3 text-[10px] text-red-300/80 overflow-auto max-h-48 font-mono whitespace-pre-wrap">
+                            {errorLogDetail.error_traceback || errorLogDetail.error_message || 'No traceback available.'}
+                        </pre>
+                        <p className="text-neutral-600 text-[10px] mt-2">Log ID: {taskError?.error_log_id}</p>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+
     return (
         <div className="flex flex-col h-full w-full overflow-hidden">
+            {liveContract?.is_truncated && (
+                <div className="w-full bg-yellow-500/20 border-b border-yellow-500/50 p-2 flex items-center justify-center gap-2">
+                    <span className="material-symbols-outlined text-yellow-500 text-sm">warning</span>
+                    <p className="text-yellow-500 text-xs font-bold uppercase tracking-wide">
+                        Warning: This document is exceptionally large. Only the first ~100,000 words were analyzed by the AI.
+                    </p>
+                </div>
+            )}
             <ContractHeader
                 initialContract={liveContract}
                 formattedDate={formattedDate}
@@ -499,7 +621,9 @@ export default function ContractDetailClient({
                 <div className="flex-1 h-full min-w-0 overflow-hidden relative">
 
 
-                    {isLockedForReview ? (
+                    {liveContract?.status?.toLowerCase() === 'failed' || taskError ? (
+                        <FailedStatePanel />
+                    ) : isLockedForReview ? (
                         <div
                             ref={markdownContainerRef}
                             className="w-full h-full overflow-y-auto p-12 bg-[#121212] flex justify-center custom-scrollbar items-start relative [&_::selection]:bg-yellow-200 [&_::selection]:text-black"

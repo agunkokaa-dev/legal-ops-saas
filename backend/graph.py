@@ -13,6 +13,13 @@ load_dotenv()
 # Initialize OpenAI client
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Qdrant client for national law RAG retrieval
+from qdrant_client import QdrantClient
+from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+_qdrant_url = os.getenv("QDRANT_URL", "http://qdrant:6333")
+_qdrant = QdrantClient(url=_qdrant_url)
+NATIONAL_LAWS_COLLECTION = "id_national_laws"
+
 from pydantic import BaseModel, Field
 
 # Import the V2 coordinate-aware schemas
@@ -84,6 +91,7 @@ class ContractState(TypedDict):
     review_findings: list           # Unified ReviewFinding dicts (set by aggregator)
     quick_insights: list            # QuickInsight dicts (set by aggregator)
     banner: dict                    # BannerData dict (set by aggregator)
+    _task_logger: Any               # Optional TaskLogger instance (injected by contracts.py)
 
 
 # ==========================================
@@ -114,6 +122,8 @@ def ingestion_agent(state: ContractState) -> ContractState:
     Returns: contract_value, currency, end_date, and populated extracted_clauses.
     """
     print(f"[Agent 01: Ingestion] Processing contract: {state.get('contract_id', 'Unknown')}")
+    _logger = state.get('_task_logger')
+    if _logger: _logger.log_agent_start('ingestion')
 
     prompt = f"""
     You are an expert Legal Document Parser.
@@ -142,6 +152,7 @@ def ingestion_agent(state: ContractState) -> ContractState:
         result = response.choices[0].message.parsed
         clauses_dict = {c.clause_name: c.clause_text for c in result.extracted_clauses} if result.extracted_clauses else {}
         print(f"[Agent 01] Extracted: value={result.contract_value}, currency={result.currency}, end_date={result.end_date}")
+        if _logger: _logger.log_agent_complete('ingestion', {'currency': result.currency, 'clauses_found': len(clauses_dict)})
         return {
             "contract_value": result.contract_value,
             "currency": result.currency,
@@ -155,6 +166,7 @@ def ingestion_agent(state: ContractState) -> ContractState:
         print(f"Ingestion Agent Error: {e}")
         import traceback
         traceback.print_exc()
+        if _logger: _logger.log_agent_failed('ingestion', e)
         return {"contract_value": 0.0, "currency": "IDR", "end_date": "Error", "effective_date": None, "jurisdiction": None, "governing_law": None, "extracted_clauses": {}}
 
 
@@ -164,15 +176,56 @@ def ingestion_agent(state: ContractState) -> ContractState:
 def compliance_agent(state: ContractState) -> ContractState:
     """
     AGENT 02: Audits the contract for legal compliance violations.
+    Now enhanced with Indonesian national law RAG retrieval.
     Returns both legacy compliance_issues AND coordinate-mapped compliance_findings_v2.
     """
+    _logger = state.get('_task_logger')
+    if _logger: _logger.log_agent_start('compliance')
     print("[Agent 02: Compliance] Auditing clauses for compliance violations...")
 
     raw_doc = state.get('raw_document', '')
     clauses = state.get('extracted_clauses', {})
 
+    # ── National Law RAG Retrieval ──
+    law_context = ""
+    try:
+        # Check if collection exists before querying
+        existing_cols = [c.name for c in _qdrant.get_collections().collections]
+        if NATIONAL_LAWS_COLLECTION in existing_cols:
+            # Embed a summary of the contract for semantic search
+            contract_summary = raw_doc[:3000]
+            embed_resp = client.embeddings.create(
+                input=contract_summary, model="text-embedding-3-small"
+            )
+            query_vector = embed_resp.data[0].embedding
+
+            # Search national laws — NO tenant filter (global corpus)
+            hits = _qdrant.query_points(
+                collection_name=NATIONAL_LAWS_COLLECTION,
+                query=query_vector,
+                query_filter=Filter(
+                    must=[FieldCondition(key="is_active", match=MatchValue(value=True))]
+                ),
+                limit=15,
+                with_payload=True,
+            )
+
+            if hits.points:
+                law_context = "\n\nRELEVANT INDONESIAN LAW PROVISIONS (from id_national_laws corpus):\n"
+                for hit in hits.points:
+                    p = hit.payload
+                    law_context += (
+                        f"--- [{p.get('source_law_short', '')} Pasal {p.get('pasal', '')}] ---\n"
+                        f"{p.get('text', '')}\n\n"
+                    )
+                print(f"[Agent 02] Retrieved {len(hits.points)} national law provisions for context.")
+        else:
+            print(f"[Agent 02] Collection '{NATIONAL_LAWS_COLLECTION}' not found — skipping law RAG.")
+    except Exception as e:
+        print(f"[Agent 02] National law retrieval failed (non-fatal): {e}")
+
     prompt = f"""
-    You are a Senior Legal Compliance Auditor with strict corporate guidelines.
+    You are a Senior Legal Compliance Auditor with deep expertise in Indonesian law.
     Review the following contract and identify any risks.
 
     CRITICAL CORPORATE PLAYBOOK RULES:
@@ -180,7 +233,19 @@ def compliance_agent(state: ContractState) -> ContractState:
     2. MISSING TERMS: If the document is missing a clear termination clause, liability cap, or governing law, flag it.
     3. BIASED TERMS: Flag any heavily biased or commercially unreasonable terms.
 
+    INDONESIAN LAW COMPLIANCE (CRITICAL):
+    4. LANGUAGE REQUIREMENT: Check if the contract involves an Indonesian party. If so, Pasal 31 UU 24/2009 mandates Bahasa Indonesia. Flag if contract is only in English.
+    5. DATA PROTECTION: If the contract involves personal data processing, check compliance with UU 27/2022 (PDP Law) — consent, breach notification (3x24h), cross-border transfer, DPO requirements.
+    6. EMPLOYMENT: If the contract is a PKWT (fixed-term), verify it complies with UU 6/2023 — max 5 year duration, non-permanent work only, compensation obligation.
+
+    STATUTORY VIOLATION CATEGORY:
+    When you find a violation of a SPECIFIC Indonesian law provision, you MUST:
+    - Set category to "Statutory Violation"
+    - ALWAYS cite the exact pasal number in your issue description (e.g., "Pasal 31 UU 24/2009")
+    - Quote the relevant statutory text in your issue description
+
     {COORDINATE_INSTRUCTION}
+    {law_context}
 
     FULL CONTRACT TEXT:
     {raw_doc}
@@ -193,7 +258,7 @@ def compliance_agent(state: ContractState) -> ContractState:
         response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a legal compliance engine that outputs structured findings with exact text coordinates."},
+                {"role": "system", "content": "You are a legal compliance engine that outputs structured findings with exact text coordinates. You have deep knowledge of Indonesian law and MUST cite specific pasal numbers when identifying statutory violations."},
                 {"role": "user", "content": prompt}
             ],
             response_format=ComplianceAuditV2
@@ -207,6 +272,10 @@ def compliance_agent(state: ContractState) -> ContractState:
         v2_findings = [f.model_dump() for f in result.findings]
 
         print(f"[Agent 02] Found {len(v2_findings)} compliance findings with coordinates.")
+        statutory_count = sum(1 for f in result.findings if f.category == "Statutory Violation")
+        if statutory_count:
+            print(f"[Agent 02] Including {statutory_count} Statutory Violation(s) citing Indonesian law.")
+        if _logger: _logger.log_agent_complete('compliance', {'v2_findings': len(v2_findings), 'statutory_violations': statutory_count})
         return {
             "compliance_issues": legacy_issues,
             "compliance_findings_v2": v2_findings
@@ -227,6 +296,8 @@ def risk_agent(state: ContractState) -> ContractState:
     AGENT 03: Evaluates compliance issues and assigns risk score + severity-coded flags.
     Returns both legacy risk_flags AND coordinate-mapped risk_flags_v2.
     """
+    _logger = state.get('_task_logger')
+    if _logger: _logger.log_agent_start('risk')
     print("[Agent 03: Risk] Calculating overall contract risk score...")
 
     raw_doc = state.get('raw_document', '')
@@ -282,6 +353,7 @@ def risk_agent(state: ContractState) -> ContractState:
         v2_flags = [f.model_dump() for f in result.risk_flags]
 
         print(f"[Agent 03] Risk Score: {score}, Level: {risk_level}, Flags: {len(v2_flags)}")
+        if _logger: _logger.log_agent_complete('risk', {'score': score, 'level': risk_level})
         return {
             "risk_score": score,
             "risk_level": risk_level,
@@ -300,10 +372,13 @@ def negotiation_agent(state: ContractState) -> ContractState:
     """
     AGENT 04: Formulates a BATNA-based negotiation strategy.
     """
+    _logger = state.get('_task_logger')
+    if _logger: _logger.log_agent_start('negotiation')
     print("[Agent 04: Negotiation] Formulating BATNA-based negotiation strategy...")
 
     issues = state.get('compliance_issues', [])
     flags = state.get('risk_flags', [])
+    raw_doc_sample = state.get('raw_document', '')[:5000]
 
     prompt = f"""
     You are an expert Corporate Negotiation Strategist.
@@ -311,6 +386,14 @@ def negotiation_agent(state: ContractState) -> ContractState:
     Provide a robust, professional counter_proposal strategy.
 
     Return pure JSON with a single key 'counter_proposal' mapping to a detailed string.
+
+    CRITICAL LANGUAGE INSTRUCTION (LANGUAGE MIRRORING):
+    You MUST detect the language of the 'FULL CONTRACT TEXT'. 
+    Your output (strategy, reasoning, and specifically the drafted rewrite/redline) MUST be in the EXACT SAME LANGUAGE as the source contract. 
+    If the contract is written in Indonesian (Bahasa Indonesia), your suggested clauses and explanations MUST be written in formal, legal Indonesian (Bahasa Indonesia baku yang sesuai dengan standar hukum). DO NOT output English redlines for an Indonesian contract.
+
+    FULL CONTRACT TEXT (Sample):
+    {raw_doc_sample}
 
     COMPLIANCE ISSUES:
     {json.dumps(issues)}
@@ -328,6 +411,7 @@ def negotiation_agent(state: ContractState) -> ContractState:
             response_format=NegotiationStrategy
         )
         result = response.choices[0].message.parsed
+        if _logger: _logger.log_agent_complete('negotiation')
         return {"counter_proposal": result.counter_proposal}
     except Exception as e:
         print(f"Negotiation Agent Error: {e}")
@@ -341,12 +425,13 @@ def drafting_agent(state: ContractState) -> ContractState:
     """
     AGENT 05: Rewrites risky clauses with exact coordinate mapping.
     """
+    _logger = state.get('_task_logger')
+    if _logger: _logger.log_agent_start('drafting')
     print("[Agent 05: Drafting] Rewriting risky clauses to neutral/fair versions...")
 
     raw_doc = state.get('raw_document', '')
     strategy = state.get('counter_proposal', '')
     issues = state.get('compliance_issues', [])
-
     prompt = f"""
     You are a Senior Contract Drafter.
     Based on the following negotiation strategy and compliance issues, rewrite the problematic clauses into "Fair/Neutral" B2B versions.
@@ -355,6 +440,11 @@ def drafting_agent(state: ContractState) -> ContractState:
     - Quote the EXACT original clause text from the contract (source_text)
     - Provide the character offsets where the original text is found
     - Provide your neutral rewrite
+
+    CRITICAL LANGUAGE INSTRUCTION (LANGUAGE MIRRORING):
+    You MUST detect the language of the 'FULL CONTRACT TEXT'. 
+    Your output (strategy, reasoning, and specifically the drafted rewrite/redline) MUST be in the EXACT SAME LANGUAGE as the source contract. 
+    If the contract is written in Indonesian (Bahasa Indonesia), your suggested clauses and explanations MUST be written in formal, legal Indonesian (Bahasa Indonesia baku yang sesuai dengan standar hukum). DO NOT output English redlines for an Indonesian contract.
 
     {COORDINATE_INSTRUCTION}
 
@@ -383,6 +473,7 @@ def drafting_agent(state: ContractState) -> ContractState:
         v2_revisions = [r.model_dump() for r in result.draft_revisions]
 
         print(f"[Agent 05] Generated {len(v2_revisions)} coordinate-mapped revisions.")
+        if _logger: _logger.log_agent_complete('drafting', {'revisions': len(v2_revisions)})
         return {
             "draft_revisions": legacy_revisions,
             "draft_revisions_v2": v2_revisions
@@ -399,6 +490,8 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
     """
     AGENT 06: Mines the raw document for contractual obligations with coordinates.
     """
+    _logger = state.get('_task_logger')
+    if _logger: _logger.log_agent_start('obligation_miner')
     print("[Agent 06: Obligation Miner] Extracting contractual obligations...")
 
     raw_doc = state.get('raw_document', '')
@@ -439,6 +532,7 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
         v2_obligations = [o.model_dump() for o in result.obligations]
 
         print(f"[Agent 06] Extracted {len(v2_obligations)} obligations with coordinates.")
+        if _logger: _logger.log_agent_complete('obligation_miner', {'obligations': len(v2_obligations)})
         return {
             "extracted_obligations": legacy_obligations,
             "obligations_v2": v2_obligations
@@ -455,6 +549,8 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
     """
     AGENT 07: Classifies key clauses with coordinates.
     """
+    _logger = state.get('_task_logger')
+    if _logger: _logger.log_agent_start('clause_classifier')
     print("[Agent 07: Clause Classifier] Classifying key contract clauses...")
 
     raw_doc = state.get('raw_document', '')
@@ -500,6 +596,7 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
         v2_clauses = [c.model_dump() for c in result.clauses]
 
         print(f"[Agent 07] Classified {len(v2_clauses)} clauses with coordinates.")
+        if _logger: _logger.log_agent_complete('clause_classifier', {'clauses': len(v2_clauses)})
         return {
             "classified_clauses": legacy_clauses,
             "classified_clauses_v2": v2_clauses
@@ -518,6 +615,8 @@ def review_aggregator(state: ContractState) -> ContractState:
     ReviewFinding format, computes the BannerData, and builds QuickInsights.
     This is the final node before END.
     """
+    _logger = state.get('_task_logger')
+    if _logger: _logger.log_agent_start('review_aggregator')
     print("[Review Aggregator] Merging all agent outputs into unified review format...")
 
     raw_doc = state.get('raw_document', '')
@@ -525,7 +624,7 @@ def review_aggregator(state: ContractState) -> ContractState:
 
     # ── 1. Merge Compliance Findings → ReviewFinding ──
     for cf in state.get('compliance_findings_v2', []):
-        severity = "critical" if cf.get("category") in ("Order of Precedence", "Missing Clause") else "warning"
+        severity = "critical" if cf.get("category") in ("Order of Precedence", "Missing Clause", "Statutory Violation") else "warning"
         findings.append(ReviewFinding(
             severity=severity,
             category=f"Compliance: {cf.get('category', 'General')}",
@@ -652,6 +751,7 @@ def review_aggregator(state: ContractState) -> ContractState:
         ).model_dump())
 
     print(f"[Review Aggregator] Aggregated {len(findings)} findings, {len(quick_insights)} quick insights.")
+    if _logger: _logger.log_agent_complete('review_aggregator', {'findings': len(findings), 'quick_insights': len(quick_insights)})
     return {
         "review_findings": findings,
         "quick_insights": quick_insights,

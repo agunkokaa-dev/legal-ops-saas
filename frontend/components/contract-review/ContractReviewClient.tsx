@@ -116,14 +116,30 @@ export default function ContractReviewClient({
             }
 
             setLoadingPhase('analyzing')
-            const res = await fetch(`${apiUrl}/api/v1/review/analyze`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`
-                },
-                body: JSON.stringify({ contract_id: contractId })
-            })
+
+            // Poll loop: the backend returns 202 while the ingestion pipeline is still running
+            const MAX_POLL_ATTEMPTS = 20
+            let pollAttempt = 0
+            let res: Response
+
+            while (true) {
+                res = await fetch(`${apiUrl}/api/v1/review/analyze`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ contract_id: contractId })
+                })
+
+                if (res.status === 202 && pollAttempt < MAX_POLL_ATTEMPTS) {
+                    pollAttempt++
+                    // Pipeline still running — wait and retry
+                    await new Promise(r => setTimeout(r, 5000))
+                    continue
+                }
+                break
+            }
 
             if (!res.ok) {
                 const err = await res.json().catch(() => ({}))

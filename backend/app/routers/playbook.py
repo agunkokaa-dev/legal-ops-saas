@@ -5,9 +5,10 @@ Handles:
   - POST /api/playbook/vectorize → Vectorize a playbook rule into Qdrant
 """
 import asyncio
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 
 from app.config import openai_client, qdrant, admin_supabase
+from app.rate_limiter import limiter
 from app.dependencies import verify_clerk_token
 from app.schemas import PlaybookVectorizeRequest
 from qdrant_client.http.models import PointStruct
@@ -29,31 +30,33 @@ async def async_qdrant_upsert(collection: str, points: list):
 
 
 @router.post("/vectorize")
+@limiter.limit("20/minute")
 async def vectorize_playbook_rule(
-    request: PlaybookVectorizeRequest,
+    request: Request,
+    body: PlaybookVectorizeRequest,
     claims: dict = Depends(verify_clerk_token)
 ):
     try:
         tenant_id = claims["verified_tenant_id"]
         
         # NON-BLOCKING Vector Generation
-        vector = await async_embed(request.rule_text)
+        vector = await async_embed(body.rule_text)
         
         # NON-BLOCKING Upsert
         await async_qdrant_upsert(
             collection="company_rules",
             points=[PointStruct(
-                id=request.id, 
+                id=body.id, 
                 vector=vector,
                 payload={
                     "user_id": tenant_id, 
-                    "category": request.category,
-                    "standard_position": request.standard_position,
-                    "fallback_position": request.fallback_position,
-                    "redline": request.redline,
-                    "risk_severity": request.risk_severity,
-                    "rule_text": request.rule_text, 
-                    "rule_id": str(request.id)
+                    "category": body.category,
+                    "standard_position": body.standard_position,
+                    "fallback_position": body.fallback_position,
+                    "redline": body.redline,
+                    "risk_severity": body.risk_severity,
+                    "rule_text": body.rule_text, 
+                    "rule_id": str(body.id)
                 }
             )]
         )
@@ -64,7 +67,8 @@ async def vectorize_playbook_rule(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/categories")
-async def get_playbook_categories(claims: dict = Depends(verify_clerk_token)):
+@limiter.limit("60/minute")
+async def get_playbook_categories(request: Request, claims: dict = Depends(verify_clerk_token)):
     print("🔥 [BACKEND] Endpoint /categories hit!")
     try:
         tenant_id = claims["verified_tenant_id"]

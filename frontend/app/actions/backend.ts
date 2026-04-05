@@ -155,7 +155,8 @@ export async function uploadDocument(formData: FormData) {
 }
 
 // 3. Smart Ingestion Background Action
-export async function triggerSmartIngestion(formData: FormData, matterId: string, contractId: string, parentContractId?: string) {
+// contractId is no longer passed — the backend generates and owns it for fresh uploads.
+export async function triggerSmartIngestion(formData: FormData, matterId: string, contractId?: string, parentContractId?: string) {
     const { userId, orgId, getToken } = await auth()
     const tenantId = orgId || userId
 
@@ -172,12 +173,18 @@ export async function triggerSmartIngestion(formData: FormData, matterId: string
         const token = await getToken()
         const backendFormData = new FormData()
         backendFormData.append('file', file)
-        backendFormData.append('tenant_id', tenantId)
         backendFormData.append('matter_id', matterId)
-        backendFormData.append('contract_id', contractId)
-        if (parentContractId) {
-            backendFormData.append('parent_contract_id', parentContractId)
-        }
+        // Only append contract_id when explicitly provided (e.g. legacy callers)
+        if (contractId) backendFormData.append('contract_id', contractId)
+        if (parentContractId) backendFormData.append('parent_contract_id', parentContractId)
+
+        // Pass through any extra metadata fields from the original formData
+        const documentCategory = formData.get('document_category')
+        const parentId = formData.get('parent_id')
+        const relationshipType = formData.get('relationship_type')
+        if (documentCategory) backendFormData.append('document_category', documentCategory as string)
+        if (parentId) backendFormData.append('parent_id', parentId as string)
+        if (relationshipType) backendFormData.append('relationship_type', relationshipType as string)
 
         const response = await fetch(`${FASTAPI_URL}/api/upload`, {
             method: 'POST',

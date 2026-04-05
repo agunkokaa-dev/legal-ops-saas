@@ -8,9 +8,10 @@ This router is completely isolated from existing matters/tasks endpoints.
 It creates a matter + an initial task in a single transaction-like flow.
 """
 import uuid
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from supabase import Client
 
+from app.rate_limiter import limiter
 from app.dependencies import verify_clerk_token, get_tenant_supabase
 from app.schemas import IntakeRequestCreate
 
@@ -25,7 +26,9 @@ URGENCY_TO_PRIORITY = {
 
 
 @router.post("/intake/request")
+@limiter.limit("20/minute")
 async def submit_intake_request(
+    request: Request,
     payload: IntakeRequestCreate,
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase),
@@ -98,7 +101,9 @@ async def submit_intake_request(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/intake/requests")
+@limiter.limit("60/minute")
 async def get_recent_intake_requests(
+    request: Request,
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase),
 ):

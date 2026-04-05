@@ -23,12 +23,13 @@ import re
 import traceback
 from typing import Any, Dict
 
-from fastapi import APIRouter, Form, HTTPException, Depends
+from fastapi import APIRouter, Form, HTTPException, Depends, Request
 from supabase import Client
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from qdrant_client import models
 
 from app.config import openai_client, qdrant, COLLECTION_NAME, admin_supabase
+from app.rate_limiter import limiter
 from app.dependencies import verify_clerk_token, get_tenant_supabase
 from app.schemas import ClauseAssistantRequest
 
@@ -85,8 +86,54 @@ async def async_qdrant_search(collection: str, vector: list, limit: int, query_f
         logging.error(traceback.format_exc())
         return []
 
-async def async_fetch_full_document(contract_id: str, tenant_id: str, max_chars: int = 8000) -> str:
-    """Offloads the synchronous Qdrant scroll call to fetch the full document text."""
+async def async_fetch_full_document(contract_id: str, tenant_id: str, max_chars: int = 30000) -> str:
+    """
+    Fetches the full document text for a contract.
+
+    Priority order:
+      1. contract_versions.raw_text  (most reliable — stored during ingestion pipeline)
+      2. contracts.draft_revisions->latest_text  (legacy fallback)
+      3. Qdrant vector chunk reconstruction  (last resort — lossy)
+    """
+
+    # ── Strategy 1: contract_versions table (raw_text stored during pipeline) ──
+    try:
+        ver_resp = await asyncio.to_thread(
+            lambda: admin_supabase.table("contract_versions")
+                .select("raw_text")
+                .eq("contract_id", contract_id)
+                .eq("tenant_id", tenant_id)
+                .order("version_number", desc=True)
+                .limit(1)
+                .execute()
+        )
+        if ver_resp.data and ver_resp.data[0].get("raw_text"):
+            raw_text = ver_resp.data[0]["raw_text"]
+            print(f"[RAG] Fetched {len(raw_text)} chars from contract_versions for {contract_id}")
+            return raw_text[:max_chars]
+    except Exception as e:
+        print(f"[RAG] contract_versions lookup failed for {contract_id}: {e}")
+
+    # ── Strategy 2: contracts.draft_revisions.latest_text ──
+    try:
+        contract_resp = await asyncio.to_thread(
+            lambda: admin_supabase.table("contracts")
+                .select("draft_revisions")
+                .eq("id", contract_id)
+                .eq("tenant_id", tenant_id)
+                .limit(1)
+                .execute()
+        )
+        if contract_resp.data:
+            dr = contract_resp.data[0].get("draft_revisions")
+            if isinstance(dr, dict) and dr.get("latest_text"):
+                raw_text = dr["latest_text"]
+                print(f"[RAG] Fetched {len(raw_text)} chars from contracts.draft_revisions for {contract_id}")
+                return raw_text[:max_chars]
+    except Exception as e:
+        print(f"[RAG] contracts.draft_revisions lookup failed for {contract_id}: {e}")
+
+    # ── Strategy 3: Qdrant vector chunk reconstruction (lossy fallback) ──
     try:
         response = await asyncio.to_thread(
             qdrant.scroll,
@@ -95,20 +142,19 @@ async def async_fetch_full_document(contract_id: str, tenant_id: str, max_chars:
                 FieldCondition(key="contract_id", match=MatchValue(value=contract_id)),
                 FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))
             ]),
-            limit=15, # 15 chunks x ~1000 chars = plenty to reach max_chars
+            limit=50,  # More chunks for better coverage
             with_payload=True
         )
         points, _ = response
         points = sorted(points, key=lambda p: p.payload.get("chunk_index", 0))
-        # PERBAIKAN RAG CITATION
         texts_with_meta = []
         for p in points:
-            # Mengambil metadata halaman atau chunk
             page = p.payload.get("page_number", p.payload.get("chunk_index", "Unknown"))
             text_chunk = p.payload.get("text", "")
             texts_with_meta.append(f"[Sumber Dokumen, Bagian/Halaman: {page}]\n{text_chunk}")
             
         full_text = "\n\n".join(texts_with_meta)
+        print(f"[RAG] Fallback: reconstructed {len(full_text)} chars from {len(points)} Qdrant chunks for {contract_id}")
         return full_text[:max_chars]
     except Exception as e:
         import logging
@@ -120,7 +166,9 @@ async def async_fetch_full_document(contract_id: str, tenant_id: str, max_chars:
 # POST /api/chat — Dashboard Portfolio-Wide RAG Chat
 # =====================================================================
 @router.post("/chat")
+@limiter.limit("20/minute")
 async def chat_with_clause(
+    request: Request,
     question: str = Form(...),
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase)
@@ -314,33 +362,27 @@ Anda memiliki 2 tugas aktif di dalam *Backlog* yang membutuhkan perhatian Anda h
 # POST /api/chat/clause-assistant — Contract Detail Deep-Dive
 # =====================================================================
 @router.post("/chat/clause-assistant")
+@limiter.limit("20/minute")
 async def chat_clause_assistant(
-    request: ClauseAssistantRequest,
+    request: Request,
+    body: ClauseAssistantRequest,
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase)
 ):
     try:
         tenant_id = claims["verified_tenant_id"]
 
-        # 1. Fetch Contract Lineage (Genealogy)
-        contract_ids_to_search = []
-        if request.matterId:
-            try:
-                response = supabase.table("contracts").select("id").eq("matter_id", request.matterId).eq("tenant_id", tenant_id).execute()
-                if response.data:
-                    contract_ids_to_search = [record["id"] for record in response.data]
-            except Exception as e:
-                print(f"Failed to fetch lineage: {e}")
+        # 1. Scope: The PRIMARY document is ALWAYS and ONLY body.contractId.
+        #    We never pull in unrelated matter siblings — that causes cross-contamination.
+        primary_contract_id = body.contractId
+        contract_ids_to_search = [primary_contract_id]
 
-        if not contract_ids_to_search:
-            contract_ids_to_search = [request.contractId]
-
-        # GENEALOGY: Expand search scope to include parent documents
-        genealogy_labels = {}  # contract_id -> label like "PARENT (MSA)" or "PRIMARY"
+        # GENEALOGY: Only expand to direct parent (MSA), NOT all matter siblings
+        genealogy_labels = {primary_contract_id: "PRIMARY DOCUMENT"}
         try:
-            rels_resp = admin_supabase.table("document_relationships").select("parent_id, child_id, relationship_type").in_("child_id", contract_ids_to_search).execute()
+            rels_resp = admin_supabase.table("document_relationships").select("parent_id, child_id, relationship_type").eq("child_id", primary_contract_id).execute()
             if rels_resp.data:
-                parent_ids = [r["parent_id"] for r in rels_resp.data if r.get("parent_id") and r["parent_id"] not in contract_ids_to_search]
+                parent_ids = [r["parent_id"] for r in rels_resp.data if r.get("parent_id") and r["parent_id"] != primary_contract_id]
                 for pid in parent_ids:
                     contract_ids_to_search.append(pid)
                     genealogy_labels[pid] = "PARENT DOCUMENT (MSA/Master Agreement)"
@@ -348,10 +390,7 @@ async def chat_clause_assistant(
         except Exception as gen_err:
             print(f"Warning: Genealogy expansion failed: {gen_err}")
 
-        # Mark primary documents
-        for cid in contract_ids_to_search:
-            if cid not in genealogy_labels:
-                genealogy_labels[cid] = "PRIMARY DOCUMENT"
+        print(f"[CLAUSE-ASSISTANT] Scoped to contract_ids: {contract_ids_to_search} (primary={primary_contract_id})")
 
         # Fetch titles
         contract_titles = {}
@@ -381,7 +420,7 @@ async def chat_clause_assistant(
             print(f"Failed to fetch historical context: {err}")
 
         # 3. Embed User Query (NON-BLOCKING)
-        question_vector = await async_embed(request.message)
+        question_vector = await async_embed(body.message)
 
         # 4. Dual RAG Retrieval (NON-BLOCKING, PARALLEL)
         # SECURITY: Contract filter must include tenant_id to prevent cross-tenant vector access
@@ -413,30 +452,32 @@ async def chat_clause_assistant(
         except Exception:
             contract_results, law_results, playbook_results = [], [], []
 
-        # 5. Assemble Context
+        # 5. Assemble Context — PRIMARY document is the single source of truth
         combined_context = ""
         
-        # We need the full text for primary and parent docs.
-        primary_docs = [cid for cid, label in genealogy_labels.items() if "PRIMARY" in label]
+        # Fetch full text: primary is ALWAYS just the active contract
         parent_docs = [cid for cid, label in genealogy_labels.items() if "PARENT" in label]
         
         try:
-            # Fetch full text concurrently
-            primary_tasks = [async_fetch_full_document(cid, tenant_id) for cid in primary_docs]
-            parent_tasks = [async_fetch_full_document(cid, tenant_id) for cid in parent_docs]
-            
-            primary_texts = await asyncio.gather(*primary_tasks)
-            parent_texts = await asyncio.gather(*parent_tasks)
-            
-            for cid, text in zip(primary_docs, primary_texts):
-                combined_context += "=== PRIMARY DOCUMENT (SOW/Child) ===\n"
-                combined_context += f"Title: {contract_titles.get(cid, 'Unknown Document')}\n"
-                combined_context += f"Content: {text}\n\n"
-                
-            for cid, text in zip(parent_docs, parent_texts):
-                combined_context += "=== PARENT DOCUMENT (MSA/Master) ===\n"
-                combined_context += f"Title: {contract_titles.get(cid, 'Unknown Document')}\n"
-                combined_context += f"Content: {text}\n\n"
+            # Fetch primary document text
+            primary_text = await async_fetch_full_document(primary_contract_id, tenant_id)
+            if primary_text:
+                combined_context += "=== PRIMARY DOCUMENT (This is the contract the user is currently viewing) ===\n"
+                combined_context += f"Title: {contract_titles.get(primary_contract_id, 'Unknown Document')}\n"
+                combined_context += f"Content:\n{primary_text}\n\n"
+                combined_context += "=== END OF PRIMARY DOCUMENT ===\n\n"
+            else:
+                combined_context += "=== PRIMARY DOCUMENT: [ERROR — Could not retrieve document text] ===\n\n"
+
+            # Fetch parent documents if any
+            if parent_docs:
+                parent_tasks = [async_fetch_full_document(cid, tenant_id) for cid in parent_docs]
+                parent_texts = await asyncio.gather(*parent_tasks)
+                for cid, text in zip(parent_docs, parent_texts):
+                    if text:
+                        combined_context += "=== PARENT DOCUMENT (MSA/Master Agreement — for cross-reference only) ===\n"
+                        combined_context += f"Title: {contract_titles.get(cid, 'Unknown Document')}\n"
+                        combined_context += f"Content:\n{text}\n\n"
         except Exception as e:
             print(f"Error fetching full document texts: {e}")
 
@@ -465,19 +506,23 @@ async def chat_clause_assistant(
                     f"  Severity: {p.get('risk_severity', 'N/A')}\n\n"
                 )
 
-        combined_context += "CRITICAL INSTRUCTION FOR AI: You now have BOTH documents in their exact raw text form. Do not guess. If the user asks about conflicts (e.g., payment terms), compare the Primary Document directly against the Parent Document above.\n"
-
-        # 6. System Prompt
+        # 6. System Prompt — with strict anti-hallucination guardrails
         system_prompt = f"""You are an elite Indonesian Corporate Lawyer and Contract Negotiator.
-You are provided with three contexts: 'KONTEKS KONTRAK' (client document), 'KONTEKS HUKUM NASIONAL' (Indonesian laws), and 'ATURAN PERUSAHAAN SAAT INI (PLAYBOOK)' (company compliance rules).
+You are analyzing a SPECIFIC contract document provided to you below as the PRIMARY DOCUMENT.
 
-CRITICAL INSTRUCTIONS:
-1. Always base your legal analysis on Indonesian Law.
-2. Check for cross-references between documents in the matter lineage.
-3. Jika pertanyaan pengguna berkaitan dengan batas toleransi, denda, atau kebijakan, Anda WAJIB merujuk pada bagian [ATURAN PERUSAHAAN SAAT INI (PLAYBOOK)]. Laporkan jika dokumen melanggar 'Redline' atau tidak sesuai dengan 'Standard Position'.
-4. WAJIB KUTIP SUMBER: Setiap kali Anda mengambil fakta/pasal dari dokumen, Anda WAJIB mengakhiri kalimat dengan [DOKUMEN: Nama File, HALAMAN: X]. JANGAN MENGARANG HALAMAN JIKA TIDAK ADA.
-5. Format using clean Markdown with bold, bullet points, and numbered lists.
-6. Answer in professional Indonesian, maintaining legal terminology.
+ABSOLUTE RULES — VIOLATION OF THESE MEANS FAILURE:
+1. The PRIMARY DOCUMENT section below is the ONLY contract you are analyzing. It is the single source of truth.
+2. NEVER fabricate, invent, or hallucinate clauses, page numbers, or content that does not exist in the PRIMARY DOCUMENT.
+3. If a clause type (e.g., Dispute Resolution, Indemnity) is NOT present in the PRIMARY DOCUMENT, you MUST say "Klausul ini tidak ditemukan dalam dokumen." DO NOT invent one.
+4. Only cite page numbers if they appear as [Page X] or [Halaman X] markers in the document text. If no page markers exist, do NOT guess page numbers.
+5. If information is insufficient to answer the question, say so honestly. Never compensate with fabricated content.
+
+ANALYSIS INSTRUCTIONS:
+6. Always base your legal analysis on Indonesian Law (KONTEKS HUKUM NASIONAL section).
+7. Jika pertanyaan berkaitan dengan batas toleransi, denda, atau kebijakan, rujuk pada ATURAN PERUSAHAAN (PLAYBOOK). Laporkan jika dokumen melanggar 'Redline'.
+8. WAJIB KUTIP SUMBER: Akhiri kalimat dengan [DOKUMEN: Nama File] saat mengutip dari dokumen.
+9. Format using clean Markdown with bold, bullet points, and numbered lists.
+10. Answer in professional Indonesian, maintaining legal terminology.
 
 HISTORICAL AGENT DATA:
 {historical_context}
@@ -498,7 +543,7 @@ Context:
         print("=========================")
         response = await async_chat_completion([
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": request.message}
+            {"role": "user", "content": body.message}
         ])
 
         return {

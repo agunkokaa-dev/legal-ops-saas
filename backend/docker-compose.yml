@@ -10,6 +10,16 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  # 1.5. Redis for Rate Limiting / Caching
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru
+
   # 2. Logic Backend (FastAPI)
   api:
     build: .
@@ -22,8 +32,11 @@ services:
     environment:
       - QDRANT_URL=http://qdrant:6333
       - CLERK_PEM_KEY=${CLERK_PEM_KEY}
+      - REDIS_URL=redis://redis:6379/0
     depends_on:
       - qdrant
+      - redis
 
 volumes:
   qdrant_data:
+  redis_data:

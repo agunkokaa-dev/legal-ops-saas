@@ -16,8 +16,9 @@ export async function getObligationsByMatter(matterId: string) {
     try {
         const { data, error } = await supabaseAdmin
             .from('contract_obligations')
-            .select('*, contracts!inner(matter_id, title)')
+            .select('*, contracts!inner(matter_id, title, status)')
             .eq('contracts.matter_id', matterId)
+            .neq('contracts.status', 'ARCHIVED')
             .eq('tenant_id', tenantId)
             .order('due_date', { ascending: true, nullsFirst: false })
 
@@ -44,6 +45,7 @@ export async function getPrevailingTerms(matterId: string) {
             .select('id, title, document_category')
             .eq('matter_id', matterId)
             .eq('tenant_id', tenantId)
+            .neq('status', 'ARCHIVED')
 
         if (contractError) throw contractError
         if (!contracts || contracts.length < 2) return { data: null } // Need at least 2 docs for a conflict
@@ -127,8 +129,9 @@ export async function getClauseEvolution(matterId: string, clauseType: string = 
     try {
         const { data, error } = await supabaseAdmin
             .from('contract_clauses')
-            .select('original_text, clause_type, extracted_at, contracts!inner(matter_id, title, created_at)')
+            .select('original_text, clause_type, extracted_at, contracts!inner(matter_id, title, created_at, status)')
             .eq('contracts.matter_id', matterId)
+            .neq('contracts.status', 'ARCHIVED')
             .eq('tenant_id', tenantId)
             .ilike('clause_type', `%${clauseType}%`)
             .order('contracts(created_at)', { ascending: true }) // Oldest to newest timeline

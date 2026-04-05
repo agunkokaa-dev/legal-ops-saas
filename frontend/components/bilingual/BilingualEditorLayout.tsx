@@ -285,30 +285,54 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
 
   return (
     <div className="flex flex-col h-screen bg-[#0a0a0a] text-gray-200 font-sans">
-      {/* Top Toolbar */}
-      <header className="flex items-center justify-between px-6 py-3 border-b border-gray-800 bg-[#111111] shrink-0">
-        <div className="text-sm font-semibold text-gray-300 tracking-wide">Bilingual Contract Editor</div>
+      {/* Top Toolbar (Silent Luxury UI) */}
+      <header className="flex items-center justify-between h-16 w-full px-6 bg-[#0a0a0a] border-b border-zinc-800/40 shrink-0">
+        
+        {/* 1. LEFT SIDE (Document Identity & Context) */}
+        <div className="flex items-center gap-4">
+          <div className="text-white text-lg font-medium leading-tight max-w-[500px] truncate" title="Master Service Agreement between PT Sawit Nusantara and PT Nusantara Investama...">
+            Master Service Agreement between PT Sawit Nusantara and PT Nusantara Investama...
+          </div>
+          
+          <div className="bg-zinc-950/20 border border-zinc-800/60 text-zinc-500 text-[10px] uppercase tracking-wider px-2 py-0.5 rounded">
+            PENDING REVIEW
+          </div>
+          
+          <div className="text-zinc-400 border border-zinc-800 rounded px-2 py-0.5 text-xs hover:border-[#D4AF37]/30 hover:text-white cursor-pointer transition flex items-center gap-1">
+            ID / EN ▾
+          </div>
+        </div>
+
+        {/* 2. RIGHT SIDE (Actions Stack) */}
         <div className="flex items-center gap-3">
+          {/* Functional extension: Keeping the validate button using the new muted style */}
           <button
             onClick={handleValidate}
             disabled={isValidating || clauses.length === 0}
-            className="px-4 py-1.5 text-[10px] font-bold tracking-widest uppercase border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 rounded transition-all disabled:opacity-40"
+            className="text-zinc-400 border border-zinc-700/60 text-xs px-4 py-1.5 rounded-md hover:border-[#D4AF37]/40 hover:text-white transition disabled:opacity-40"
           >
-            {isValidating ? "Validating..." : "Validate Consistency"}
+            {isValidating ? "Validating..." : "Validate Sync"}
           </button>
+
+          {/* Secondary Action (Muted) Requested by Prompter */}
           <button
             onClick={handleExportPDF}
             disabled={isExporting || clauses.length === 0}
-            className="px-4 py-1.5 text-[10px] font-bold tracking-widest uppercase border border-gray-600 text-gray-300 hover:bg-gray-800 rounded transition-all disabled:opacity-40"
+            className="text-zinc-400 border border-zinc-700/60 text-xs px-4 py-1.5 rounded-md hover:border-[#D4AF37]/40 hover:text-white transition disabled:opacity-40"
           >
-            {isExporting ? "Exporting..." : "Export PDF"}
+            Save Draft
           </button>
+
+          {/* Vertical Separator */}
+          <div className="w-px h-6 bg-zinc-800/60"></div>
+
+          {/* Primary Action (Main CTA - Muted Gold) */}
           <button
             onClick={handleFinalize}
             disabled={isFinalizing || clauses.length === 0}
-            className="px-4 py-1.5 text-[10px] font-bold tracking-widest uppercase border border-[#d4af37]/40 text-[#d4af37] hover:bg-[#d4af37]/10 rounded transition-all disabled:opacity-40"
+            className="bg-[#D4AF37] text-black text-xs font-bold px-4 py-1.5 rounded-md hover:bg-[#D4AF37]/90 transition disabled:opacity-40 disabled:hover:bg-[#D4AF37]"
           >
-            {isFinalizing ? "Finalizing..." : "Finalize Contract"}
+            {isFinalizing ? "Generating..." : "Generate Final"}
           </button>
         </div>
       </header>

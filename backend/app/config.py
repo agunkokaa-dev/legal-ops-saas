@@ -6,7 +6,7 @@ import os
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from qdrant_client import QdrantClient
-from qdrant_client.http.models import Distance, VectorParams
+from qdrant_client.http.models import Distance, VectorParams, PayloadSchemaType
 from openai import OpenAI
 
 load_dotenv(override=False)
@@ -54,6 +54,7 @@ admin_supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 qdrant = QdrantClient(url=QDRANT_URL)
 COLLECTION_NAME = "contracts_vectors"
+NATIONAL_LAWS_COLLECTION = "id_national_laws"
 
 # Ensure collections exist on startup
 def init_qdrant_collections():
@@ -74,6 +75,30 @@ def init_qdrant_collections():
             collection_name="clause_library_vectors",
             vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
         )
+    # Global Indonesian national law corpus — NO tenant isolation
+    if NATIONAL_LAWS_COLLECTION not in existing:
+        print(f"[QDRANT] Creating collection: {NATIONAL_LAWS_COLLECTION}")
+        qdrant.create_collection(
+            collection_name=NATIONAL_LAWS_COLLECTION,
+            vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+        )
+        # Payload indexes for efficient filtered retrieval
+        qdrant.create_payload_index(
+            collection_name=NATIONAL_LAWS_COLLECTION,
+            field_name="source_law_short",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        qdrant.create_payload_index(
+            collection_name=NATIONAL_LAWS_COLLECTION,
+            field_name="category",
+            field_schema=PayloadSchemaType.KEYWORD,
+        )
+        qdrant.create_payload_index(
+            collection_name=NATIONAL_LAWS_COLLECTION,
+            field_name="is_active",
+            field_schema=PayloadSchemaType.BOOL,
+        )
+        print(f"[QDRANT] Collection '{NATIONAL_LAWS_COLLECTION}' created with payload indexes.")
 
 # --- OpenAI ---
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))

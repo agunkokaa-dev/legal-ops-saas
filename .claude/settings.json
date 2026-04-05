@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app/routers/review.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('app/routers/contracts.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(python3 delete_ghosts.py)",
+      "Bash(docker compose:*)"
+    ]
+  }
+}

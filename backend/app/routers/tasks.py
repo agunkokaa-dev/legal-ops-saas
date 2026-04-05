@@ -9,12 +9,13 @@ import asyncio
 import traceback
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from supabase import Client
 from qdrant_client.http.models import Filter, FieldCondition, MatchAny
 import json
 
 from app.config import openai_client, qdrant, COLLECTION_NAME, admin_supabase
+from app.rate_limiter import limiter
 from app.dependencies import verify_clerk_token, get_tenant_supabase
 from app.schemas import ApplyTemplateRequest, TaskAssistantRequest
 
@@ -38,6 +39,8 @@ def get_user_tasks_tool_logic(tenant_id: str, supabase: Client) -> str:
             .select("title, status, priority, due_date, source_document_name")
             .eq("tenant_id", tenant_id)
             .neq("status", "done")
+            .neq("status", "archived")
+            .neq("status", "ARCHIVED")
             .order("created_at", desc=True)
             .execute()
         )
@@ -82,6 +85,8 @@ def get_high_risk_contracts_tool_logic(tenant_id: str, supabase: Client) -> str:
             supabase.table("contracts")
             .select("id, title, risk_level, created_at")
             .eq("tenant_id", tenant_id)
+            .neq("status", "archived")
+            .neq("status", "ARCHIVED")
             .execute()
         )
         
@@ -203,7 +208,8 @@ async def async_qdrant_search(collection: str, query_vector: list, limit: int, q
 # =====================================================================
 
 @router.post("/tasks/from-template")
-async def create_tasks_from_template(req: ApplyTemplateRequest, claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
+@limiter.limit("20/minute")
+async def create_tasks_from_template(request: Request, req: ApplyTemplateRequest, claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
     try:
         tenant_id = claims["verified_tenant_id"]
 
@@ -272,7 +278,8 @@ async def create_tasks_from_template(req: ApplyTemplateRequest, claims: dict = D
 
 
 @router.post("/ai/task-assistant")
-async def ask_task_assistant(req: TaskAssistantRequest, claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
+@limiter.limit("20/minute")
+async def ask_task_assistant(request: Request, req: TaskAssistantRequest, claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
     try:
         # SECURITY: tenant_id MUST come exclusively from the verified JWT — never from the request body.
         tenant_id = claims["verified_tenant_id"]

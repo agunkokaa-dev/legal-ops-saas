@@ -10,16 +10,18 @@ import uuid
 import traceback
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from supabase import Client
 
-from app.config import admin_supabase, qdrant
+from app.config import admin_supabase, qdrant, openai_client, COLLECTION_NAME
 from app.dependencies import verify_clerk_token, get_tenant_supabase
 from app.schemas import EscalateIssueRequest, DiffRequest
 from app.review_schemas import SmartDiffResult
+from app.task_logger import TaskLogger
+from app.rate_limiter import limiter
+from app.token_utils import truncate_to_tokens
 from graph import run_smart_diff_agent
 import asyncio
-from datetime import datetime
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from pydantic import BaseModel
 from typing import Optional
@@ -38,7 +40,9 @@ class UpdateIssueStatusRequest(BaseModel):
 # =====================================================================
 
 @router.get("/{contract_id}/versions")
+@limiter.limit("60/minute")
 async def list_contract_versions(
+    request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -88,7 +92,9 @@ async def list_contract_versions(
 # =====================================================================
 
 @router.get("/{contract_id}/issues")
+@limiter.limit("60/minute")
 async def list_negotiation_issues(
+    request: Request,
     contract_id: str,
     status: str = None,
     version_id: str = None,
@@ -141,7 +147,9 @@ async def list_negotiation_issues(
 # =====================================================================
 
 @router.post("/{contract_id}/escalate")
+@limiter.limit("20/minute")
 async def escalate_issue(
+    request: Request,
     contract_id: str,
     payload: EscalateIssueRequest,
     claims: dict = Depends(verify_clerk_token),
@@ -238,7 +246,9 @@ async def escalate_issue(
 # GET /diff — Fetch Cached Smart Diff Result
 # =====================================================================
 @router.get("/{contract_id}/diff", response_model=SmartDiffResult)
+@limiter.limit("30/minute")
 async def get_smart_diff(
+    request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -280,7 +290,10 @@ async def get_smart_diff(
 # POST /diff — Smart Diff Agent Execution
 # =====================================================================
 @router.post("/{contract_id}/diff", response_model=SmartDiffResult)
+@limiter.limit("3/minute")
+@limiter.limit("20/hour")
 async def generate_smart_diff(
+    request: Request,
     contract_id: str,
     payload: DiffRequest = None,
     claims: dict = Depends(verify_clerk_token),
@@ -291,6 +304,8 @@ async def generate_smart_diff(
     """
     try:
         tenant_id = claims["verified_tenant_id"]
+        _diff_logger = TaskLogger(tenant_id=tenant_id, task_type="smart_diff", contract_id=contract_id)
+        _diff_logger.log_agent_start("smart_diff")
 
         # 1. Get the latest 2 versions
         res = admin_supabase.table("contract_versions") \
@@ -368,13 +383,24 @@ async def generate_smart_diff(
         except Exception as rounds_err:
             print(f"Warning: Failed to fetch prior rounds: {rounds_err}")
 
-        # 4. Execute Smart Diff Agent
+        # 4. Enforce Token Body Limits (128k Safe Target)
+        safe_playbook, pb_truncated = truncate_to_tokens(playbook_rules_text, 10000, "gpt-4o")
+        safe_v1, v1_truncated = truncate_to_tokens(v1_text, 45000, "gpt-4o")
+        safe_v2, v2_truncated = truncate_to_tokens(v2_text, 45000, "gpt-4o")
+
+        _diff_logger.input_metadata.update({
+            "v1_truncated": v1_truncated,
+            "v2_truncated": v2_truncated,
+            "playbook_truncated": pb_truncated
+        })
+
+        # 5. Execute Smart Diff Agent
         diff_result_dict = await asyncio.to_thread(
             run_smart_diff_agent,
-            v1_raw_text=v1_text,
-            v2_raw_text=v2_text,
+            v1_raw_text=safe_v1,
+            v2_raw_text=safe_v2,
             v1_risk_score=v1_score,
-            playbook_rules_text=playbook_rules_text,
+            playbook_rules_text=safe_playbook,
             prior_rounds_context=prior_rounds_context
         )
 
@@ -413,7 +439,10 @@ async def generate_smart_diff(
         pipeline_output["diff_result"] = diff_result_dict
 
         admin_supabase.table("contract_versions") \
-            .update({"pipeline_output": pipeline_output}) \
+            .update({
+                "pipeline_output": pipeline_output,
+                "is_truncated": v2_truncated
+            }) \
             .eq("id", v2.get("id")) \
             .eq("tenant_id", tenant_id) \
             .execute()
@@ -433,10 +462,12 @@ async def generate_smart_diff(
         except Exception as round_err:
             print(f"Warning: Failed to track negotiation round: {round_err}")
 
+        _diff_logger.complete(result_summary={"deviations": len(diff_result_dict.get("deviations", []))})
         return diff_result_dict
 
     except Exception as e:
         print(f"❌ Smart Diff Error: {e}")
+        if '_diff_logger' in locals(): _diff_logger.fail(e)
         traceback.print_exc()
         try:
             # Catch backend failures correctly: update document status to failed
@@ -453,7 +484,9 @@ async def generate_smart_diff(
 # =====================================================================
 
 @router.patch("/{contract_id}/issues/{issue_id}/status")
+@limiter.limit("30/minute")
 async def update_issue_status(
+    request: Request,
     contract_id: str,
     issue_id: str,
     payload: UpdateIssueStatusRequest,
@@ -685,7 +718,9 @@ async def update_issue_status(
 # =====================================================================
 
 @router.get("/{contract_id}/rounds")
+@limiter.limit("60/minute")
 async def list_negotiation_rounds(
+    request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
 ):

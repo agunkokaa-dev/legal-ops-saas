@@ -87,6 +87,10 @@ export default function WarRoomClient({
     const [reasoningText, setReasoningText] = useState('');
     const [auditLogs, setAuditLogs] = useState<Record<string, AuditLogEntry[]>>({});
 
+    // ── FILTERS ──
+    const [severityFilters, setSeverityFilters] = useState<Record<string, boolean>>({});
+    const [statusFilter, setStatusFilter] = useState<string | null>(null);
+
     const [isPollingTimeout, setIsPollingTimeout] = useState(false);
     const [isPollingFailed, setIsPollingFailed] = useState(false);
     const pollAttempts = useRef(0);
@@ -410,6 +414,35 @@ export default function WarRoomClient({
         }
     };
 
+    const sortedDeviations = useMemo(() => {
+        if (!diffResult?.deviations) return [];
+        let sorted = [...diffResult.deviations];
+        
+        // Enhance: filter by severity pills
+        const activeSeverities = Object.keys(severityFilters).filter(k => severityFilters[k]);
+        if (activeSeverities.length > 0) {
+            sorted = sorted.filter(d => activeSeverities.includes(d.severity));
+        }
+
+        // Enhance: filter by status
+        if (statusFilter === 'unresolved') {
+            sorted = sorted.filter(d => !issueStatuses[d.deviation_id] || issueStatuses[d.deviation_id] === 'open' || issueStatuses[d.deviation_id] === 'countered');
+        } else if (statusFilter === 'under_review') {
+            sorted = sorted.filter(d => issueStatuses[d.deviation_id] === 'under_review' || issueStatuses[d.deviation_id] === 'escalated');
+        } else if (statusFilter === 'resolved') {
+            sorted = sorted.filter(d => issueStatuses[d.deviation_id] === 'accepted' || issueStatuses[d.deviation_id] === 'rejected');
+        }
+
+        sorted.sort((a, b) => {
+            const priority = { critical: 0, warning: 1, info: 2 };
+            if (priority[a.severity] !== priority[b.severity]) {
+                return priority[a.severity] - priority[b.severity];
+            }
+            return (a.v2_coordinates?.start_char || 0) - (b.v2_coordinates?.start_char || 0);
+        });
+        return sorted;
+    }, [diffResult?.deviations, issueStatuses, severityFilters, statusFilter]);
+
     if (isLoading) {
         return (
             <div className="flex-1 flex flex-col h-[calc(100vh-70px)] bg-[#0a0a0a] overflow-hidden relative">
@@ -569,7 +602,7 @@ export default function WarRoomClient({
     const criticalCount = diffResult.deviations.filter(d => d.severity === 'critical').length;
     const warningCount = diffResult.deviations.filter(d => d.severity === 'warning').length;
 
-    const selectedDev = diffResult.deviations.find(d => d.deviation_id === selectedDevId) || diffResult.deviations[0];
+    const selectedDev = sortedDeviations.find(d => d.deviation_id === selectedDevId) || sortedDeviations[0];
     const selectedBATNA = diffResult.batna_fallbacks.find(b => b.deviation_id === selectedDevId);
 
     const renderV2WithContextualDeviations = () => {
@@ -592,112 +625,140 @@ export default function WarRoomClient({
                         Unmapped / Global Deviations
                     </h3>
                     {unmappedDeviations.map(dev => {
-                        const isAddOrMod = dev.category === 'Added' || dev.category === 'Modified';
                         const isSelected = selectedDevId === dev.deviation_id;
-                        const isExpanded = expandedDevs[dev.deviation_id];
+                        
+                        let severityColorHex = dev.severity === 'critical' ? '#EF4444' : dev.severity === 'warning' ? '#F59E0B' : '#3B82F6';
+                        let borderColor = severityColorHex;
+                        let bgColor = `${severityColorHex}10`;
+                        
+                        if (dev.category === 'Added') {
+                            borderColor = '#10B981';
+                            bgColor = '#10B98110';
+                        } else if (dev.category === 'Unchanged-Risk') {
+                            borderColor = '#8B5CF6';
+                            bgColor = '#8B5CF610';
+                        }
+                        
+                        // Removed ones go here, let's style them with red if not handled
+                        if (dev.category === 'Removed') {
+                            borderColor = '#EF4444';
+                            bgColor = '#EF444410';
+                        }
+
+                        const severityIcon = dev.category === 'Added' ? '🟢' : dev.severity === 'critical' ? '🔴' : dev.severity === 'warning' ? '🟡' : '🔵';
+                        const dStatus = viewMode === 'v3' ? issueStatuses[dev.deviation_id] : null;
 
                         return (
                             <div
                                 key={`dev-${dev.deviation_id}`}
                                 id={`dev-${dev.deviation_id}`}
-                                className={`relative bg-[#1a0f0f] border-l-4 ${isAddOrMod ? 'border-emerald-900/80' : 'border-rose-900/60'} p-6 flex flex-col transition-all duration-300 cursor-pointer ${isSelected ? 'ring-1 ring-white/10 shadow-lg scale-[1.01]' : 'opacity-80 hover:opacity-100'
-                                    }`}
                                 onClick={(e) => { e.stopPropagation(); setSelectedDevId(dev.deviation_id); }}
+                                className={`deviation-block transition-all duration-300 ${isSelected ? `ring-2 ring-opacity-50 pulse-ring shadow-md scale-[1.01] z-10` : 'opacity-80 hover:opacity-100'} ${
+                                    (!isSelected && Object.values(severityFilters).some(v=>v) && !severityFilters[dev.severity]) || 
+                                    (!isSelected && statusFilter === 'unresolved' && ['accepted', 'rejected', 'resolved'].includes(issueStatuses[dev.deviation_id])) ||
+                                    (!isSelected && statusFilter && statusFilter !== 'unresolved' && issueStatuses[dev.deviation_id] !== statusFilter)
+                                    ? 'opacity-30 grayscale' : ''
+                                }`}
+                                style={{
+                                    borderLeft: `4px solid ${borderColor}`,
+                                    backgroundColor: bgColor,
+                                    padding: '16px 20px',
+                                    margin: '12px 0',
+                                    borderRadius: '6px',
+                                    cursor: 'pointer',
+                                    ...(isSelected ? { boxShadow: `0 0 0 2px ${borderColor}50` } : {})
+                                }}
                             >
-                                <div className="flex justify-between items-center mb-4">
-                                    <span className={`text-[10px] font-bold uppercase tracking-widest ${isAddOrMod ? 'text-emerald-400/80' : 'text-rose-400/80'}`}>
-                                        {dev.category.toUpperCase()} DEVIATION
+                                {/* Deviation Header */}
+                                <div className="deviation-header flex justify-between items-center mb-3">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-[12px]">{severityIcon}</span>
+                                        <span className="deviation-title text-zinc-100 font-semibold text-[13px]">{dev.title}</span>
+                                    </div>
+                                    <span className="category-badge uppercase tracking-widest" style={{
+                                        padding: '3px 10px',
+                                        borderRadius: '12px',
+                                        fontSize: '9px',
+                                        fontWeight: 700,
+                                        backgroundColor: borderColor,
+                                        color: '#fff'
+                                    }}>
+                                        {dev.category}
                                     </span>
-                                    {isSelected && <span className="text-[10px] text-[#D4AF37] font-bold tracking-wider">ACTIVE</span>}
                                 </div>
 
                                 {dev.category === 'Removed' ? (
-                                    <div className="relative mt-2">
-                                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-                                            <div className="bg-[#1a0f0f] text-rose-300 px-3 py-1 rounded border border-rose-500/30 text-[10px] uppercase font-bold tracking-widest shadow-2xl">
-                                                Clause Deleted in V2
-                                            </div>
-                                        </div>
-                                        <span className="text-[9px] uppercase tracking-widest text-zinc-600 block mb-1">Baseline (V1)</span>
-                                        <p className="line-through text-zinc-500 decoration-rose-900/50 italic text-[13px] border-l border-rose-900/30 pl-3 opacity-60">
-                                            {dev.v1_text}
-                                        </p>
+                                    <div className="mt-2 text-[13px] text-zinc-400">
+                                        <p className="italic mb-2">This clause was removed from the document.</p>
+                                        <p className="line-through decoration-rose-500/50">{dev.v1_text}</p>
                                     </div>
                                 ) : (
-                                    (() => {
-                                        // --- DYNAMIC INTRALINE STATE RENDERING ALGORITHM ---
-                                        // By visually resolving the deviation immediately using the UI block 
-                                        // we avoid shifting the V2 coordinate array.
-                                        const dStatus = viewMode === 'v3' ? issueStatuses[dev.deviation_id] : null;
-                                        let dStatusBadge = null;
-                                        let dActiveColor = '';
-                                        let dContent = null;
-
-                                        if (dStatus === 'accepted') {
-                                            dStatusBadge = '✅ Accepted (V2 Merged)';
-                                            dActiveColor = 'emerald';
-                                            dContent = <p className="font-sans font-medium text-[13px] border-l pl-3 leading-relaxed text-emerald-300 border-emerald-500/50 bg-emerald-900/10 py-2 px-2 italic">{dev.v2_text}</p>;
-                                        } else if (dStatus === 'rejected') {
-                                            dStatusBadge = '❌ Rejected (Reverted to V1)';
-                                            dActiveColor = 'rose';
-                                            dContent = <p className="font-sans font-medium text-[13px] border-l pl-3 leading-relaxed text-rose-300 border-rose-500/50 bg-rose-900/10 py-2 px-2 italic line-through decoration-rose-500/30">{dev.v1_text || 'Removed Clause'}</p>;
-                                        } else if (dStatus === 'countered') {
-                                            dStatusBadge = '🔄 Countered (BATNA Inserted)';
-                                            dActiveColor = 'amber';
-                                            const resolvedBatna = diffResult.batna_fallbacks.find(b => b.deviation_id === dev.deviation_id);
-                                            dContent = <p className="font-sans font-medium text-[13px] border-l pl-3 leading-relaxed text-amber-300 border-amber-500/50 bg-amber-900/10 py-2 px-2 italic">{resolvedBatna?.fallback_clause || dev.v1_text}</p>;
-                                        }
-
-                                        if (dStatusBadge) {
-                                            return (
-                                                <div className="mt-1 relative">
-                                                    <div className={`text-[10px] font-bold text-${dActiveColor}-400 mb-2 mt-2 tracking-wider flex items-center gap-1.5 uppercase`}>
-                                                        {dStatusBadge}
+                                    <div className="mt-2">
+                                        {(() => {
+                                            if (dStatus === 'accepted') {
+                                                return (
+                                                    <div className="bg-emerald-900/20 border border-emerald-500/30 p-3 rounded-md mt-2">
+                                                        <div className="text-[10px] font-bold text-emerald-400 mb-2 tracking-wider uppercase flex items-center gap-1">
+                                                            <span className="material-symbols-outlined text-[14px]">check_circle</span> Accepted (V2 Merged)
+                                                        </div>
+                                                        <p className="font-sans text-[13px] text-emerald-300 italic">{dev.v2_text}</p>
                                                     </div>
-                                                    {dContent}
-                                                </div>
-                                            );
-                                        }
+                                                );
+                                            } else if (dStatus === 'rejected') {
+                                                return (
+                                                    <div className="bg-rose-900/20 border border-rose-500/30 p-3 rounded-md mt-2">
+                                                        <div className="text-[10px] font-bold text-rose-400 mb-2 tracking-wider uppercase flex items-center gap-1">
+                                                            <span className="material-symbols-outlined text-[14px]">cancel</span> Rejected (Reverted to V1)
+                                                        </div>
+                                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-rose-500/50 mb-2">{dev.v2_text}</p>
+                                                        <p className="font-sans text-[13px] text-rose-300">{dev.v1_text || 'Removed Clause'}</p>
+                                                    </div>
+                                                );
+                                            } else if (dStatus === 'countered') {
+                                                const resolvedBatna = diffResult.batna_fallbacks.find(b => b.deviation_id === dev.deviation_id);
+                                                return (
+                                                    <div className="bg-amber-900/20 border border-amber-500/30 p-3 rounded-md mt-2">
+                                                        <div className="text-[10px] font-bold text-amber-400 mb-2 tracking-wider uppercase flex items-center gap-1">
+                                                            <span className="material-symbols-outlined text-[14px]">reply</span> Countered (BATNA Inserted)
+                                                        </div>
+                                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-amber-500/50 mb-2">{dev.v2_text}</p>
+                                                        <p className="font-sans text-[13px] text-amber-300 font-medium">{resolvedBatna?.fallback_clause || dev.v1_text}</p>
+                                                    </div>
+                                                );
+                                            } else if (dStatus === 'escalated') {
+                                                return (
+                                                    <div className="bg-purple-900/20 border border-purple-500/30 p-3 rounded-md mt-2">
+                                                        <div className="text-[10px] font-bold text-purple-400 mb-2 tracking-wider uppercase flex items-center gap-1">
+                                                            <span className="material-symbols-outlined text-[14px]">link</span> Escalated to Task
+                                                        </div>
+                                                        <p className="font-sans text-[13px] text-purple-200">{dev.v2_text}</p>
+                                                    </div>
+                                                );
+                                            }
 
-                                        return (
-                                            <div className="mt-1">
-                                                {dev.category === 'Modified' && dev.v1_text && (
-                                                    <div className="mb-3">
-                                                        <span className="text-[9px] uppercase tracking-widest text-zinc-600 block mb-2">Inline Word Diff</span>
-                                                        <div className="border-l pl-3 border-zinc-700/50">
+                                            // Default State (v2 or v3 Unresolved)
+                                            return (
+                                                <div>
+                                                    {dev.category === 'Modified' ? (
+                                                        <div className="bg-[#111] p-3 rounded border border-zinc-800">
+                                                            <span className="text-[9px] uppercase tracking-widest text-zinc-500 block mb-2 font-bold">Word-Level Diff</span>
                                                             <WordDiff oldText={dev.v1_text} newText={dev.v2_text} />
                                                         </div>
-                                                        <button
-                                                            onClick={(e) => { e.stopPropagation(); setExpandedDevs(prev => ({ ...prev, [dev.deviation_id]: !prev[dev.deviation_id] })); }}
-                                                            className="flex items-center gap-1 text-[9px] uppercase tracking-widest text-[#D4AF37]/70 hover:text-[#D4AF37] transition-colors px-2 py-1 bg-white/5 rounded hover:bg-white/10 mt-3"
-                                                        >
-                                                            <span className="material-symbols-outlined text-[14px]">
-                                                                {isExpanded ? 'visibility_off' : 'visibility'}
-                                                            </span>
-                                                            {isExpanded ? 'Hide Original Baseline' : 'Show Original Baseline'}
-                                                        </button>
+                                                    ) : (
+                                                        <div className="deviation-text font-sans text-[14px] leading-[1.6] text-zinc-200">
+                                                            {dev.v2_text}
+                                                        </div>
+                                                    )}
 
-                                                        {isExpanded && (
-                                                            <div className="mt-2 mb-4">
-                                                                <span className="text-[9px] uppercase tracking-widest text-zinc-600 block mb-1">Baseline (V1)</span>
-                                                                <p className="line-through text-zinc-500 decoration-rose-900/80 italic text-[13px] border-l border-rose-900/30 pl-3">
-                                                                    {dev.v1_text}
-                                                                </p>
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                )}
-                                                <div>
-                                                    {dev.category === 'Modified' && <span className="text-[9px] uppercase tracking-widest text-zinc-600 block mb-1">Current Iteration (V2)</span>}
-                                                    {dev.category !== 'Modified' && <span className="text-[9px] uppercase tracking-widest text-zinc-600 block mb-1">Unresolved Issue</span>}
-                                                    <p className={`font-sans font-medium text-[13px] border-l pl-3 leading-relaxed ${isAddOrMod ? 'text-emerald-300/90 border-emerald-900/40' : 'text-rose-300/90 border-rose-900/40'
-                                                        }`}>
-                                                        {dev.v2_text}
-                                                    </p>
+                                                    {viewMode === 'v3' && (!dStatus || dStatus === 'open' || dStatus === 'under_review') && (
+                                                        <div className="status-indicator mt-3 text-[10px] uppercase font-bold tracking-widest text-zinc-500 flex items-center gap-1">
+                                                            <span className="material-symbols-outlined text-[14px]">hourglass_empty</span> ⏳ Pending Decision
+                                                        </div>
+                                                    )}
                                                 </div>
-                                            </div>
-                                        );
-                                    })()
+                                            );
+                                        })()}
+                                    </div>
                                 )}
                             </div>
                         );
@@ -726,81 +787,128 @@ export default function WarRoomClient({
             const isAddOrMod = dev.category === 'Added' || dev.category === 'Modified';
             const isExpanded = expandedDevs[dev.deviation_id];
 
+            let severityColorHex = dev.severity === 'critical' ? '#EF4444' : dev.severity === 'warning' ? '#F59E0B' : '#3B82F6';
+            let borderColor = severityColorHex;
+            let bgColor = `${severityColorHex}10`;
+            
+            if (dev.category === 'Added') {
+                borderColor = '#10B981';
+                bgColor = '#10B98110';
+            } else if (dev.category === 'Unchanged-Risk') {
+                borderColor = '#8B5CF6';
+                bgColor = '#8B5CF610';
+            }
+
+            const severityIcon = dev.category === 'Added' ? '🟢' : dev.severity === 'critical' ? '🔴' : dev.severity === 'warning' ? '🟡' : '🔵';
+            
+            const dStatus = viewMode === 'v3' ? issueStatuses[dev.deviation_id] : null;
+
             // Contextual Deviation Box
             elements.push(
                 <div
                     key={`dev-${dev.deviation_id}`}
                     id={`dev-${dev.deviation_id}`}
-                    className={`relative my-8 p-6 -mx-8 sm:-mx-12 group transition-all duration-300 cursor-pointer shadow-lg rounded-r ${isAddOrMod ? 'bg-[#0d160d] border-l-4 border-emerald-900/80' : 'bg-[#1a0f0f] border-l-4 border-rose-900/80'
-                        } ${isSelected ? 'ring-1 ring-white/10 scale-[1.02] shadow-[0_15px_30px_-10px_rgba(0,0,0,0.8)] z-10' : 'opacity-80 hover:opacity-100'}`}
                     onClick={(e) => { e.stopPropagation(); setSelectedDevId(dev.deviation_id); }}
+                    className={`deviation-block transition-all duration-300 ${isSelected ? `ring-2 ring-opacity-50 pulse-ring shadow-lg scale-[1.01] z-10` : 'opacity-80 hover:opacity-100'} ${
+                        (!isSelected && Object.values(severityFilters).some(v=>v) && !severityFilters[dev.severity]) || 
+                        (!isSelected && statusFilter === 'unresolved' && ['accepted', 'rejected', 'resolved'].includes(issueStatuses[dev.deviation_id])) ||
+                        (!isSelected && statusFilter && statusFilter !== 'unresolved' && issueStatuses[dev.deviation_id] !== statusFilter)
+                        ? 'opacity-30 grayscale' : ''
+                    }`}
+                    style={{
+                        borderLeft: `4px solid ${borderColor}`,
+                        backgroundColor: bgColor,
+                        padding: '16px 20px',
+                        margin: '16px 0',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        ...(isSelected ? { boxShadow: `0 0 0 2px ${borderColor}50` } : {})
+                    }}
                 >
-                    <div className={`absolute -left-[3px] top-6 w-5 h-5 rounded-full flex items-center justify-center border border-[#0a0a0a] ${isAddOrMod ? 'bg-emerald-900/80' : 'bg-rose-900/80'
-                        }`}>
-                        <span className={`material-symbols-outlined text-[10px] ${isAddOrMod ? 'text-emerald-200' : 'text-rose-200'}`}>
-                            {isAddOrMod ? 'add' : 'close'}
-                        </span>
-                    </div>
-
-                    <div className="flex justify-between items-center mb-4">
-                        <span className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest ${isAddOrMod ? 'text-emerald-400/80' : 'text-rose-400/80'
-                            }`}>
-                            <span className="material-symbols-outlined text-[12px]">gavel</span>
-                            DEVIATION LOG: {dev.category.toUpperCase()}
-                        </span>
-                        {isSelected && <span className="text-[10px] text-[#D4AF37] font-bold tracking-wider float-right">ACTIVE</span>}
-                    </div>
-
-                    {dev.category === 'Removed' ? (
-                        <div className="relative mt-2">
-                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
-                                <div className="bg-[#1a0f0f] text-rose-300 px-3 py-1 rounded border border-rose-500/30 text-[10px] uppercase font-bold tracking-widest shadow-2xl">
-                                    Clause Deleted in V2
-                                </div>
-                            </div>
-                            <span className="text-[9px] uppercase tracking-widest text-zinc-600 block mb-1">Baseline (V1)</span>
-                            <p className="line-through text-zinc-500 decoration-rose-900/50 italic text-[13px] border-l border-rose-900/30 pl-3 opacity-60">
-                                {dev.v1_text}
-                            </p>
+                    {/* Deviation Header */}
+                    <div className="deviation-header flex justify-between items-center mb-3">
+                        <div className="flex items-center gap-2">
+                            <span className="text-[12px]">{severityIcon}</span>
+                            <span className="deviation-title text-zinc-100 font-semibold text-[13px]">{dev.title}</span>
                         </div>
-                    ) : (
-                        <div className="mt-1">
-                            {dev.category === 'Modified' && dev.v1_text && (
-                                <div className="mb-3">
-                                    <span className="text-[9px] uppercase tracking-widest text-zinc-600 block mb-2">Inline Word Diff</span>
-                                    <div className="border-l pl-3 border-zinc-700/50">
-                                        <WordDiff oldText={dev.v1_text} newText={dev.v2_text} />
-                                    </div>
-                                    <button
-                                        onClick={(e) => { e.stopPropagation(); setExpandedDevs(prev => ({ ...prev, [dev.deviation_id]: !prev[dev.deviation_id] })); }}
-                                        className="flex items-center gap-1 text-[9px] uppercase tracking-widest text-[#D4AF37]/70 hover:text-[#D4AF37] transition-colors px-2 py-1 bg-white/5 rounded hover:bg-white/10 mt-3"
-                                    >
-                                        <span className="material-symbols-outlined text-[14px]">
-                                            {isExpanded ? 'visibility_off' : 'visibility'}
-                                        </span>
-                                        {isExpanded ? 'Hide Full V1 Baseline' : 'Show Full V1 Baseline'}
-                                    </button>
+                        <span className="category-badge uppercase tracking-widest" style={{
+                            padding: '3px 10px',
+                            borderRadius: '12px',
+                            fontSize: '9px',
+                            fontWeight: 700,
+                            backgroundColor: borderColor,
+                            color: '#fff'
+                        }}>
+                            {dev.category}
+                        </span>
+                    </div>
 
-                                    {isExpanded && (
-                                        <div className="mt-2 mb-4">
-                                            <span className="text-[9px] uppercase tracking-widest text-zinc-600 block mb-1">Full Baseline (V1)</span>
-                                            <p className="line-through text-zinc-500 decoration-rose-900/80 italic text-[13px] border-l border-rose-900/30 pl-3">
-                                                {dev.v1_text}
-                                            </p>
+                    <div className="mt-2">
+                        {(() => {
+                            if (dStatus === 'accepted') {
+                                return (
+                                    <div className="bg-emerald-900/20 border border-emerald-500/30 p-3 rounded-md mt-2">
+                                        <div className="text-[10px] font-bold text-emerald-400 mb-2 tracking-wider uppercase flex items-center gap-1">
+                                            <span className="material-symbols-outlined text-[14px]">check_circle</span> Accepted (V2 Merged)
+                                        </div>
+                                        <p className="font-sans text-[13px] text-emerald-300 italic">{dev.v2_text}</p>
+                                    </div>
+                                );
+                            } else if (dStatus === 'rejected') {
+                                return (
+                                    <div className="bg-rose-900/20 border border-rose-500/30 p-3 rounded-md mt-2">
+                                        <div className="text-[10px] font-bold text-rose-400 mb-2 tracking-wider uppercase flex items-center gap-1">
+                                            <span className="material-symbols-outlined text-[14px]">cancel</span> Rejected (Reverted to V1)
+                                        </div>
+                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-rose-500/50 mb-2">{dev.v2_text}</p>
+                                        <p className="font-sans text-[13px] text-rose-300">{dev.v1_text || 'Removed Clause'}</p>
+                                    </div>
+                                );
+                            } else if (dStatus === 'countered') {
+                                const resolvedBatna = diffResult.batna_fallbacks.find(b => b.deviation_id === dev.deviation_id);
+                                return (
+                                    <div className="bg-amber-900/20 border border-amber-500/30 p-3 rounded-md mt-2">
+                                        <div className="text-[10px] font-bold text-amber-400 mb-2 tracking-wider uppercase flex items-center gap-1">
+                                            <span className="material-symbols-outlined text-[14px]">reply</span> Countered (BATNA Inserted)
+                                        </div>
+                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-amber-500/50 mb-2">{dev.v2_text}</p>
+                                        <p className="font-sans text-[13px] text-amber-300 font-medium">{resolvedBatna?.fallback_clause || dev.v1_text}</p>
+                                    </div>
+                                );
+                            } else if (dStatus === 'escalated') {
+                                return (
+                                    <div className="bg-purple-900/20 border border-purple-500/30 p-3 rounded-md mt-2">
+                                        <div className="text-[10px] font-bold text-purple-400 mb-2 tracking-wider uppercase flex items-center gap-1">
+                                            <span className="material-symbols-outlined text-[14px]">link</span> Escalated to Task
+                                        </div>
+                                        <p className="font-sans text-[13px] text-purple-200">{dev.v2_text}</p>
+                                    </div>
+                                );
+                            }
+
+                            // Default State (v2 or v3 Unresolved)
+                            return (
+                                <div>
+                                    {dev.category === 'Modified' ? (
+                                        <div className="bg-[#111] p-3 rounded border border-zinc-800">
+                                            <span className="text-[9px] uppercase tracking-widest text-zinc-500 block mb-2 font-bold">Word-Level Diff</span>
+                                            <WordDiff oldText={dev.v1_text} newText={dev.v2_text} />
+                                        </div>
+                                    ) : (
+                                        <div className="deviation-text font-sans text-[14px] leading-[1.6] text-zinc-200">
+                                            {dev.v2_text}
+                                        </div>
+                                    )}
+
+                                    {viewMode === 'v3' && (!dStatus || dStatus === 'open' || dStatus === 'under_review') && (
+                                        <div className="status-indicator mt-3 text-[10px] uppercase font-bold tracking-widest text-zinc-500 flex items-center gap-1">
+                                            <span className="material-symbols-outlined text-[14px]">hourglass_empty</span> ⏳ Pending Decision
                                         </div>
                                     )}
                                 </div>
-                            )}
-                            {dev.category !== 'Modified' && (
-                                <div>
-                                    <p className={`font-sans font-medium text-[13px] border-l pl-3 leading-relaxed ${isAddOrMod ? 'text-emerald-300/90 border-emerald-900/40' : 'text-rose-300/90 border-rose-900/40'
-                                        }`}>
-                                        {dev.v2_text}
-                                    </p>
-                                </div>
-                            )}
-                        </div>
-                    )}
+                            );
+                        })()}
+                    </div>
                 </div>
             );
 
@@ -831,21 +939,49 @@ export default function WarRoomClient({
         <main className="flex-1 flex flex-col h-[calc(100vh-70px)] bg-[#0a0a0a] text-[#e5e2e1] overflow-hidden font-sans">
 
             {/* 1. THE AI INSIGHT BANNER */}
-            <section className="w-full h-14 bg-[#0a0a0a] border-b border-zinc-800/60 flex items-center justify-between px-8 shrink-0">
-                <div className="flex items-center gap-4">
-                    <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Negotiation Health:</span>
-                    <div className="flex items-center gap-3">
-                        <span className="text-xs text-zinc-400 opacity-60">V1 Risk: {v1Score}/100</span>
-                        <span className="material-symbols-outlined text-[12px] text-zinc-600">
-                            {v2Score > v1Score ? 'trending_up' : v2Score < v1Score ? 'trending_down' : 'trending_flat'}
+            <section className="w-full h-14 bg-[#0a0a0a] border-b border-zinc-800/60 flex items-center justify-between px-8 shrink-0 z-20">
+                <div className="flex flex-1 items-center gap-8">
+                    <div className="flex items-center gap-4">
+                        <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold">Negotiation Health</span>
+                        <div className="flex items-center gap-3">
+                            <span className="text-[11px] text-zinc-400 font-medium">Original Baseline: <span className="text-zinc-200 font-bold">{v1Score}/100</span></span>
+                            <span className="material-symbols-outlined text-[14px] text-zinc-600">
+                                {v2Score > v1Score ? 'trending_up' : v2Score < v1Score ? 'trending_down' : 'trending_flat'}
+                            </span>
+                            <span className={`text-[11px] font-bold ${v2Score > v1Score ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                {v3_working ? 'V3 Working Draft:' : 'V2 Counterparty:'} {v2Score}/100
+                            </span>
+                        </div>
+                    </div>
+                    
+                    {/* Resolution Progress Bar */}
+                    <div className="flex flex-1 items-center gap-4 max-w-md">
+                        <span className="text-[9px] text-zinc-500 uppercase tracking-widest font-bold min-w-[70px]">Resolution</span>
+                        <div className="flex-1 h-1.5 bg-zinc-800/60 rounded-full overflow-hidden flex">
+                            <div className="bg-emerald-500/80 h-full transition-all duration-500" style={{ width: `${diffResult?.deviations.length ? (resolvedCount / diffResult.deviations.length) * 100 : 0}%` }} title="Resolved" />
+                            <div className="bg-blue-500/80 h-full transition-all duration-500" style={{ width: `${diffResult?.deviations.length ? (underReviewCount / diffResult.deviations.length) * 100 : 0}%` }} title="Under Review" />
+                        </div>
+                        <span className="text-[10px] font-bold text-zinc-300 min-w-[40px] text-right">
+                            {diffResult?.deviations.length ? Math.round((resolvedCount / diffResult.deviations.length) * 100) : 0}%
                         </span>
-                        <span className={`text-xs font-bold ${v2Score > v1Score ? 'text-[#D4AF37]/90' : 'text-emerald-500'}`}>
-                            {v3_working ? 'V3 Working Risk:' : 'V2 Draft Risk:'} {v2Score}/100
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        {criticalCount > 0 && (
+                            <span className="text-[10px] font-bold tracking-widest uppercase bg-rose-900/30 text-rose-400 border border-rose-900/50 px-2 py-0.5 rounded flex items-center gap-1.5">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+                                {criticalCount} Critical
+                            </span>
+                        )}
+                        <span className="text-[10px] font-bold tracking-widest uppercase bg-zinc-800/50 text-zinc-400 border border-zinc-700/50 px-2 py-0.5 rounded">
+                            {diffResult?.rounds?.length || 0} Rounds
                         </span>
                     </div>
                 </div>
-                <div className="flex items-center gap-4">
-                    <button className="text-[#D4AF37] text-xs hover:underline underline-offset-4 font-medium" onClick={() => router.push(`/dashboard/contracts/${contractId}`)}>
+
+                <div className="flex items-center pl-8 ml-8 border-l border-zinc-800/60">
+                    <button className="text-[#D4AF37] text-xs hover:text-[#f2ca50] font-bold uppercase tracking-widest transition-colors flex items-center gap-1.5" onClick={() => router.push(`/dashboard/contracts/${contractId}`)}>
+                        <span className="material-symbols-outlined text-[14px]">arrow_back</span>
                         Back to Contract
                     </button>
                 </div>
@@ -886,15 +1022,15 @@ export default function WarRoomClient({
                                 <>
                                     <div className="w-0.5 h-4 bg-[#D4AF37]/40 ml-6"></div>
                                     <div
-                                        className={`p-3 rounded flex justify-between items-center cursor-pointer transition-all shadow-[0_0_15px_rgba(16,185,129,0.05)] ${viewMode === 'v3' ? 'bg-[#1a2e1a] border-2 border-emerald-500/80 shadow-[0_0_20px_rgba(16,185,129,0.15)]' : 'bg-[#1a2e1a] border border-emerald-900/60 hover:border-emerald-700/60 opacity-80 hover:opacity-100'}`}
+                                        className={`bg-[#141414] border-y border-r border-zinc-800/40 border-l-2 border-l-emerald-900/60 rounded-lg p-3 flex justify-between items-center cursor-pointer transition-all ${viewMode === 'v3' ? 'shadow-[0_0_15px_rgba(16,185,129,0.05)] bg-[#141414]' : 'opacity-80 hover:opacity-100'}`}
                                         onClick={() => setViewMode('v3')}
                                     >
                                         <div>
-                                            <span className={`text-xs font-bold font-serif block break-words max-w-[120px] ${viewMode === 'v3' ? 'text-emerald-400' : 'text-emerald-500'}`}>Working Draft (V3)</span>
-                                            <span className="text-[9px] text-emerald-600/80 uppercase">Merges</span>
+                                            <span className="text-xs text-zinc-300 font-medium block break-words max-w-[120px]">Working Draft (V3)</span>
+                                            <span className="text-[10px] text-zinc-500 uppercase tracking-widest block">MERGED</span>
                                         </div>
-                                        <span className="text-[10px] bg-emerald-900/30 font-bold text-emerald-400 flex-shrink-0 px-2 py-0.5 rounded border border-emerald-800/50 flex gap-1 items-center">
-                                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                                        <span className="bg-emerald-950/20 text-emerald-500/80 text-[10px] uppercase px-2 py-0.5 rounded border border-emerald-900/30 flex-shrink-0 flex items-center gap-1">
+                                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500/80 animate-pulse"></span>
                                             Live
                                         </span>
                                     </div>
@@ -930,59 +1066,133 @@ export default function WarRoomClient({
                         </button>
                     </div>
 
-                    <div className="mb-8 mt-2 p-4 bg-[#111] border border-zinc-800/80 rounded flex flex-col gap-3 shadow-inner">
-                        <h4 className="text-[9px] text-zinc-500 tracking-[0.2em] uppercase font-bold text-center">Momentum Tracker</h4>
-                        <div className="flex flex-col gap-2">
-                            <div className="flex items-center justify-between bg-[#1a0f0f] border border-rose-900/50 px-3 py-2 rounded shadow-[0_0_10px_rgba(225,29,72,0.1)]">
-                                <span className="text-[10px] text-rose-400 font-bold uppercase tracking-wider flex items-center gap-2"><span className="text-[12px]">⚠️</span> Unresolved</span>
-                                <span className="text-[12px] font-bold text-rose-300">{unresolvedCount}</span>
-                            </div>
-                            <div className="flex items-center justify-between bg-blue-900/10 border border-blue-900/40 px-3 py-2 rounded shadow-[0_0_10px_rgba(59,130,246,0.1)]">
-                                <span className="text-[10px] text-blue-300 font-bold uppercase tracking-wider flex items-center gap-2"><span className="text-[12px]">🟡</span> Under Review</span>
-                                <span className="text-[12px] font-bold text-blue-200">{underReviewCount}</span>
-                            </div>
-                            <div className="flex items-center justify-between bg-emerald-900/10 border border-emerald-900/40 px-3 py-2 rounded shadow-[0_0_10px_rgba(16,185,129,0.1)]">
-                                <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-2"><span className="text-[12px]">✅</span> Resolved</span>
-                                <span className="text-[12px] font-bold text-emerald-300">{resolvedCount}</span>
-                            </div>
+                    {/* DEVIATION NAVIGATOR */}
+                    <div>
+                        <div className="flex justify-between items-end mb-4">
+                            <h4 className="text-[10px] text-zinc-500 tracking-[0.2em] uppercase font-bold">Deviations ({sortedDeviations.length})</h4>
+                        </div>
+
+                        {/* SEVERITY FILTERS */}
+                        <div className="flex gap-2 mb-4 overflow-x-auto pb-1 custom-scrollbar">
+                            <button 
+                                onClick={() => setSeverityFilters({})}
+                                className={`text-[9px] px-2 py-1 rounded font-bold uppercase tracking-widest border transition-colors shrink-0 ${Object.values(severityFilters).every(v => !v) ? 'bg-zinc-800 text-zinc-200 border-zinc-700' : 'bg-transparent text-zinc-500 border-zinc-800 hover:border-zinc-700'}`}
+                            >
+                                All
+                            </button>
+                            <button 
+                                onClick={() => setSeverityFilters(p => ({...p, critical: !p.critical}))}
+                                className={`flex items-center gap-1 text-[9px] px-2 py-1 rounded font-bold uppercase tracking-widest border transition-colors shrink-0 ${severityFilters.critical ? 'bg-rose-500/20 text-rose-400 border-rose-500/40' : 'bg-transparent text-rose-500/60 border-rose-900/40 hover:border-rose-800/60'}`}
+                            >
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 block"></span>
+                                Critical ({criticalCount})
+                            </button>
+                            <button 
+                                onClick={() => setSeverityFilters(p => ({...p, warning: !p.warning}))}
+                                className={`flex items-center gap-1 text-[9px] px-2 py-1 rounded font-bold uppercase tracking-widest border transition-colors shrink-0 ${severityFilters.warning ? 'bg-amber-500/20 text-amber-400 border-amber-500/40' : 'bg-transparent text-amber-500/60 border-amber-900/40 hover:border-amber-800/60'}`}
+                            >
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 block"></span>
+                                Warning ({warningCount})
+                            </button>
+                            <button 
+                                onClick={() => setSeverityFilters(p => ({...p, info: !p.info}))}
+                                className={`flex items-center gap-1 text-[9px] px-2 py-1 rounded font-bold uppercase tracking-widest border transition-colors shrink-0 ${severityFilters.info ? 'bg-blue-500/20 text-blue-400 border-blue-500/40' : 'bg-transparent text-blue-500/60 border-blue-900/40 hover:border-blue-800/60'}`}
+                            >
+                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 block"></span>
+                                Info
+                            </button>
+                        </div>
+
+                        <div className="space-y-3">
+                            {sortedDeviations.length === 0 ? (
+                                <p className="text-xs text-zinc-600 italic px-2">No deviations match filters.</p>
+                            ) : sortedDeviations.map((dev) => {
+                                const status = issueStatuses[dev.deviation_id] || 'open';
+                                const isSelected = selectedDevId === dev.deviation_id;
+                                
+                                let severityColor = dev.severity === 'critical' ? 'rose' : dev.severity === 'warning' ? 'amber' : 'blue';
+                                
+                                return (
+                                    <div
+                                        key={dev.deviation_id}
+                                        onClick={() => {
+                                            setSelectedDevId(dev.deviation_id);
+                                            const el = document.getElementById(`dev-${dev.deviation_id}`);
+                                            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                        }}
+                                        className={`p-3 rounded-lg cursor-pointer transition-all border ${
+                                            isSelected
+                                                ? `bg-[#1a1a1a] shadow-sm border-${severityColor}-500/60 ring-1 ring-${severityColor}-500/30`
+                                                : `bg-[#0f0f0f] border-zinc-800/40 hover:border-zinc-700/60 opacity-80 hover:opacity-100`
+                                        }`}
+                                    >
+                                        <div className="flex items-start gap-2 mb-2">
+                                            <span className={`w-2 h-2 mt-1 rounded-full shrink-0 bg-${severityColor}-500`}></span>
+                                            <div className="flex-1 min-w-0">
+                                                <h5 className="text-xs font-semibold text-zinc-200 leading-tight block mb-1">{dev.title}</h5>
+                                                <div className="flex items-center flex-wrap gap-x-2 gap-y-1 text-[9px] uppercase tracking-widest text-zinc-500">
+                                                    <span>{dev.category}</span>
+                                                    <span>·</span>
+                                                    <span className={`text-${severityColor}-400/80`}>{dev.severity}</span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div className="mt-2 text-[9px] uppercase tracking-widest font-bold flex items-center gap-1.5">
+                                            <span className="text-zinc-600">STATUS:</span>
+                                            {status === 'open' ? (
+                                                <span className="text-zinc-400">OPEN</span>
+                                            ) : status === 'under_review' ? (
+                                                <span className="text-blue-400 flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span> UNDER REVIEW</span>
+                                            ) : status === 'accepted' || status === 'resolved' ? (
+                                                <span className="text-emerald-400 flex items-center gap-1">✓ {status.toUpperCase()}</span>
+                                            ) : status === 'rejected' ? (
+                                                <span className="text-rose-400 flex items-center gap-1">✗ REJECTED</span>
+                                            ) : status === 'countered' ? (
+                                                <span className="text-amber-400 flex items-center gap-1">↩ COUNTERED</span>
+                                            ) : status === 'escalated' ? (
+                                                <span className="text-purple-400 flex items-center gap-1">⬆ ESCALATED</span>
+                                            ) : status === 'dismissed' ? (
+                                                <span className="text-zinc-500 line-through">DISMISSED</span>
+                                            ) : null}
+                                        </div>
+                                    </div>
+                                );
+                            })}
                         </div>
                     </div>
 
-                    <div>
-                        <h4 className="text-[10px] text-rose-400 tracking-[0.2em] uppercase font-bold mb-4 flex items-center gap-2">
-                            <span className="material-symbols-outlined text-xs">gavel</span>
-                            Identified Deviations
-                        </h4>
-                        <div className="space-y-3">
-                            {diffResult.deviations.map((dev) => (
-                                <div
-                                    key={dev.deviation_id}
-                                    onClick={() => {
-                                        setSelectedDevId(dev.deviation_id);
-                                        const el = document.getElementById(`dev-${dev.deviation_id}`);
-                                        if (el) {
-                                            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                        }
-                                    }}
-                                    className={`p-4 rounded-lg cursor-pointer transition-all border ${selectedDevId === dev.deviation_id
-                                            ? 'bg-[#1a0f0f] border-rose-900/40 shadow-sm'
-                                            : 'bg-[#0f0f0f] border-zinc-800/40 hover:border-zinc-700/60 opacity-60 hover:opacity-100'
-                                        }`}
-                                >
-                                    <div className="flex items-center justify-between mb-1">
-                                        <div className="flex items-center gap-2">
-                                            <span className={`w-1.5 h-1.5 rounded-full ${dev.severity === 'critical' ? 'bg-rose-500' : dev.severity === 'warning' ? 'bg-amber-500' : 'bg-blue-500'}`}></span>
-                                            <h5 className="text-xs font-medium text-rose-200 truncate max-w-[130px]">{dev.title}</h5>
-                                        </div>
-                                        {issueStatuses[dev.deviation_id] && (
-                                            <span className={`text-[8px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${getStatusColor(issueStatuses[dev.deviation_id])}`}>
-                                                {issueStatuses[dev.deviation_id].replace('_', ' ')}
-                                            </span>
-                                        )}
-                                    </div>
-                                    <p className="text-[10px] text-rose-400/80 leading-relaxed truncate">{dev.impact_analysis}</p>
-                                </div>
-                            ))}
+                    {/* MOMENTUM TRACKER */}
+                    <div className="mt-2 p-4 bg-[#0f0f0f] border border-zinc-800/40 rounded-xl flex flex-col gap-2">
+                        <h4 className="text-[10px] text-zinc-500 tracking-widest uppercase mb-3 font-bold">Momentum Tracker (Filter)</h4>
+                        
+                        <div 
+                            className={`flex justify-between items-center cursor-pointer p-1.5 -mx-1.5 rounded transition-colors ${statusFilter === 'unresolved' ? 'bg-zinc-800/80' : 'hover:bg-zinc-900'}`}
+                            onClick={() => setStatusFilter(prev => prev === 'unresolved' ? null : 'unresolved')}
+                        >
+                            <span className="text-xs text-zinc-400 flex items-center gap-2"><span className="text-rose-500 text-[10px]">▲</span> UNRESOLVED</span>
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${unresolvedCount > 0 ? 'text-rose-500/80 bg-rose-950/30' : 'text-zinc-600'}`}>
+                                {unresolvedCount}
+                            </span>
+                        </div>
+                        
+                        <div 
+                            className={`flex justify-between items-center cursor-pointer p-1.5 -mx-1.5 rounded transition-colors ${statusFilter === 'under_review' ? 'bg-zinc-800/80' : 'hover:bg-zinc-900'}`}
+                            onClick={() => setStatusFilter(prev => prev === 'under_review' ? null : 'under_review')}
+                        >
+                            <span className="text-xs text-zinc-400 flex items-center gap-2"><span className="text-blue-500 text-[10px]">●</span> UNDER REVIEW</span>
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${underReviewCount > 0 ? 'text-blue-400/80 bg-blue-950/30' : 'text-zinc-600'}`}>
+                                {underReviewCount}
+                            </span>
+                        </div>
+                        
+                        <div 
+                            className={`flex justify-between items-center cursor-pointer p-1.5 -mx-1.5 rounded transition-colors ${statusFilter === 'resolved' ? 'bg-zinc-800/80' : 'hover:bg-zinc-900'}`}
+                            onClick={() => setStatusFilter(prev => prev === 'resolved' ? null : 'resolved')}
+                        >
+                            <span className="text-xs text-zinc-400 flex items-center gap-2"><span className="text-emerald-500 text-[10px]">✓</span> RESOLVED</span>
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${resolvedCount > 0 ? 'text-emerald-500/80 bg-emerald-950/30' : 'text-zinc-600'}`}>
+                                {resolvedCount}
+                            </span>
                         </div>
                     </div>
                 </aside>
@@ -992,7 +1202,53 @@ export default function WarRoomClient({
                     <div className="max-w-3xl mx-auto bg-[#0f0f0f] border border-zinc-800/60 rounded-xl p-16 shadow-[0_25px_50px_-12px_rgba(0,0,0,0.5)]">
                         <header className="mb-12 text-center">
                             <h1 className="font-serif text-2xl font-light text-zinc-100 tracking-tight mb-2">{contractTitle}</h1>
-                            <p className="text-[10px] uppercase tracking-[0.4em] text-zinc-500">Negotiation War Room Diff</p>
+                            <p className="text-[10px] uppercase tracking-[0.4em] text-zinc-500 mb-6">Negotiation War Room Diff</p>
+                            
+                            {/* ENHANCEMENT 3: VIEW MODE TOGGLE */}
+                            <div className="inline-flex bg-[#141414] border border-zinc-800/80 rounded-lg p-1.5 shadow-inner mx-auto mb-4">
+                                <button
+                                    onClick={() => setViewMode('v1')}
+                                    className={`px-6 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+                                        viewMode === 'v1' 
+                                            ? 'bg-zinc-800 text-zinc-200 shadow-sm' 
+                                            : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
+                                    }`}
+                                >
+                                    V1 Original
+                                </button>
+                                <button
+                                    onClick={() => setViewMode('v2')}
+                                    className={`px-6 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+                                        viewMode === 'v2' 
+                                            ? 'bg-[#1a1410] text-[#D4AF37] border border-[#D4AF37]/20 shadow-sm' 
+                                            : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
+                                    }`}
+                                >
+                                    V2 Counterparty
+                                </button>
+                                <button
+                                    onClick={() => setViewMode('v3')}
+                                    className={`px-6 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${
+                                        viewMode === 'v3' 
+                                            ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-900/50 shadow-sm' 
+                                            : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
+                                    }`}
+                                >
+                                    V3 Draft
+                                </button>
+                            </div>
+                            <div className="text-[11px] text-zinc-400">
+                                {viewMode === 'v1' && "BASELINE — Original Contract"}
+                                {viewMode === 'v2' && "COUNTERPARTY VERSION — Under Review"}
+                                {viewMode === 'v3' && (
+                                    <span className="flex items-center justify-center gap-2">
+                                        WORKING DRAFT — Reflects Your Decisions
+                                        <span className="bg-zinc-800 text-zinc-300 px-2 py-0.5 rounded-full text-[9px]">
+                                            {resolvedCount} of {diffResult.deviations.length} deviations resolved ({Math.round((resolvedCount / Math.max(1, diffResult.deviations.length)) * 100)}%)
+                                        </span>
+                                    </span>
+                                )}
+                            </div>
                         </header>
 
                         <article className="font-serif text-[15px] leading-[1.8] text-zinc-300 space-y-8">
@@ -1040,6 +1296,20 @@ export default function WarRoomClient({
                                         {selectedDev.impact_analysis}
                                     </p>
 
+                                    {/* Playbook Citation (Moved UP to Top) */}
+                                    {selectedDev.playbook_violation && (
+                                        <div className="mb-4 flex items-start gap-2.5 bg-rose-900/15 border border-rose-500/40 p-3 rounded-lg shadow-inner">
+                                            <span className="shrink-0 text-rose-500 mt-0.5 material-symbols-outlined text-lg">gavel</span>
+                                            <div className="flex-1">
+                                                <span className="text-rose-400 font-bold uppercase tracking-widest flex items-center gap-2 mb-1.5" style={{ fontSize: '10px' }}>
+                                                    Playbook Violation 
+                                                    <span className="uppercase tracking-widest text-[8px] bg-rose-500 text-white px-1.5 py-0.5 rounded font-black">ALERT</span>
+                                                </span>
+                                                <p className="italic leading-relaxed text-[12px] text-rose-200">"{selectedDev.playbook_violation}"</p>
+                                            </div>
+                                        </div>
+                                    )}
+
                                     {/* ── COUNTERPARTY INTENT CARD ── */}
                                     {selectedDev.counterparty_intent && (
                                         <div className="mb-4 bg-[#0d0a1a] border border-indigo-800/40 p-3 rounded-lg">
@@ -1069,7 +1339,7 @@ export default function WarRoomClient({
                                                 className="w-full mt-2 mb-3 py-2 bg-[#D4AF37] hover:brightness-110 text-black text-[10px] uppercase font-bold tracking-widest rounded flex justify-center items-center gap-1 transition-all disabled:opacity-50"
                                             >
                                                 <span className="material-symbols-outlined text-[14px]">bolt</span>
-                                                Apply This Strategy
+                                                Apply Strategy as V3 Draft
                                             </button>
 
                                             {selectedBATNA.leverage_points?.length > 0 && (
@@ -1082,17 +1352,6 @@ export default function WarRoomClient({
                                                     </ul>
                                                 </div>
                                             )}
-                                        </div>
-                                    )}
-
-                                    {/* Playbook Citation */}
-                                    {selectedDev.playbook_violation && (
-                                        <div className="mb-4 flex items-start gap-2.5 bg-[#050505] border border-zinc-800/80 p-3 rounded-lg shadow-inner">
-                                            <span className="shrink-0 text-base">⚖️</span>
-                                            <div className="flex-1">
-                                                <span className="text-zinc-500 font-bold uppercase tracking-widest block mb-1" style={{ fontSize: '9px' }}>Playbook Policy Citation</span>
-                                                <p className="italic leading-relaxed text-[11px] text-zinc-300">"{selectedDev.playbook_violation}"</p>
-                                            </div>
                                         </div>
                                     )}
 

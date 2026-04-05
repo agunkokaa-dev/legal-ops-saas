@@ -9,13 +9,14 @@ All synchronous OpenAI and Qdrant calls are wrapped in `asyncio.to_thread()`
 to prevent blocking the FastAPI event loop under concurrent load.
 """
 import io
+import re
 import asyncio
 import functools
 import uuid
 import traceback
 import json
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Request
 from supabase import Client
 from qdrant_client.http.models import PointStruct, Filter, FieldCondition, MatchValue
 from qdrant_client import models
@@ -24,11 +25,17 @@ from dotenv import load_dotenv
 import os
 
 from app.config import openai_client, qdrant, COLLECTION_NAME, admin_supabase
+from app.rate_limiter import limiter
+from app.task_logger import TaskLogger
+from app.token_utils import count_tokens, truncate_to_tokens
 from app.dependencies import verify_clerk_token, get_tenant_supabase
 from app.schemas import ExtractObligationsRequest, ArchiveContractRequest, ConfirmVersionLinkRequest
 from app.utils import chunk_text
 from difflib import SequenceMatcher
 from graph import clm_graph
+from app.task_logger import TaskLogger
+from app.rate_limiter import limiter
+from openai import RateLimitError, APITimeoutError, APIConnectionError
 import traceback
 
 load_dotenv()
@@ -44,15 +51,8 @@ def handle_task_result(task: asyncio.Task, contract_id: str, tenant_id: str = No
     try:
         exc = task.exception()
         if exc:
+            # Error is already persisted by TaskLogger inside process_contract_background
             print(f"🚨 [BACKGROUND TASK FAILED] Contract {contract_id}: {exc}")
-            # Update status to Failed so UI doesn't hang forever
-            # NOTE: tenant_id is included here but may be None for truly orphaned tasks
-            # (e.g., if background task itself crashed before tenant_id was captured).
-            # The eq("id", ...) filter is safe here since this fires after our own task creation.
-            q = admin_supabase.table("contracts").update({"status": "Failed"}).eq("id", contract_id)
-            if tenant_id:
-                q = q.eq("tenant_id", tenant_id)
-            q.execute()
     except asyncio.CancelledError:
         print(f"⚠️ [BACKGROUND TASK CANCELLED] Contract {contract_id}")
 
@@ -107,7 +107,9 @@ async def async_qdrant_upsert(collection: str, points: list):
 # =====================================================================
 
 @router.get("/contracts")
+@limiter.limit("60/minute")
 async def list_contracts(
+    request: Request,
     tab: str = "Archived",
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase)
@@ -152,9 +154,29 @@ async def process_contract_background(
     tenant_id: str,
     matter_id: str,
     filename: str,
-    text_content: str
+    text_content: str,
+    attempt_number: int = 1,
+    parent_task_id: str = None
 ):
     print(f"🚀 [BACKGROUND] Starting LangGraph pipeline for contract_id={contract_id}")
+
+    raw_tokens = count_tokens(text_content, "gpt-4o-mini")
+    safe_document, is_truncated = truncate_to_tokens(text_content, 100000, "gpt-4o-mini")
+    
+    logger = TaskLogger(
+        tenant_id=tenant_id,
+        task_type="pipeline_ingestion",
+        contract_id=contract_id,
+        input_metadata={
+            "filename": filename,
+            "raw_tokens": raw_tokens,
+            "is_truncated": is_truncated,
+            "matter_id": matter_id,
+        },
+        attempt_number=attempt_number,
+        parent_task_id=parent_task_id
+    )
+
     try:
         # 1. Before LangGraph is invoked
         print(f"🔄 [LANGGRAPH] Invoking agentic workflow for document ID: {contract_id}")
@@ -162,8 +184,28 @@ async def process_contract_background(
         # Invoke the Multi-Agent Workflow
         final_state = await async_clm_graph_invoke({
             "contract_id": contract_id,
-            "raw_document": text_content[:150000] 
+            "raw_document": safe_document,
+            "_task_logger": logger  # Pass logger to graph for per-agent tracking
         })
+        
+        # ── RETARGET CHECK ──
+        # If this contract was merged into a V2 via /confirm-version while LangGraph was running,
+        # it was archived and we must write our output to the PARENT contract instead.
+        actual_contract_id = contract_id
+        try:
+            contract_check = admin_supabase.table("contracts").select("status").eq("id", contract_id).limit(1).execute()
+            if contract_check.data and contract_check.data[0].get("status") == "ARCHIVED":
+                # Look up the parent via document_relationships
+                rel_check = admin_supabase.table("document_relationships") \
+                    .select("parent_id") \
+                    .eq("child_id", contract_id) \
+                    .limit(1) \
+                    .execute()
+                if rel_check.data and rel_check.data[0].get("parent_id"):
+                    actual_contract_id = rel_check.data[0]["parent_id"]
+                    print(f"🔄 [BACKGROUND] Re-target applied! Writing pipeline results to parent {actual_contract_id} instead of archived orphan {contract_id}.")
+        except Exception as retarget_err:
+            print(f"⚠️ [BACKGROUND] Retarget check failed (non-fatal, using original contract_id): {retarget_err}")
         
         # 2. Raw JSON output from LLM extraction
         print(f"[LANGGRAPH] Execution complete for {contract_id}. Raw JSON output:")
@@ -181,6 +223,7 @@ async def process_contract_background(
 
         # 3. Exactly payload being sent to Supabase
         update_payload = {
+            "status": "Reviewed", # Ensure the parent is marked as finished
             "contract_value": float(final_state.get("contract_value", 0.0) or 0.0), # Safe float parsing
             "end_date": final_state.get("end_date", "Unknown"),
             "effective_date": final_state.get("effective_date", None),
@@ -189,6 +232,7 @@ async def process_contract_background(
             "risk_level": risk_level,
             "currency": final_state.get("currency", "IDR"),
             "counter_proposal": final_state.get("counter_proposal"),
+            "is_truncated": is_truncated,
             "draft_revisions": {
                 "latest_text": text_content,
                 "findings": final_state.get("draft_revisions", []),
@@ -196,41 +240,25 @@ async def process_contract_background(
             }
         }
         
-        print(f"[SUPABASE UPDATE] Checking if contract_id: {contract_id} already exists (Admin Client).")
-        existing = admin_supabase.table("contracts").select("id").eq("id", contract_id).eq("tenant_id", tenant_id).execute()
-        
-        if existing.data and len(existing.data) > 0:
-            print(f"[SUPABASE UPDATE] Existing record found. Sending exact payload to update():")
-            print(json.dumps(update_payload, indent=2, default=str))
-            try:
-                res = admin_supabase.table("contracts").update(update_payload).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
-                print(f"[SUPABASE UPDATE] Success! Response: {res.data}")
-            except Exception as e:
-                print(f"!!! [SUPABASE UPDATE ERROR] Exceptions swallowed during update(): {e}")
-                traceback.print_exc()
-        else:
-            insert_payload = {
-                "id": contract_id, 
-                "tenant_id": tenant_id, 
-                "matter_id": matter_id,
-                "title": filename,
-                **update_payload
-            }
-            print(f"[SUPABASE INSERT] Record NOT found. Sending payload to insert():")
-            print(json.dumps(insert_payload, indent=2, default=str))
-            try:
-                res = admin_supabase.table("contracts").insert(insert_payload).execute()
-                print(f"[SUPABASE INSERT] Success! Response: {res.data}")
-            except Exception as e:
-                print(f"!!! [SUPABASE INSERT ERROR] Exceptions swallowed during insert(): {e}")
-                traceback.print_exc()
+        # Single Writer: The endpoint already inserted/updated the row. Always UPDATE here.
+        print(f"[SUPABASE UPDATE] Updating contract_id: {actual_contract_id} with pipeline results.")
+        print(json.dumps(update_payload, indent=2, default=str))
+        try:
+            res = admin_supabase.table("contracts").update(update_payload).eq("id", actual_contract_id).eq("tenant_id", tenant_id).execute()
+            print(f"[SUPABASE UPDATE] Success! Response: {res.data}")
+        except Exception as e:
+            print(f"!!! [SUPABASE UPDATE ERROR] {e}")
+            traceback.print_exc()
+
+        # Update logger to success mapping to actual parent!
+        logger.complete(result_summary={"actual_contract_id": actual_contract_id})
         
         # ── War Room: Persist version snapshot ──
         try:
             # Determine the version number for this contract
             version_res = admin_supabase.table("contract_versions") \
                 .select("version_number") \
-                .eq("contract_id", contract_id) \
+                .eq("contract_id", actual_contract_id) \
                 .order("version_number", desc=True) \
                 .limit(1) \
                 .execute()
@@ -266,11 +294,11 @@ async def process_contract_background(
             # Update contracts table with version tracking
             admin_supabase.table("contracts") \
                 .update({"version_count": next_version, "latest_version_id": version_id}) \
-                .eq("id", contract_id) \
+                .eq("id", actual_contract_id) \
                 .eq("tenant_id", tenant_id) \
                 .execute()
             
-            print(f"✅ [War Room] Persisted version V{next_version} (id={version_id}) for contract {contract_id}")
+            print(f"✅ [War Room] Persisted version V{next_version} (id={version_id}) for contract {actual_contract_id}")
         except Exception as ver_err:
             print(f"⚠️ [War Room] Failed to persist version snapshot: {ver_err}")
             traceback.print_exc()
@@ -281,7 +309,7 @@ async def process_contract_background(
             obligations_data = [
                 {
                     "tenant_id": tenant_id,
-                    "contract_id": contract_id,
+                    "contract_id": actual_contract_id,
                     "description": ob.get("description", ""),
                     "due_date": ob.get("due_date"), 
                     "status": "pending"
@@ -291,7 +319,7 @@ async def process_contract_background(
             if obligations_data:
                 try:
                     admin_supabase.table("contract_obligations").insert(obligations_data).execute()
-                    print(f"✅ Inserted {len(obligations_data)} obligations for contract {contract_id}")
+                    print(f"✅ Inserted {len(obligations_data)} obligations for contract {actual_contract_id}")
                 except Exception as ob_err:
                     print(f"⚠️ Failed to insert obligations: {ob_err}")
 
@@ -301,7 +329,7 @@ async def process_contract_background(
             clauses_data = [
                 {
                     "tenant_id": tenant_id,
-                    "contract_id": contract_id,
+                    "contract_id": actual_contract_id,
                     "clause_type": cl.get("clause_type", "Other"),
                     "original_text": cl.get("original_text", ""),
                     "ai_summary": cl.get("ai_summary")
@@ -311,7 +339,7 @@ async def process_contract_background(
             if clauses_data:
                 try:
                     admin_supabase.table("contract_clauses").insert(clauses_data).execute()
-                    print(f"✅ Inserted {len(clauses_data)} clauses for contract {contract_id}")
+                    print(f"✅ Inserted {len(clauses_data)} clauses for contract {actual_contract_id}")
                 except Exception as cl_err:
                     print(f"⚠️ Failed to insert clauses: {cl_err}")
         
@@ -335,7 +363,7 @@ async def process_contract_background(
                     vector=chunk_embed,
                     payload={
                         "tenant_id": tenant_id, 
-                        "contract_id": contract_id, 
+                        "contract_id": actual_contract_id, 
                         "chunk_index": i,
                         "text": chunk,
                         "page_number": page_number
@@ -349,30 +377,105 @@ async def process_contract_background(
                 batch = points[i:i + batch_size]
                 await async_qdrant_upsert(COLLECTION_NAME, batch)
                 
+        # 7. Mark success
+        admin_supabase.table("contracts").update({"status": "Reviewed"}).eq("id", actual_contract_id).execute()
+        
+        logger.complete(result_summary={
+            "risk_score": final_state.get("risk_score", 0),
+            "risk_level": final_state.get("risk_level", "Unknown"),
+            "findings_count": len(final_state.get("compliance_findings_v2", [])) + len(final_state.get("risk_flags_v2", [])),
+            "obligations_count": len(final_state.get("obligations_v2", [])),
+            "clauses_count": len(final_state.get("classified_clauses_v2", [])),
+            "chunks_vectorized": len(chunks),
+        })
         print(f"[BACKGROUND] process_contract_background successfully completed for {contract_id}.")
     except Exception as e:
+        logger.fail(e)
+        admin_supabase.table("contracts").update({
+            "status": "Failed",
+            "draft_revisions": {
+                "error_log_id": logger.log_id,
+                "error_summary": str(e)[:500],
+            }
+        }).eq("id", contract_id).execute()
         print(f"!!! [BACKGROUND] Unhandled Exception during process_contract_background: {e}")
         traceback.print_exc()
+        raise e
+
+TRANSIENT_ERRORS = (RateLimitError, APITimeoutError, APIConnectionError, ConnectionError, TimeoutError)
+MAX_RETRY_ATTEMPTS = 3
+BASE_DELAY_SECONDS = 5  # 5s, 10s, 20s exponential backoff
+
+async def process_contract_with_retry(contract_id, tenant_id, matter_id, filename, text_content):
+    """Wrapper that retries process_contract_background on transient failures."""
+    
+    parent_task_id = None
+    
+    for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
+        try:
+            await process_contract_background(
+                contract_id=contract_id,
+                tenant_id=tenant_id,
+                matter_id=matter_id,
+                filename=filename,
+                text_content=text_content,
+                attempt_number=attempt,
+                parent_task_id=parent_task_id,
+            )
+            return  # Success — exit retry loop
+            
+        except TRANSIENT_ERRORS as e:
+            
+            if attempt < MAX_RETRY_ATTEMPTS:
+                # Update contract status to show retry
+                admin_supabase.table("contracts").update({
+                    "status": f"Retrying ({attempt}/{MAX_RETRY_ATTEMPTS})"
+                }).eq("id", contract_id).execute()
+                
+                delay = BASE_DELAY_SECONDS * (2 ** (attempt - 1))  # 5, 10, 20 seconds
+                await asyncio.sleep(delay)
+            else:
+                # All retries exhausted
+                raise
+        
+        except Exception as e:
+            # Non-transient error — do NOT retry
+            raise
 
 @router.post("/upload")
+@limiter.limit("5/minute")
+@limiter.limit("30/hour")
 async def upload_contract(
+    request: Request,
     file: UploadFile = File(...),
     matter_id: str = Form(None),
     contract_id: str = Form(None),
     parent_contract_id: str = Form(None),
+    document_category: str = Form("Uncategorized"),
+    parent_id: str = Form(None),
+    relationship_type: str = Form(None),
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase)
 ):
+    # Base tenant from JWT
     tenant_id = claims["verified_tenant_id"]
     
-    print(f"[ENDPOINT HIT] /api/upload called for filename: {file.filename}")
-    
+    # If a matter is specified, inherit the matter's exact tenant scope.
+    # This prevents uploads from mistakenly entering the personal user scope 
+    # when Clerk's default token omits the org_id.
+    if matter_id:
+        matter_check = admin_supabase.table("matters").select("tenant_id").eq("id", matter_id).execute()
+        if matter_check.data and matter_check.data[0].get("tenant_id"):
+            tenant_id = matter_check.data[0]["tenant_id"]
+
+    print(f"[ENDPOINT HIT] /api/upload called for filename: {file.filename} (Resolved Tenant: {tenant_id})")
+
     # Validasi 1: Ekstensi Kasar
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Hanya menerima file berformat PDF.")
 
     contents = await file.read()
-    
+
     # Validasi 2: OWASP Magic Numbers (PDF Signature '%PDF-')
     if not contents.startswith(b'%PDF-'):
         raise HTTPException(status_code=403, detail="Peringatan Keamanan: File ini mencoba menyamar sebagai PDF. Ditolak.")
@@ -386,27 +489,108 @@ async def upload_contract(
         if not text_content.strip():
             raise HTTPException(status_code=400, detail="Kami tidak dapat membaca dokumen ini. Pastikan PDF tidak dienkripsi atau berupa gambar hasil scan tanpa OCR.")
 
-        if not contract_id:
-            contract_id = parent_contract_id if parent_contract_id else str(uuid.uuid4())
-        elif parent_contract_id:
+        # ── Single Writer: Determine contract_id ──
+        # Backend is the sole authority for contract_id on fresh uploads.
+        if parent_contract_id:
             contract_id = parent_contract_id
+        elif not contract_id:
+            contract_id = str(uuid.uuid4())
 
-        # ── War Room: Version-Aware Fuzzy Match ──
+        # ── Single Writer: Upload file to Supabase Storage ──
+        safe_name = re.sub(r'[^a-zA-Z0-9.-]', '_', file.filename or 'document.pdf')
+        file_path = f"{tenant_id}/{matter_id}/{contract_id[:8]}_{safe_name}"
+        file_content_type = file.content_type or "application/pdf"
+        file_size = len(contents)
+
+        try:
+            admin_supabase.storage.from_("matter-files").upload(
+                path=file_path,
+                file=contents,
+                file_options={"content-type": file_content_type}
+            )
+            print(f"✅ [Storage] Uploaded {file_path} ({file_size} bytes)")
+        except Exception as storage_err:
+            print(f"⚠️ [Storage] Upload failed (non-fatal): {storage_err}")
+            file_path = None
+
+        # ── Single Writer: Immediate DB write before background task ──
+        if parent_contract_id:
+            # V2 path: update the existing parent contract's file metadata
+            update_data = {
+                "title": file.filename,
+                "status": "Processing",
+            }
+            if file_path:
+                update_data["file_url"] = file_path
+                update_data["file_type"] = file_content_type
+                update_data["file_size"] = file_size
+            admin_supabase.table("contracts") \
+                .update(update_data) \
+                .eq("id", parent_contract_id) \
+                .eq("tenant_id", tenant_id) \
+                .execute()
+            print(f"✅ [DB] Updated parent contract {parent_contract_id} with new file metadata")
+        else:
+            # V1 path: insert a fresh contract row so the page can load immediately
+            insert_data = {
+                "id": contract_id,
+                "tenant_id": tenant_id,
+                "matter_id": matter_id,
+                "title": file.filename,
+                "file_type": file_content_type,
+                "file_size": file_size,
+                "document_category": document_category or "Uncategorized",
+                "status": "Processing",
+            }
+            if file_path:
+                insert_data["file_url"] = file_path
+            admin_supabase.table("contracts").insert(insert_data).execute()
+            print(f"✅ [DB] Inserted new contract {contract_id} with status=Processing")
+
+            # Handle genealogy if a parent document is specified
+            if parent_id:
+                try:
+                    admin_supabase.table("document_relationships").insert({
+                        "tenant_id": tenant_id,
+                        "parent_id": parent_id,
+                        "child_id": contract_id,
+                        "relationship_type": relationship_type or "related_to"
+                    }).execute()
+                    print(f"✅ [Genealogy] Linked {contract_id} → {parent_id} as '{relationship_type}'")
+                except Exception as rel_err:
+                    print(f"⚠️ [Genealogy] Insert failed (non-fatal): {rel_err}")
+
+        # ── War Room: Version-Aware Fuzzy Match (V1 only) ──
+        # Only match against contracts that have fully completed ingestion.
+        # Exclude "Processing" (still running) and "Failed" (broken) to prevent
+        # ghost contracts from hijacking fresh uploads.
         version_candidate = None
         if matter_id and not parent_contract_id:
             try:
                 existing_contracts = admin_supabase.table("contracts") \
-                    .select("id, title") \
+                    .select("id, title, status, draft_revisions") \
                     .eq("matter_id", matter_id) \
                     .eq("tenant_id", tenant_id) \
+                    .neq("id", contract_id) \
+                    .in_("status", ["Draft", "Review", "Reviewed", "Pending Review", "Active", "Completed"]) \
                     .execute()
-                
+
                 if existing_contracts.data:
                     upload_name = (file.filename or "").lower().replace(".pdf", "").strip()
                     best_match = None
                     best_score = 0.0
-                    
+
                     for ec in existing_contracts.data:
+                        # Skip contracts that have no usable document text (ghosts)
+                        dr = ec.get("draft_revisions")
+                        has_text = False
+                        if isinstance(dr, dict):
+                            has_text = bool(dr.get("latest_text") or dr.get("content"))
+                        elif isinstance(dr, str) and len(dr) > 50:
+                            has_text = True
+                        if not has_text:
+                            continue
+
                         existing_title = (ec.get("title") or "").lower().replace(".pdf", "").strip()
                         if not existing_title:
                             continue
@@ -414,7 +598,7 @@ async def upload_contract(
                         if ratio >= 0.6 and ratio > best_score:
                             best_score = ratio
                             best_match = ec
-                    
+
                     if best_match:
                         version_candidate = {
                             "is_version_candidate": True,
@@ -426,7 +610,7 @@ async def upload_contract(
             except Exception as match_err:
                 print(f"⚠️ [War Room] Fuzzy match check failed (non-fatal): {match_err}")
 
-        # Schedule on the running event loop (NOT BackgroundTasks).
+        # ── Fire background pipeline ──
         task = asyncio.create_task(
             process_contract_background(
                 contract_id=contract_id,
@@ -440,20 +624,19 @@ async def upload_contract(
         print(f"[ENDPOINT SUCCESS] Background task scheduled for contract_id: {contract_id}. Returning 200 immediately.")
 
         response = {
-            "status": "success", 
+            "status": "success",
             "message": "Upload diproses di latar belakang.",
             "contract_id": contract_id,
             "smart_metadata": {}
         }
-        
-        # Attach version candidate info if detected
+
         if version_candidate:
             response["version_candidate"] = {
                 **version_candidate,
                 "uploaded_contract_id": contract_id,
                 "uploaded_filename": file.filename
             }
-        
+
         return response
     except Exception as e:
         print(f"API Upload Error: {e}")
@@ -461,7 +644,9 @@ async def upload_contract(
 
 
 @router.post("/upload/confirm-version")
+@limiter.limit("20/minute")
 async def confirm_version_link(
+    request: Request,
     payload: ConfirmVersionLinkRequest,
     claims: dict = Depends(verify_clerk_token),
 ):
@@ -470,15 +655,21 @@ async def confirm_version_link(
     This merges the new contract's data into the parent contract's version chain.
     """
     try:
-        tenant_id = claims["verified_tenant_id"]
+        base_tenant_id = claims["verified_tenant_id"]
         
-        # Verify both contracts exist and belong to this tenant
+        # Verify parent contract exists AND inherit its exact tenant scope
+        # (This protects against Clerk default token omission returning a personal User ID)
         parent_res = admin_supabase.table("contracts") \
-            .select("id, title, version_count, matter_id") \
+            .select("id, title, version_count, matter_id, tenant_id") \
             .eq("id", payload.parent_contract_id) \
-            .eq("tenant_id", tenant_id) \
             .limit(1) \
             .execute()
+        
+        if not parent_res.data:
+            raise HTTPException(status_code=404, detail="Parent contract not found.")
+            
+        parent = parent_res.data[0]
+        tenant_id = parent.get("tenant_id") or base_tenant_id
         
         new_res = admin_supabase.table("contracts") \
             .select("id, title") \
@@ -487,12 +678,8 @@ async def confirm_version_link(
             .limit(1) \
             .execute()
         
-        if not parent_res.data:
-            raise HTTPException(status_code=404, detail="Parent contract not found.")
         if not new_res.data:
             raise HTTPException(status_code=404, detail="New contract not found.")
-        
-        parent = parent_res.data[0]
         
         # Check if the new contract already has a V1 version entry — re-assign it to the parent
         new_version_res = admin_supabase.table("contract_versions") \
@@ -528,14 +715,36 @@ async def confirm_version_link(
                 .eq("tenant_id", tenant_id) \
                 .execute()
             
-            # [HOTFIX] Cleanup orphaned child contract shell
+            # Soft-delete orphaned child contract (NEVER hard-delete — prevents 404 on in-flight pages)
             admin_supabase.table("contracts") \
-                .delete() \
+                .update({"status": "ARCHIVED"}) \
                 .eq("id", payload.new_contract_id) \
                 .eq("tenant_id", tenant_id) \
                 .execute()
+
+            # Record the parent relationship in document_relationships
+            try:
+                admin_supabase.table("document_relationships").insert({
+                    "tenant_id": tenant_id,
+                    "parent_id": payload.parent_contract_id,
+                    "child_id": payload.new_contract_id,
+                    "relationship_type": "version_of"
+                }).execute()
+            except Exception:
+                pass  # Non-fatal: relationship may already exist
             
-            print(f"✅ [War Room] Linked version V{next_version} to parent contract {payload.parent_contract_id}. Orphaned contract {payload.new_contract_id} deleted.")
+            # Re-assign any AI analysis data from the orphan to the parent
+            for table_name in ["contract_clauses", "contract_obligations", "contract_reviews"]:
+                try:
+                    admin_supabase.table(table_name) \
+                        .update({"contract_id": payload.parent_contract_id}) \
+                        .eq("contract_id", payload.new_contract_id) \
+                        .eq("tenant_id", tenant_id) \
+                        .execute()
+                except Exception:
+                    pass  # Non-fatal: table may not have matching rows
+            
+            print(f"✅ [War Room] Linked version V{next_version} to parent contract {payload.parent_contract_id}. Orphaned contract {payload.new_contract_id} archived.")
         else:
             print(f"⚠️ [War Room] No version snapshot found for new contract {payload.new_contract_id} — pipeline may still be running.")
         
@@ -555,20 +764,23 @@ async def confirm_version_link(
 
 
 @router.post("/obligations/extract")
+@limiter.limit("5/minute")
 async def extract_obligations(
-    request: ExtractObligationsRequest,
+    request: Request,
+    payload: ExtractObligationsRequest,
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase)
 ):
     try:
         tenant_id = claims["verified_tenant_id"]
+        logger = TaskLogger(tenant_id=tenant_id, task_type="obligation_extraction", contract_id=payload.contract_id)
 
         # 1. Fetch Contract Text from Qdrant (NON-BLOCKING)
         contract_res, rules_res = await asyncio.gather(
             async_qdrant_scroll(
                 collection=COLLECTION_NAME,
                 scroll_filter=Filter(must=[
-                    FieldCondition(key="contract_id", match=models.MatchValue(value=request.contract_id)),
+                    FieldCondition(key="contract_id", match=models.MatchValue(value=payload.contract_id)),
                     FieldCondition(key="tenant_id", match=models.MatchValue(value=tenant_id))
                 ]),
                 limit=100
@@ -576,7 +788,7 @@ async def extract_obligations(
             async_qdrant_scroll(
                 collection="company_rules",
                 scroll_filter=Filter(must=[
-                    FieldCondition(key="user_id", match=models.MatchValue(value=request.user_id))
+                    FieldCondition(key="user_id", match=models.MatchValue(value=payload.user_id))
                 ]),
                 limit=50
             )
@@ -645,20 +857,25 @@ Return a JSON object containing an array called 'obligations' with keys:
         # Each element in insert_payload already contains "tenant_id": tenant_id
         db_res = supabase.table("contract_obligations").insert([{**ob, "tenant_id": tenant_id} for ob in insert_payload]).execute()
         
+        logger.complete(result_summary={"obligations_extracted": len(obligations_list)})
         return {
             "status": "success", 
             "message": f"Successfully extracted {len(obligations_list)} obligations.",
             "data": db_res.data
         }
     except Exception as e:
+        if 'logger' in locals():
+            logger.fail(e)
         print(f"Obligation Extraction Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.patch("/{contract_id}/archive")
+@limiter.limit("30/minute")
 async def archive_contract(
+    request: Request,
     contract_id: str,
-    request: ArchiveContractRequest,
+    payload: ArchiveContractRequest,
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase)
 ):
@@ -668,7 +885,7 @@ async def archive_contract(
         
         update_payload = {
             "status": "ARCHIVED",
-            "archive_reason": request.archive_reason,
+            "archive_reason": payload.archive_reason,
             "archived_at": datetime.utcnow().isoformat()
         }
         res = supabase.table("contracts").update(update_payload).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
@@ -683,3 +900,53 @@ async def archive_contract(
         print(f"API Archive Contract Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+from typing import Optional
+
+@router.get("/task-logs")
+@limiter.limit("60/minute")
+async def get_task_logs(
+    request: Request,
+    contract_id: Optional[str] = None,
+    task_type: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 20,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    tenant_id = claims["verified_tenant_id"]
+    
+    query = supabase.table("task_execution_logs") \
+        .select("*") \
+        .eq("tenant_id", tenant_id) \
+        .order("started_at", desc=True) \
+        .limit(limit)
+    
+    if contract_id:
+        query = query.eq("contract_id", contract_id)
+    if task_type:
+        query = query.eq("task_type", task_type)
+    if status:
+        query = query.eq("status", status)
+    
+    result = query.execute()
+    return {"logs": result.data}
+
+@router.get("/task-logs/{log_id}")
+@limiter.limit("60/minute")
+async def get_task_log_detail(
+    request: Request,
+    log_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    tenant_id = claims["verified_tenant_id"]
+    
+    result = supabase.table("task_execution_logs") \
+        .select("*") \
+        .eq("id", log_id) \
+        .eq("tenant_id", tenant_id) \
+        .single() \
+        .execute()
+    
+    return {"log": result.data}

@@ -45,6 +45,7 @@ export default function Sidebar() {
                         width={120}
                         height={40}
                         className="object-contain"
+                        style={{ width: 'auto', height: 'auto' }}
                         priority
                     />
                 </div>
@@ -56,6 +57,7 @@ export default function Sidebar() {
                         width={32}
                         height={32}
                         className="object-contain"
+                        style={{ width: 'auto', height: 'auto' }}
                         priority
                     />
                 </div>

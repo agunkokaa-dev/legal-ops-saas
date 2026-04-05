@@ -8,12 +8,19 @@ Run with: uvicorn app.main:app --host 0.0.0.0 --port 8000
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from app.rate_limiter import limiter, rate_limit_exceeded_handler
 
 from app.config import ALLOWED_ORIGINS, init_qdrant_collections
-from app.routers import matters, contracts, chat, templates, tasks, playbook, intake, drafting, clauses, review, negotiation, bilingual
+from app.routers import matters, contracts, chat, templates, tasks, playbook, intake, drafting, clauses, review, negotiation, bilingual, national_laws
 
 # --- App Initialization ---
 app = FastAPI(title="CLAUSE Intelligent Engine", version="2.0.0")
+
+# --- Rate Limiting Setup ---
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -40,6 +47,7 @@ app.include_router(clauses.router,    prefix="/api/v1",          tags=["Clause L
 app.include_router(review.router,     prefix="/api/v1/review",       tags=["Contract Review"])
 app.include_router(negotiation.router, prefix="/api/v1/negotiation",  tags=["Negotiation War Room"])
 app.include_router(bilingual.router,  prefix="/api/v1/bilingual",    tags=["Bilingual Editor"])
+app.include_router(national_laws.router, prefix="/api/v1/admin",       tags=["National Law Admin"])
 
 
 

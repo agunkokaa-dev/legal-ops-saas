@@ -6,7 +6,7 @@ import os
 import jwt
 import logging
 from datetime import datetime, timezone
-from fastapi import Header, HTTPException, Depends
+from fastapi import Header, HTTPException, Depends, Request
 from supabase import create_client, Client
 from app.config import CLERK_PEM_KEY, SUPABASE_URL, SUPABASE_ANON_KEY
 
@@ -15,6 +15,7 @@ logging.basicConfig(level=logging.INFO)
 
 
 async def verify_clerk_token(
+    request: Request,
     authorization: str = Header(None),
 ) -> dict:
     """
@@ -59,6 +60,8 @@ async def verify_clerk_token(
             raise HTTPException(status_code=401, detail="No valid tenant identity found in token")
 
         claims["verified_tenant_id"] = tenant_id
+        # NEW: Set tenant_id in request.state for rate limiter
+        request.state.tenant_id = tenant_id
         return claims
     except jwt.ExpiredSignatureError:
         auth_logger.warning(
