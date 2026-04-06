@@ -13,7 +13,7 @@ from slowapi.errors import RateLimitExceeded
 from app.rate_limiter import limiter, rate_limit_exceeded_handler
 
 from app.config import ALLOWED_ORIGINS, init_qdrant_collections
-from app.routers import matters, contracts, chat, templates, tasks, playbook, intake, drafting, clauses, review, negotiation, bilingual, national_laws
+from app.routers import matters, contracts, chat, templates, tasks, playbook, intake, drafting, clauses, review, negotiation, bilingual, national_laws, signing
 
 # --- App Initialization ---
 app = FastAPI(title="CLAUSE Intelligent Engine", version="2.0.0")
@@ -48,6 +48,7 @@ app.include_router(review.router,     prefix="/api/v1/review",       tags=["Cont
 app.include_router(negotiation.router, prefix="/api/v1/negotiation",  tags=["Negotiation War Room"])
 app.include_router(bilingual.router,  prefix="/api/v1/bilingual",    tags=["Bilingual Editor"])
 app.include_router(national_laws.router, prefix="/api/v1/admin",       tags=["National Law Admin"])
+app.include_router(signing.router,       prefix="/api/v1/signing",       tags=["E-Signature & E-Meterai"])
 
 
 

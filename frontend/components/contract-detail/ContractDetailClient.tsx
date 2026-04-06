@@ -581,6 +581,12 @@ export default function ContractDetailClient({
                                     enter Negotiation War Room
                                 </button>
                                 <button
+                                    onClick={() => { setDropdownOpen(false); router.push(`/dashboard/contracts/${liveContract.id}/signing`); }}
+                                    className="w-full text-left px-4 py-2.5 hover:bg-neutral-800 text-neutral-300 hover:text-white text-[11px] uppercase tracking-widest font-semibold transition-colors"
+                                >
+                                    Signing Center
+                                </button>
+                                <button
                                     onClick={() => { setDropdownOpen(false); router.push(`/dashboard/drafting/${liveContract.matter_id}?contract_id=${liveContract.id}`); }}
                                     className="w-full text-left px-4 py-2.5 hover:bg-neutral-800 text-neutral-300 hover:text-white text-[11px] uppercase tracking-widest font-semibold transition-colors"
                                 >
@@ -612,7 +618,50 @@ export default function ContractDetailClient({
                             }
                         }}
                     />
-                    {/* The Right Side is now completely clean (Nuclear Option Active) */}
+
+                    {/* ── Signing lifecycle CTAs ── */}
+                    {(() => {
+                        const s = (liveContract?.status || '').toLowerCase();
+                        if (s === 'executed') {
+                            return (
+                                <div className="flex items-center gap-2">
+                                    <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                        Executed
+                                    </span>
+                                    <button
+                                        onClick={() => router.push(`/dashboard/contracts/${liveContract.id}/signing`)}
+                                        className="text-[11px] text-emerald-400 hover:text-emerald-300 border border-emerald-500/30 rounded-lg px-3 py-1.5 transition-colors"
+                                    >
+                                        Download Signed PDF
+                                    </button>
+                                </div>
+                            );
+                        }
+                        if (s === 'signing in progress' || s === 'partially signed') {
+                            const label = s === 'partially signed' ? 'Partially Signed' : 'Signing in Progress';
+                            return (
+                                <button
+                                    onClick={() => router.push(`/dashboard/contracts/${liveContract.id}/signing`)}
+                                    className="flex items-center gap-1.5 text-[11px] text-[#fbbf24] border border-[#fbbf24]/30 bg-[#fbbf24]/5 hover:bg-[#fbbf24]/10 rounded-lg px-3 py-1.5 transition-colors"
+                                >
+                                    <span className="material-symbols-outlined text-sm">draw</span>
+                                    {label} — View
+                                </button>
+                            );
+                        }
+                        if (s === 'ready to sign' || s === 'pending approval') {
+                            return (
+                                <button
+                                    onClick={() => router.push(`/dashboard/contracts/${liveContract.id}/signing`)}
+                                    className="flex items-center gap-1.5 text-[11px] font-bold text-black bg-[#fbbf24] hover:bg-[#f59e0b] rounded-lg px-4 py-1.5 transition-colors"
+                                >
+                                    <span className="material-symbols-outlined text-sm">draw</span>
+                                    Initiate Signing
+                                </button>
+                            );
+                        }
+                        return null;
+                    })()}
                 </div>
             </ContractHeader>
 

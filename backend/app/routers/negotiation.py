@@ -751,3 +751,95 @@ async def list_negotiation_rounds(
         print(f"❌ List Rounds Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================================
+# POST /finalize — Transition Contract to "Pending Approval" / "Ready to Sign"
+# =====================================================================
+
+@router.post("/{contract_id}/finalize")
+@limiter.limit("10/minute")
+async def finalize_for_signing(
+    request: Request,
+    contract_id: str,
+    claims: dict = Depends(verify_clerk_token),
+):
+    """
+    Triggered when all deviations in the War Room are resolved.
+
+    Validates that no critical issues remain open, then transitions
+    the contract status to 'Ready to Sign' so the Signing Center can proceed.
+
+    Blocked if any critical negotiation issues are still open/under_review.
+    """
+    try:
+        tenant_id = claims["verified_tenant_id"]
+
+        # Verify contract exists and belongs to tenant
+        contract_res = admin_supabase.table("contracts").select("id, status, title") \
+            .eq("id", contract_id).eq("tenant_id", tenant_id).limit(1).execute()
+        if not contract_res.data:
+            raise HTTPException(status_code=404, detail="Contract not found")
+        contract = contract_res.data[0]
+
+        # Block finalization if critical issues remain open
+        open_critical_res = admin_supabase.table("negotiation_issues") \
+            .select("id, title, severity, status") \
+            .eq("contract_id", contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .in_("status", ["open", "under_review"]) \
+            .eq("severity", "critical") \
+            .execute()
+
+        open_critical = open_critical_res.data or []
+        if open_critical:
+            return {
+                "status": "blocked",
+                "reason": f"{len(open_critical)} critical issue(s) must be resolved before finalizing.",
+                "blocking_issues": [{"id": i["id"], "title": i["title"]} for i in open_critical],
+            }
+
+        # Count all remaining open issues (non-critical warnings are acceptable)
+        open_any_res = admin_supabase.table("negotiation_issues") \
+            .select("id, severity") \
+            .eq("contract_id", contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .in_("status", ["open", "under_review"]) \
+            .execute()
+        open_any = open_any_res.data or []
+
+        now = datetime.now(timezone.utc).isoformat() if hasattr(datetime, 'now') else __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+
+        # Transition contract to Ready to Sign
+        admin_supabase.table("contracts").update({
+            "status": "Ready to Sign",
+            "updated_at": now,
+        }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+
+        # Log
+        try:
+            admin_supabase.table("activity_logs").insert({
+                "tenant_id": tenant_id,
+                "action": f"Contract finalized for signing: {contract.get('title', '')[:80]}",
+                "actor_name": claims.get("sub", "user"),
+            }).execute()
+        except Exception:
+            pass
+
+        return {
+            "status": "finalized",
+            "contract_id": contract_id,
+            "new_status": "Ready to Sign",
+            "open_warnings": len(open_any),
+            "message": (
+                f"Contract is ready for signing. "
+                + (f"{len(open_any)} non-critical issue(s) remain open (acceptable)." if open_any else "All issues resolved.")
+            ),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Finalize For Signing Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))

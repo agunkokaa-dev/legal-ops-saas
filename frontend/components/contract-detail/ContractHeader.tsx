@@ -142,6 +142,11 @@ export default function ContractHeader({
                                     >
                                         <option value="DRAFT">DRAFT</option>
                                         <option value="ACTIVE">ACTIVE</option>
+                                        <option value="Pending Approval">Pending Approval</option>
+                                        <option value="Ready to Sign">Ready to Sign</option>
+                                        <option value="Signing in Progress">Signing in Progress</option>
+                                        <option value="Partially Signed">Partially Signed</option>
+                                        <option value="Executed">Executed</option>
                                         <option value="EXPIRED">EXPIRED</option>
                                         <option value="TERMINATED">TERMINATED</option>
                                     </select>

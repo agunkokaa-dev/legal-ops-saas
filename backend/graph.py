@@ -234,7 +234,7 @@ def compliance_agent(state: ContractState) -> ContractState:
     3. BIASED TERMS: Flag any heavily biased or commercially unreasonable terms.
 
     INDONESIAN LAW COMPLIANCE (CRITICAL):
-    4. LANGUAGE REQUIREMENT: Check if the contract involves an Indonesian party. If so, Pasal 31 UU 24/2009 mandates Bahasa Indonesia. Flag if contract is only in English.
+    4. LANGUAGE REQUIREMENT: Detect the language of the contract. If the contract is ALREADY in Bahasa Indonesia, DO NOT flag it for UU 24/2009. ONLY flag this as a violation if the contract involves an Indonesian party AND is written EXCLUSIVELY in a foreign language (e.g., English) without an Indonesian version.
     5. DATA PROTECTION: If the contract involves personal data processing, check compliance with UU 27/2022 (PDP Law) — consent, breach notification (3x24h), cross-border transfer, DPO requirements.
     6. EMPLOYMENT: If the contract is a PKWT (fixed-term), verify it complies with UU 6/2023 — max 5 year duration, non-permanent work only, compensation obligation.
 
@@ -246,6 +246,11 @@ def compliance_agent(state: ContractState) -> ContractState:
 
     {COORDINATE_INSTRUCTION}
     {law_context}
+
+    CRITICAL LANGUAGE INSTRUCTION (LANGUAGE MIRRORING):
+    You MUST detect the language of the source text. 
+    Your output MUST be in the EXACT SAME LANGUAGE as the source contract. 
+    If the contract is written in Indonesian (Bahasa Indonesia), your outputs (summaries, findings, clauses) MUST be written in formal, legal Indonesian (Bahasa Indonesia baku yang sesuai dengan standar hukum). DO NOT output English if the contract is Indonesian.
 
     FULL CONTRACT TEXT:
     {raw_doc}
@@ -321,6 +326,11 @@ def risk_agent(state: ContractState) -> ContractState:
     1. Calculate a 'risk_score' (float 0.0 to 100.0).
     2. Determine a 'risk_level': 75-100 = 'High', 40-74 = 'Medium', 1-39 = 'Low', 0 = 'Safe'.
     3. Generate a list of 'risk_flags' with severity and exact text locations.
+
+    CRITICAL LANGUAGE INSTRUCTION (LANGUAGE MIRRORING):
+    You MUST detect the language of the source text. 
+    Your output MUST be in the EXACT SAME LANGUAGE as the source contract. 
+    If the contract is written in Indonesian (Bahasa Indonesia), your outputs (summaries, findings, clauses) MUST be written in formal, legal Indonesian (Bahasa Indonesia baku yang sesuai dengan standar hukum). DO NOT output English if the contract is Indonesian.
 
     {COORDINATE_INSTRUCTION}
 
@@ -509,6 +519,11 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
     - 'source_text': The EXACT verbatim quote.
     - 'start_char' and 'end_char': Character offsets.
 
+    CRITICAL LANGUAGE INSTRUCTION (LANGUAGE MIRRORING):
+    You MUST detect the language of the source text. 
+    Your output MUST be in the EXACT SAME LANGUAGE as the source contract. 
+    If the contract is written in Indonesian (Bahasa Indonesia), your outputs (summaries, findings, clauses) MUST be written in formal, legal Indonesian (Bahasa Indonesia baku yang sesuai dengan standar hukum). DO NOT output English if the contract is Indonesian.
+
     {COORDINATE_INSTRUCTION}
 
     FULL CONTRACT TEXT:
@@ -569,6 +584,11 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
     - 'original_text': The exact text excerpt.
     - 'ai_summary': A 1-2 sentence plain-English summary.
     - 'start_char' and 'end_char': Character offsets in the full contract text.
+
+    CRITICAL LANGUAGE INSTRUCTION (LANGUAGE MIRRORING):
+    You MUST detect the language of the source text. 
+    Your output MUST be in the EXACT SAME LANGUAGE as the source contract. 
+    If the contract is written in Indonesian (Bahasa Indonesia), your outputs (summaries, findings, clauses) MUST be written in formal, legal Indonesian (Bahasa Indonesia baku yang sesuai dengan standar hukum). DO NOT output English if the contract is Indonesian.
 
     {COORDINATE_INSTRUCTION}
 
