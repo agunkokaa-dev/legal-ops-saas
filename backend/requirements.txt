@@ -18,3 +18,4 @@ reportlab
 slowapi>=0.1.9
 redis>=5.0.0
 tiktoken>=0.7.0
+slowapi

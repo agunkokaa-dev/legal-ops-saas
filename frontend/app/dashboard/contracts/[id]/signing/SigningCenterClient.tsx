@@ -1,8 +1,9 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { useAuth } from '@clerk/nextjs'
 import { toast } from 'sonner'
 import {
     initiateSigning,
@@ -11,16 +12,21 @@ import {
     getSigningStatus,
     type SignerInput,
 } from '@/app/actions/signingActions'
+import { useContractSSE } from '@/hooks/useContractSSE'
+import { SSEStatusBadge } from '@/components/status/SSEStatusBadge'
 
 // ── Types ──────────────────────────────────────────────────────
 
 interface ChecklistItem {
-    check: string
+    check_id: string
+    check_name: string
     passed: boolean
     blocking: boolean
+    severity: string
     detail: string
+    action?: string | null
     emeterai_required?: boolean
-    recommended_type?: string
+    recommended_type?: string | null
 }
 
 interface ChecklistData {
@@ -28,6 +34,17 @@ interface ChecklistData {
     ready_to_sign: boolean
     emeterai_required: boolean
     recommended_signature_type: string
+    warnings_count?: number
+    summary?: {
+        emeterai_required?: boolean
+        recommended_signature_type?: string
+        has_bilingual?: boolean
+        risk_level?: string
+        ai_guidance?: {
+            notes?: string[]
+            rationale?: string
+        }
+    }
 }
 
 interface Signer {
@@ -61,6 +78,8 @@ interface SigningSession {
     completed_at?: string
     expires_at?: string
     signed_document_path?: string
+    preview_url?: string
+    is_expired?: boolean
 }
 
 interface SigningStatus {
@@ -73,7 +92,8 @@ interface SigningStatus {
         signed: number
         pending: number
         rejected: number
-        percent_complete: number
+        percentage: number
+        is_complete: boolean
     }
 }
 
@@ -111,10 +131,11 @@ function ChecklistRow({ item }: { item: ChecklistItem }) {
         <div className="flex items-start gap-3 py-2.5 border-b border-neutral-800 last:border-0">
             <div className="flex-shrink-0 mt-0.5">{icon}</div>
             <div>
-                <p className="text-xs font-medium text-neutral-300 capitalize">
-                    {item.check.replace(/_/g, ' ')}
-                </p>
+                <p className="text-xs font-medium text-neutral-300">{item.check_name}</p>
                 <p className="text-[11px] text-neutral-500 mt-0.5">{item.detail}</p>
+                {item.action && (
+                    <p className="text-[11px] text-amber-400 mt-1">{item.action}</p>
+                )}
             </div>
         </div>
     )
@@ -122,18 +143,23 @@ function ChecklistRow({ item }: { item: ChecklistItem }) {
 
 function SignerRow({
     signer,
-    contractId,
+    signingOrder,
+    signedCount,
     sessionActive,
+    index,
     onReminder,
 }: {
     signer: Signer
-    contractId: string
+    signingOrder: string
+    signedCount: number
     sessionActive: boolean
+    index: number
     onReminder: (signerId: string) => void
 }) {
     const isPending = ['pending', 'notified', 'viewed'].includes(signer.status)
     const isSigned = signer.status === 'signed'
     const isRejected = signer.status === 'rejected'
+    const isWaitingSequential = signingOrder === 'sequential' && isPending && index > signedCount
 
     const roleLabel: Record<string, string> = {
         pihak_pertama: 'Pihak Pertama',
@@ -176,6 +202,9 @@ function SignerRow({
                     {isRejected && signer.rejection_reason && (
                         <p className="text-[11px] text-red-400 mt-1">Reason: {signer.rejection_reason}</p>
                     )}
+                    {isWaitingSequential && (
+                        <p className="text-[11px] text-neutral-500 mt-1">Waiting for the previous signer in sequence.</p>
+                    )}
                     {signer.signing_url && isPending && (
                         <a
                             href={signer.signing_url}
@@ -213,6 +242,7 @@ export default function SigningCenterClient({
     initialChecklist: ChecklistData | null
 }) {
     const router = useRouter()
+    const { getToken } = useAuth()
     const contractId = contract.id
 
     const [status, setStatus] = useState<SigningStatus | null>(initialStatus)
@@ -241,17 +271,29 @@ export default function SigningCenterClient({
     const isActive = session?.status === 'pending_signatures' || session?.status === 'partially_signed'
     const isCompleted = session?.status === 'completed'
 
-    // ── Poll signing status every 15s while active ──
     const refreshStatus = useCallback(async () => {
         const { data } = await getSigningStatus(contractId)
         if (data) setStatus(data)
     }, [contractId])
 
-    useEffect(() => {
-        if (!isActive) return
-        const interval = setInterval(refreshStatus, 15_000)
-        return () => clearInterval(interval)
-    }, [isActive, refreshStatus])
+    const { isConnected: isSSEConnected, isFallbackPolling } = useContractSSE({
+        contractId,
+        enabled: Boolean(contractId),
+        pollFallback: refreshStatus,
+        onSigningUpdate: async (event) => {
+            if (event.data.message) {
+                toast.success(String(event.data.message))
+            }
+            await refreshStatus()
+            if (event.event_type === 'signing.completed' || event.event_type === 'signing.expired') {
+                router.refresh()
+            }
+        },
+        onStatusChanged: async () => {
+            await refreshStatus()
+            router.refresh()
+        },
+    })
 
     // ── Add / remove signer rows ──
     const addSigner = () => setSigners(prev => [
@@ -270,7 +312,7 @@ export default function SigningCenterClient({
             return
         }
         setIsLoading(true)
-        const { data, error } = await initiateSigning(contractId, {
+        const { error } = await initiateSigning(contractId, {
             signers,
             signing_order: signingOrder,
             signature_type: signatureType,
@@ -306,6 +348,16 @@ export default function SigningCenterClient({
         else toast.success(`Reminder sent to ${data?.email}`)
     }
 
+    const handleDownload = async () => {
+        const token = await getToken()
+        if (!token) {
+            toast.error('Authentication required to download the signed PDF')
+            return
+        }
+        const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+        window.open(`${apiUrl}/api/v1/signing/${contractId}/download?token=${encodeURIComponent(token)}`, '_blank')
+    }
+
     const inputStyle = "w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-[#fbbf24] focus:border-[#fbbf24] transition-colors"
     const labelStyle = "block text-[11px] font-medium text-neutral-400 mb-1"
 
@@ -326,31 +378,66 @@ export default function SigningCenterClient({
                     </div>
                 </div>
                 <div className="flex items-center gap-2">
+                    <SSEStatusBadge isConnected={isSSEConnected} isFallbackPolling={isFallbackPolling} />
                     {session && <StatusBadge status={session.status} />}
-                    {isCompleted && session?.signed_document_path && (
-                        <a
-                            href={`${process.env.NEXT_PUBLIC_API_URL}/api/v1/signing/${contractId}/download`}
+                    {isCompleted && (
+                        <button
+                            onClick={handleDownload}
                             className="text-xs bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 rounded-lg px-3 py-1.5 hover:bg-emerald-500/20 transition-colors flex items-center gap-1.5"
                         >
                             <span className="material-symbols-outlined text-sm">download</span>
                             Download Signed PDF
-                        </a>
+                        </button>
                     )}
                 </div>
             </header>
 
             {/* ── Body ── */}
             <div className="flex-1 overflow-y-auto p-6">
-                <div className="max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6">
+                <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-[1.2fr_380px] gap-6">
 
                     {/* ── LEFT: Main signing workflow ── */}
                     <div className="flex flex-col gap-5">
+
+                        {/* Document preview */}
+                        {status?.has_signing_session && session && (
+                            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden">
+                                <div className="px-5 py-4 border-b border-neutral-800 flex items-center justify-between">
+                                    <div>
+                                        <h2 className="text-sm font-bold text-white">Document & Ceremony</h2>
+                                        <p className="text-[11px] text-neutral-500 mt-0.5">
+                                            Provider: {session.provider?.toUpperCase()} · Status: {session.status.replace(/_/g, ' ')}
+                                        </p>
+                                    </div>
+                                    {session.emeterai_provider_id && (
+                                        <div className="text-right">
+                                            <p className="text-[10px] uppercase tracking-wider text-amber-300">e-Meterai</p>
+                                            <p className="text-[11px] text-amber-400">{session.emeterai_provider_id}</p>
+                                        </div>
+                                    )}
+                                </div>
+                                {session.preview_url ? (
+                                    <iframe
+                                        src={session.preview_url}
+                                        title="Signing document preview"
+                                        className="w-full h-[480px] bg-white"
+                                    />
+                                ) : (
+                                    <div className="h-[320px] flex items-center justify-center text-sm text-neutral-500 bg-neutral-950">
+                                        Preview unavailable for this provider.
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
                         {/* Active session: signer status */}
                         {status?.has_signing_session && session && (
                             <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden">
                                 <div className="px-5 py-4 border-b border-neutral-800 flex items-center justify-between">
-                                    <h2 className="text-sm font-bold text-white">Signing Ceremony</h2>
+                                    <div className="flex items-center gap-3">
+                                        <h2 className="text-sm font-bold text-white">Signing Ceremony</h2>
+                                        <SSEStatusBadge isConnected={isSSEConnected} isFallbackPolling={isFallbackPolling} />
+                                    </div>
                                     <div className="flex items-center gap-3">
                                         <span className="text-[11px] text-neutral-500">
                                             Provider: <span className="text-neutral-300 uppercase">{session.provider}</span>
@@ -371,13 +458,13 @@ export default function SigningCenterClient({
                                                 {progress.signed}/{progress.total_signers} signed
                                             </span>
                                             <span className="text-[11px] text-neutral-400">
-                                                {progress.percent_complete}%
+                                                {progress.percentage}%
                                             </span>
                                         </div>
                                         <div className="w-full bg-neutral-800 rounded-full h-1.5">
                                             <div
                                                 className="bg-[#fbbf24] h-1.5 rounded-full transition-all duration-500"
-                                                style={{ width: `${progress.percent_complete}%` }}
+                                                style={{ width: `${progress.percentage}%` }}
                                             />
                                         </div>
                                         {progress.rejected > 0 && (
@@ -394,8 +481,10 @@ export default function SigningCenterClient({
                                         <SignerRow
                                             key={s.id}
                                             signer={s}
-                                            contractId={contractId}
+                                            signingOrder={session.signing_order}
+                                            signedCount={progress?.signed || 0}
                                             sessionActive={isActive}
+                                            index={s.signing_order_index}
                                             onReminder={handleReminder}
                                         />
                                     ))}
@@ -445,6 +534,20 @@ export default function SigningCenterClient({
                                                         Completed {new Date(session.completed_at).toLocaleString('id-ID')}
                                                     </p>
                                                 )}
+                                                <div className="mt-2 flex items-center gap-3">
+                                                    <button
+                                                        onClick={handleDownload}
+                                                        className="text-[11px] text-emerald-400 hover:text-emerald-300"
+                                                    >
+                                                        Download signed PDF
+                                                    </button>
+                                                    <Link
+                                                        href={`/dashboard/contracts/${contractId}`}
+                                                        className="text-[11px] text-neutral-400 hover:text-white"
+                                                    >
+                                                        View obligations
+                                                    </Link>
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
@@ -692,7 +795,7 @@ export default function SigningCenterClient({
                             </div>
                             <div className="px-5 py-1">
                                 {checklist?.checklist.map(item => (
-                                    <ChecklistRow key={item.check} item={item} />
+                                    <ChecklistRow key={item.check_id} item={item} />
                                 ))}
                                 {!checklist && (
                                     <p className="text-xs text-neutral-500 py-4 text-center">
@@ -716,9 +819,43 @@ export default function SigningCenterClient({
                                             {checklist.recommended_signature_type}
                                         </span>
                                     </div>
+                                    {checklist.summary?.has_bilingual !== undefined && (
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-[11px] text-neutral-500">Bilingual</span>
+                                            <span className="text-[11px] text-neutral-300">
+                                                {checklist.summary.has_bilingual ? 'Available' : 'Missing'}
+                                            </span>
+                                        </div>
+                                    )}
+                                    {checklist.summary?.risk_level && (
+                                        <div className="flex items-center justify-between">
+                                            <span className="text-[11px] text-neutral-500">Risk level</span>
+                                            <span className="text-[11px] text-neutral-300">{checklist.summary.risk_level}</span>
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
+
+                        {checklist?.summary?.ai_guidance?.notes?.length ? (
+                            <div className="bg-neutral-900 border border-neutral-800 rounded-2xl overflow-hidden">
+                                <div className="px-5 py-4 border-b border-neutral-800">
+                                    <h3 className="text-xs font-bold text-neutral-400 uppercase tracking-wider">AI Guidance</h3>
+                                </div>
+                                <div className="px-5 py-4 space-y-2">
+                                    {checklist.summary.ai_guidance.notes.map((note, index) => (
+                                        <p key={index} className="text-[11px] text-neutral-300">
+                                            {note}
+                                        </p>
+                                    ))}
+                                    {checklist.summary.ai_guidance.rationale && (
+                                        <p className="text-[11px] text-neutral-500 pt-1">
+                                            {checklist.summary.ai_guidance.rationale}
+                                        </p>
+                                    )}
+                                </div>
+                            </div>
+                        ) : null}
 
                         {/* Back to contract */}
                         <Link

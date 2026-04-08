@@ -28,9 +28,9 @@ from supabase import Client
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from qdrant_client import models
 
-from app.config import openai_client, qdrant, COLLECTION_NAME, admin_supabase
+from app.config import openai_client, qdrant, COLLECTION_NAME
 from app.rate_limiter import limiter
-from app.dependencies import verify_clerk_token, get_tenant_supabase
+from app.dependencies import TenantQdrantClient, get_tenant_qdrant, verify_clerk_token, get_tenant_supabase
 from app.schemas import ClauseAssistantRequest
 
 import os
@@ -67,7 +67,7 @@ async def async_chat_completion(messages: list, tools=None, tool_choice=None) ->
     return response
 
 
-async def async_qdrant_search(collection: str, vector: list, limit: int, query_filter=None) -> list:
+async def async_qdrant_search(qdrant_client: Any, collection: str, vector: list, limit: int, query_filter=None) -> list:
     """Offloads the synchronous Qdrant query_points call to a background thread (v1.17+ API)."""
     try:
         kwargs = {
@@ -78,7 +78,7 @@ async def async_qdrant_search(collection: str, vector: list, limit: int, query_f
         }
         if query_filter:
             kwargs["query_filter"] = query_filter
-        response = await asyncio.to_thread(qdrant.query_points, **kwargs)
+        response = await asyncio.to_thread(qdrant_client.query_points, **kwargs)
         return response.points  # List[ScoredPoint] with .payload, .score, .id
     except Exception as e:
         import logging
@@ -86,7 +86,13 @@ async def async_qdrant_search(collection: str, vector: list, limit: int, query_f
         logging.error(traceback.format_exc())
         return []
 
-async def async_fetch_full_document(contract_id: str, tenant_id: str, max_chars: int = 30000) -> str:
+async def async_fetch_full_document(
+    contract_id: str,
+    tenant_id: str,
+    supabase_client: Client,
+    qdrant_client: TenantQdrantClient,
+    max_chars: int = 30000,
+) -> str:
     """
     Fetches the full document text for a contract.
 
@@ -99,7 +105,7 @@ async def async_fetch_full_document(contract_id: str, tenant_id: str, max_chars:
     # ── Strategy 1: contract_versions table (raw_text stored during pipeline) ──
     try:
         ver_resp = await asyncio.to_thread(
-            lambda: admin_supabase.table("contract_versions")
+            lambda: supabase_client.table("contract_versions")
                 .select("raw_text")
                 .eq("contract_id", contract_id)
                 .eq("tenant_id", tenant_id)
@@ -117,7 +123,7 @@ async def async_fetch_full_document(contract_id: str, tenant_id: str, max_chars:
     # ── Strategy 2: contracts.draft_revisions.latest_text ──
     try:
         contract_resp = await asyncio.to_thread(
-            lambda: admin_supabase.table("contracts")
+            lambda: supabase_client.table("contracts")
                 .select("draft_revisions")
                 .eq("id", contract_id)
                 .eq("tenant_id", tenant_id)
@@ -136,7 +142,7 @@ async def async_fetch_full_document(contract_id: str, tenant_id: str, max_chars:
     # ── Strategy 3: Qdrant vector chunk reconstruction (lossy fallback) ──
     try:
         response = await asyncio.to_thread(
-            qdrant.scroll,
+            qdrant_client.scroll,
             collection_name=COLLECTION_NAME,
             scroll_filter=Filter(must=[
                 FieldCondition(key="contract_id", match=MatchValue(value=contract_id)),
@@ -171,7 +177,8 @@ async def chat_with_clause(
     request: Request,
     question: str = Form(...),
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_tenant_supabase)
+    supabase: Client = Depends(get_tenant_supabase),
+    qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
 ):
     try:
         tenant_id = claims["verified_tenant_id"]
@@ -181,12 +188,10 @@ async def chat_with_clause(
 
         # 2. Tenant-isolated vector search (NON-BLOCKING)
         search_results = await async_qdrant_search(
+            qdrant_client=qdrant_client,
             collection=COLLECTION_NAME,
             vector=question_vector,
             limit=20,
-            query_filter=Filter(
-                must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]
-            )
         )
 
         if not search_results:
@@ -211,18 +216,19 @@ async def chat_with_clause(
         parent_context_map: dict = {}  # child_id -> parent metadata & text
         if contract_ids:
             try:
-                rels_resp = admin_supabase.table("document_relationships").select("parent_id, child_id, relationship_type").in_("child_id", contract_ids).execute()
+                rels_resp = supabase.table("document_relationships").select("parent_id, child_id, relationship_type").in_("child_id", contract_ids).eq("tenant_id", tenant_id).execute()
                 if rels_resp.data:
                     parent_ids = list(set([r["parent_id"] for r in rels_resp.data if r.get("parent_id")]))
                     if parent_ids:
                         # Fetch parent contract metadata — scoped to tenant
-                        parent_docs_resp = admin_supabase.table("contracts").select("id, title, risk_level, document_category, contract_value").in_("id", parent_ids).eq("tenant_id", tenant_id).execute()
+                        parent_docs_resp = supabase.table("contracts").select("id, title, risk_level, document_category, contract_value").in_("id", parent_ids).eq("tenant_id", tenant_id).execute()
                         parent_docs = {str(d["id"]): d for d in (parent_docs_resp.data or [])}
 
                         # Fetch parent vector chunks for context
                         for parent_id in parent_ids:
                             try:
                                 parent_chunks = await async_qdrant_search(
+                                    qdrant_client=qdrant_client,
                                     collection=COLLECTION_NAME,
                                     vector=question_vector,
                                     limit=3,
@@ -260,7 +266,7 @@ async def chat_with_clause(
                 # Ghost data — schedule async cleanup
                 try:
                     await asyncio.to_thread(
-                        qdrant.delete,
+                        qdrant_client.delete,
                         collection_name=COLLECTION_NAME,
                         wait=False,
                         points_selector=models.Filter(
@@ -367,7 +373,8 @@ async def chat_clause_assistant(
     request: Request,
     body: ClauseAssistantRequest,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_tenant_supabase)
+    supabase: Client = Depends(get_tenant_supabase),
+    qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
 ):
     try:
         tenant_id = claims["verified_tenant_id"]
@@ -380,7 +387,7 @@ async def chat_clause_assistant(
         # GENEALOGY: Only expand to direct parent (MSA), NOT all matter siblings
         genealogy_labels = {primary_contract_id: "PRIMARY DOCUMENT"}
         try:
-            rels_resp = admin_supabase.table("document_relationships").select("parent_id, child_id, relationship_type").eq("child_id", primary_contract_id).execute()
+            rels_resp = supabase.table("document_relationships").select("parent_id, child_id, relationship_type").eq("child_id", primary_contract_id).eq("tenant_id", tenant_id).execute()
             if rels_resp.data:
                 parent_ids = [r["parent_id"] for r in rels_resp.data if r.get("parent_id") and r["parent_id"] != primary_contract_id]
                 for pid in parent_ids:
@@ -432,11 +439,12 @@ async def chat_clause_assistant(
         )
 
         # Run contract search, law search, and playbook search IN PARALLEL
-        contract_task = async_qdrant_search(COLLECTION_NAME, question_vector, limit=4, query_filter=contract_filter)
-        law_task = async_qdrant_search("id_national_laws", question_vector, limit=2)
+        contract_task = async_qdrant_search(qdrant_client, COLLECTION_NAME, question_vector, limit=4, query_filter=contract_filter)
+        law_task = async_qdrant_search(qdrant, "id_national_laws", question_vector, limit=2)
         playbook_task = async_qdrant_search(
+            qdrant_client,
             "company_rules", question_vector, limit=3,
-            query_filter=Filter(must=[FieldCondition(key="user_id", match=MatchValue(value=tenant_id))])
+            query_filter=None
         )
 
         try:
@@ -460,7 +468,7 @@ async def chat_clause_assistant(
         
         try:
             # Fetch primary document text
-            primary_text = await async_fetch_full_document(primary_contract_id, tenant_id)
+            primary_text = await async_fetch_full_document(primary_contract_id, tenant_id, supabase, qdrant_client)
             if primary_text:
                 combined_context += "=== PRIMARY DOCUMENT (This is the contract the user is currently viewing) ===\n"
                 combined_context += f"Title: {contract_titles.get(primary_contract_id, 'Unknown Document')}\n"
@@ -471,7 +479,7 @@ async def chat_clause_assistant(
 
             # Fetch parent documents if any
             if parent_docs:
-                parent_tasks = [async_fetch_full_document(cid, tenant_id) for cid in parent_docs]
+                parent_tasks = [async_fetch_full_document(cid, tenant_id, supabase, qdrant_client) for cid in parent_docs]
                 parent_texts = await asyncio.gather(*parent_tasks)
                 for cid, text in zip(parent_docs, parent_texts):
                     if text:

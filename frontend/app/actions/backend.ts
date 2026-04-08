@@ -209,8 +209,22 @@ export async function triggerSmartIngestion(formData: FormData, matterId: string
     }
 }
 
+type ConfirmPendingVersionPayload = {
+    pendingVersionId: string
+    matchedContractId: string
+    action: 'confirm' | 'reject'
+    matterId?: string
+}
+
+type LegacyConfirmVersionPayload = {
+    newContractId: string
+    parentContractId: string
+}
+
 // 4. Confirm War Room Version Link
-export async function confirmVersionLink(newContractId: string, parentContractId: string) {
+export async function confirmVersionLink(
+    payload: ConfirmPendingVersionPayload | LegacyConfirmVersionPayload
+) {
     const { userId, orgId, getToken } = await auth()
     const tenantId = orgId || userId
 
@@ -220,18 +234,35 @@ export async function confirmVersionLink(newContractId: string, parentContractId
 
     try {
         const token = await getToken()
-        
-        const response = await fetch(`${FASTAPI_URL}/api/upload/confirm-version`, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                new_contract_id: newContractId,
-                parent_contract_id: parentContractId
-            }),
-        })
+
+        let response: Response
+        if ('pendingVersionId' in payload) {
+            const formData = new FormData()
+            formData.append('pending_version_id', payload.pendingVersionId)
+            formData.append('matched_contract_id', payload.matchedContractId)
+            formData.append('action', payload.action)
+            if (payload.matterId) formData.append('matter_id', payload.matterId)
+
+            response = await fetch(`${FASTAPI_URL}/api/upload/confirm-version`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: formData,
+            })
+        } else {
+            response = await fetch(`${FASTAPI_URL}/api/upload/confirm-version`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    new_contract_id: payload.newContractId,
+                    parent_contract_id: payload.parentContractId
+                }),
+            })
+        }
 
         if (!response.ok) {
             const errorData = await response.json().catch(() => ({}))

@@ -1,6 +1,7 @@
 import os
 import json
 import operator
+import time
 import uuid
 from typing import TypedDict, Annotated, List, Dict, Any, Optional
 from dotenv import load_dotenv
@@ -31,6 +32,8 @@ from app.review_schemas import (
     ClassifiedClauseV2, ClauseClassifierResultV2,
     ReviewFinding, BannerData, QuickInsight, TextCoordinate,
 )
+from app.event_bus import SSEEvent
+from app.token_budget import allocate_budget, count_tokens, get_budget, preflight_check, truncate_to_budget
 
 
 # ==========================================
@@ -92,6 +95,111 @@ class ContractState(TypedDict):
     quick_insights: list            # QuickInsight dicts (set by aggregator)
     banner: dict                    # BannerData dict (set by aggregator)
     _task_logger: Any               # Optional TaskLogger instance (injected by contracts.py)
+    _event_bus: Any                 # Optional EventBus instance (injected by contracts.py)
+    _tenant_id: str                 # Tenant context for SSE events
+
+
+AGENT_PROGRESS = {
+    "ingestion": {"name": "01_ingestion", "index": 1, "message": "Extracting contract metadata..."},
+    "compliance": {"name": "02_compliance", "index": 2, "message": "Analyzing compliance issues..."},
+    "risk": {"name": "03_risk", "index": 3, "message": "Calculating risk score..."},
+    "negotiation": {"name": "04_negotiation", "index": 4, "message": "Generating counter-proposal strategy..."},
+    "drafting": {"name": "05_drafting", "index": 5, "message": "Suggesting neutral rewrites..."},
+    "obligation_miner": {"name": "06_obligation_miner", "index": 6, "message": "Extracting contractual obligations..."},
+    "clause_classifier": {"name": "07_clause_classifier", "index": 7, "message": "Classifying clause types..."},
+    "review_aggregator": {"name": "08_review_aggregator", "index": 8, "message": "Merging and finalizing results..."},
+}
+TOTAL_AGENTS = len(AGENT_PROGRESS)
+
+
+def _emit_pipeline_event(
+    state: ContractState,
+    event_type: str,
+    agent_key: str,
+    *,
+    message: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    duration_ms: Optional[int] = None,
+    error: Optional[str] = None,
+) -> None:
+    event_bus_ref = state.get("_event_bus")
+    tenant_id = state.get("_tenant_id")
+    contract_id = state.get("contract_id")
+    if not event_bus_ref or not tenant_id or not contract_id:
+        return
+
+    agent_info = AGENT_PROGRESS[agent_key]
+    data = {
+        "agent_name": agent_info["name"],
+        "agent_index": agent_info["index"],
+        "total_agents": TOTAL_AGENTS,
+        "message": message or agent_info["message"],
+    }
+    if metadata:
+        data["metadata"] = metadata
+    if duration_ms is not None:
+        data["duration_ms"] = duration_ms
+    if error:
+        data["error"] = error[:300]
+
+    event_bus_ref.publish_sync(SSEEvent(
+        event_type=event_type,
+        contract_id=contract_id,
+        tenant_id=tenant_id,
+        data=data,
+    ))
+
+
+def _serialize_for_prompt(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value or {}, ensure_ascii=False)
+    except Exception:
+        return str(value)
+
+
+def _fit_prompt(
+    *,
+    model: str,
+    label: str,
+    system_prompt: str,
+    user_template: str,
+    sections: dict[str, str],
+    priorities: dict[str, int],
+    reserve_tokens: int = 2048,
+) -> tuple[str, dict[str, str]]:
+    rendered_prompt = user_template.format(**sections)
+    check = preflight_check(model, system_prompt, rendered_prompt, label)
+    if check["fits"]:
+        return rendered_prompt, sections
+
+    section_tokens = sum(count_tokens(text or "", model) for text in sections.values())
+    framing_tokens = max(0, check["user_tokens"] - section_tokens)
+    allocation = allocate_budget(
+        inputs=sections,
+        priorities=priorities,
+        total_budget=get_budget(model)["usable_input"],
+        model=model,
+        system_prompt_tokens=check["system_tokens"] + framing_tokens + reserve_tokens,
+    )
+    adjusted_sections = {name: text for name, (text, _token_count) in allocation.items()}
+    rendered_prompt = user_template.format(**adjusted_sections)
+    final_check = preflight_check(model, system_prompt, rendered_prompt, f"{label} (adjusted)")
+
+    if not final_check["fits"] and "raw_document" in adjusted_sections:
+        current_tokens = count_tokens(adjusted_sections["raw_document"], model)
+        overflow = max(512, -final_check["remaining"] + reserve_tokens)
+        adjusted_sections["raw_document"], _, _ = truncate_to_budget(
+            adjusted_sections["raw_document"],
+            max(1024, current_tokens - overflow),
+            model=model,
+            strategy="tail_preserve",
+        )
+        rendered_prompt = user_template.format(**adjusted_sections)
+        preflight_check(model, system_prompt, rendered_prompt, f"{label} (final)")
+
+    return rendered_prompt, adjusted_sections
 
 
 # ==========================================
@@ -124,8 +232,11 @@ def ingestion_agent(state: ContractState) -> ContractState:
     print(f"[Agent 01: Ingestion] Processing contract: {state.get('contract_id', 'Unknown')}")
     _logger = state.get('_task_logger')
     if _logger: _logger.log_agent_start('ingestion')
+    _emit_pipeline_event(state, "pipeline.agent_started", "ingestion")
+    started_at = time.time()
 
-    prompt = f"""
+    system_prompt = "You are a precise legal extraction engine."
+    user_template = """
     You are an expert Legal Document Parser.
     Extract the following from the provided contract text:
     1. 'contract_value': The total financial consideration or value as a number. If none, output 0.
@@ -137,15 +248,23 @@ def ingestion_agent(state: ContractState) -> ContractState:
     7. 'extracted_clauses': A dictionary where keys are clause names (e.g., 'Indemnity', 'Liability') and values are the text.
 
     CONTRACT TEXT:
-    {state.get('raw_document', '')}
+    {raw_document}
     """
+    prompt, _ = _fit_prompt(
+        model="gpt-4o-mini",
+        label="Agent 01 Ingestion",
+        system_prompt=system_prompt,
+        user_template=user_template,
+        sections={"raw_document": state.get('raw_document', '')},
+        priorities={"raw_document": 3},
+    )
 
     try:
         response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             response_format=ContractMetadata,
             messages=[
-                {"role": "system", "content": "You are a precise legal extraction engine."},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ]
         )
@@ -153,6 +272,13 @@ def ingestion_agent(state: ContractState) -> ContractState:
         clauses_dict = {c.clause_name: c.clause_text for c in result.extracted_clauses} if result.extracted_clauses else {}
         print(f"[Agent 01] Extracted: value={result.contract_value}, currency={result.currency}, end_date={result.end_date}")
         if _logger: _logger.log_agent_complete('ingestion', {'currency': result.currency, 'clauses_found': len(clauses_dict)})
+        _emit_pipeline_event(
+            state,
+            "pipeline.agent_completed",
+            "ingestion",
+            duration_ms=int((time.time() - started_at) * 1000),
+            metadata={"clauses_found": len(clauses_dict), "currency": result.currency},
+        )
         return {
             "contract_value": result.contract_value,
             "currency": result.currency,
@@ -167,6 +293,7 @@ def ingestion_agent(state: ContractState) -> ContractState:
         import traceback
         traceback.print_exc()
         if _logger: _logger.log_agent_failed('ingestion', e)
+        _emit_pipeline_event(state, "pipeline.agent_failed", "ingestion", error=str(e))
         return {"contract_value": 0.0, "currency": "IDR", "end_date": "Error", "effective_date": None, "jurisdiction": None, "governing_law": None, "extracted_clauses": {}}
 
 
@@ -181,6 +308,8 @@ def compliance_agent(state: ContractState) -> ContractState:
     """
     _logger = state.get('_task_logger')
     if _logger: _logger.log_agent_start('compliance')
+    _emit_pipeline_event(state, "pipeline.agent_started", "compliance")
+    started_at = time.time()
     print("[Agent 02: Compliance] Auditing clauses for compliance violations...")
 
     raw_doc = state.get('raw_document', '')
@@ -224,7 +353,11 @@ def compliance_agent(state: ContractState) -> ContractState:
     except Exception as e:
         print(f"[Agent 02] National law retrieval failed (non-fatal): {e}")
 
-    prompt = f"""
+    system_prompt = (
+        "You are a legal compliance engine that outputs structured findings with exact text coordinates. "
+        "You have deep knowledge of Indonesian law and MUST cite specific pasal numbers when identifying statutory violations."
+    )
+    user_template = """
     You are a Senior Legal Compliance Auditor with deep expertise in Indonesian law.
     Review the following contract and identify any risks.
 
@@ -253,17 +386,35 @@ def compliance_agent(state: ContractState) -> ContractState:
     If the contract is written in Indonesian (Bahasa Indonesia), your outputs (summaries, findings, clauses) MUST be written in formal, legal Indonesian (Bahasa Indonesia baku yang sesuai dengan standar hukum). DO NOT output English if the contract is Indonesian.
 
     FULL CONTRACT TEXT:
-    {raw_doc}
+    {raw_document}
 
     EXTRACTED CLAUSES (for reference):
-    {json.dumps(clauses)}
+    {clauses}
     """
+    prompt, _ = _fit_prompt(
+        model="gpt-4o-mini",
+        label="Agent 02 Compliance",
+        system_prompt=system_prompt,
+        user_template=user_template,
+        sections={
+            "COORDINATE_INSTRUCTION": COORDINATE_INSTRUCTION,
+            "law_context": law_context,
+            "raw_document": raw_doc,
+            "clauses": _serialize_for_prompt(clauses),
+        },
+        priorities={
+            "COORDINATE_INSTRUCTION": 1,
+            "law_context": 2,
+            "raw_document": 3,
+            "clauses": 1,
+        },
+    )
 
     try:
         response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a legal compliance engine that outputs structured findings with exact text coordinates. You have deep knowledge of Indonesian law and MUST cite specific pasal numbers when identifying statutory violations."},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=ComplianceAuditV2
@@ -281,12 +432,21 @@ def compliance_agent(state: ContractState) -> ContractState:
         if statutory_count:
             print(f"[Agent 02] Including {statutory_count} Statutory Violation(s) citing Indonesian law.")
         if _logger: _logger.log_agent_complete('compliance', {'v2_findings': len(v2_findings), 'statutory_violations': statutory_count})
+        _emit_pipeline_event(
+            state,
+            "pipeline.agent_completed",
+            "compliance",
+            duration_ms=int((time.time() - started_at) * 1000),
+            metadata={"findings_count": len(v2_findings), "statutory_violations": statutory_count},
+        )
         return {
             "compliance_issues": legacy_issues,
             "compliance_findings_v2": v2_findings
         }
     except Exception as e:
         print(f"Compliance Agent Error: {e}")
+        if _logger: _logger.log_agent_failed('compliance', e)
+        _emit_pipeline_event(state, "pipeline.agent_failed", "compliance", error=str(e))
         return {
             "compliance_issues": ["Error during compliance check."],
             "compliance_findings_v2": []
@@ -303,6 +463,8 @@ def risk_agent(state: ContractState) -> ContractState:
     """
     _logger = state.get('_task_logger')
     if _logger: _logger.log_agent_start('risk')
+    _emit_pipeline_event(state, "pipeline.agent_started", "risk")
+    started_at = time.time()
     print("[Agent 03: Risk] Calculating overall contract risk score...")
 
     raw_doc = state.get('raw_document', '')
@@ -310,7 +472,8 @@ def risk_agent(state: ContractState) -> ContractState:
     findings_v2 = state.get('compliance_findings_v2', [])
     value = state.get('contract_value', 'Unknown')
 
-    prompt = f"""
+    system_prompt = "You are a risk assessment engine that outputs structured risk flags with severity levels and exact text coordinates."
+    user_template = """
     You are a Chief Risk Officer AI.
     Evaluate the compliance issues, contract value, and the full contract text.
 
@@ -335,18 +498,36 @@ def risk_agent(state: ContractState) -> ContractState:
     {COORDINATE_INSTRUCTION}
 
     FULL CONTRACT TEXT:
-    {raw_doc}
+    {raw_document}
 
-    CONTRACT VALUE: {value}
+    CONTRACT VALUE: {contract_value}
     COMPLIANCE ISSUES:
-    {json.dumps(issues)}
+    {issues}
     """
+    prompt, _ = _fit_prompt(
+        model="gpt-4o-mini",
+        label="Agent 03 Risk",
+        system_prompt=system_prompt,
+        user_template=user_template,
+        sections={
+            "COORDINATE_INSTRUCTION": COORDINATE_INSTRUCTION,
+            "raw_document": raw_doc,
+            "contract_value": str(value),
+            "issues": _serialize_for_prompt(issues),
+        },
+        priorities={
+            "COORDINATE_INSTRUCTION": 1,
+            "raw_document": 3,
+            "contract_value": 1,
+            "issues": 2,
+        },
+    )
 
     try:
         response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a risk assessment engine that outputs structured risk flags with severity levels and exact text coordinates."},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=RiskAssessmentV2
@@ -364,6 +545,13 @@ def risk_agent(state: ContractState) -> ContractState:
 
         print(f"[Agent 03] Risk Score: {score}, Level: {risk_level}, Flags: {len(v2_flags)}")
         if _logger: _logger.log_agent_complete('risk', {'score': score, 'level': risk_level})
+        _emit_pipeline_event(
+            state,
+            "pipeline.agent_completed",
+            "risk",
+            duration_ms=int((time.time() - started_at) * 1000),
+            metadata={"risk_score": score, "risk_level": risk_level, "flags_count": len(v2_flags)},
+        )
         return {
             "risk_score": score,
             "risk_level": risk_level,
@@ -372,6 +560,8 @@ def risk_agent(state: ContractState) -> ContractState:
         }
     except Exception as e:
         print(f"Risk Agent Error: {e}")
+        if _logger: _logger.log_agent_failed('risk', e)
+        _emit_pipeline_event(state, "pipeline.agent_failed", "risk", error=str(e))
         return {"risk_score": 100.0, "risk_level": "High", "risk_flags": ["Error calculating risk."], "risk_flags_v2": []}
 
 
@@ -384,13 +574,16 @@ def negotiation_agent(state: ContractState) -> ContractState:
     """
     _logger = state.get('_task_logger')
     if _logger: _logger.log_agent_start('negotiation')
+    _emit_pipeline_event(state, "pipeline.agent_started", "negotiation")
+    started_at = time.time()
     print("[Agent 04: Negotiation] Formulating BATNA-based negotiation strategy...")
 
     issues = state.get('compliance_issues', [])
     flags = state.get('risk_flags', [])
     raw_doc_sample = state.get('raw_document', '')[:5000]
 
-    prompt = f"""
+    system_prompt = "You are a strategic negotiation JSON generator."
+    user_template = """
     You are an expert Corporate Negotiation Strategist.
     Analyze the following compliance issues and risk flags and formulate a BATNA-based strategy.
     Provide a robust, professional counter_proposal strategy.
@@ -403,28 +596,52 @@ def negotiation_agent(state: ContractState) -> ContractState:
     If the contract is written in Indonesian (Bahasa Indonesia), your suggested clauses and explanations MUST be written in formal, legal Indonesian (Bahasa Indonesia baku yang sesuai dengan standar hukum). DO NOT output English redlines for an Indonesian contract.
 
     FULL CONTRACT TEXT (Sample):
-    {raw_doc_sample}
+    {raw_document_sample}
 
     COMPLIANCE ISSUES:
-    {json.dumps(issues)}
+    {issues}
     RISK FLAGS:
-    {json.dumps(flags)}
+    {flags}
     """
+    prompt, _ = _fit_prompt(
+        model="gpt-4o-mini",
+        label="Agent 04 Negotiation",
+        system_prompt=system_prompt,
+        user_template=user_template,
+        sections={
+            "raw_document_sample": raw_doc_sample,
+            "issues": _serialize_for_prompt(issues),
+            "flags": _serialize_for_prompt(flags),
+        },
+        priorities={
+            "raw_document_sample": 3,
+            "issues": 2,
+            "flags": 2,
+        },
+    )
 
     try:
         response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a strategic negotiation JSON generator."},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=NegotiationStrategy
         )
         result = response.choices[0].message.parsed
         if _logger: _logger.log_agent_complete('negotiation')
+        _emit_pipeline_event(
+            state,
+            "pipeline.agent_completed",
+            "negotiation",
+            duration_ms=int((time.time() - started_at) * 1000),
+        )
         return {"counter_proposal": result.counter_proposal}
     except Exception as e:
         print(f"Negotiation Agent Error: {e}")
+        if _logger: _logger.log_agent_failed('negotiation', e)
+        _emit_pipeline_event(state, "pipeline.agent_failed", "negotiation", error=str(e))
         return {"counter_proposal": "Error formulating negotiation strategy."}
 
 
@@ -437,12 +654,15 @@ def drafting_agent(state: ContractState) -> ContractState:
     """
     _logger = state.get('_task_logger')
     if _logger: _logger.log_agent_start('drafting')
+    _emit_pipeline_event(state, "pipeline.agent_started", "drafting")
+    started_at = time.time()
     print("[Agent 05: Drafting] Rewriting risky clauses to neutral/fair versions...")
 
     raw_doc = state.get('raw_document', '')
     strategy = state.get('counter_proposal', '')
     issues = state.get('compliance_issues', [])
-    prompt = f"""
+    system_prompt = "You are a legal contract drafting engine that outputs clause revisions with exact text coordinates."
+    user_template = """
     You are a Senior Contract Drafter.
     Based on the following negotiation strategy and compliance issues, rewrite the problematic clauses into "Fair/Neutral" B2B versions.
 
@@ -459,18 +679,36 @@ def drafting_agent(state: ContractState) -> ContractState:
     {COORDINATE_INSTRUCTION}
 
     FULL CONTRACT TEXT:
-    {raw_doc}
+    {raw_document}
 
     NEGOTIATION STRATEGY: {strategy}
     COMPLIANCE ISSUES:
-    {json.dumps(issues)}
+    {issues}
     """
+    prompt, _ = _fit_prompt(
+        model="gpt-4o-mini",
+        label="Agent 05 Drafting",
+        system_prompt=system_prompt,
+        user_template=user_template,
+        sections={
+            "COORDINATE_INSTRUCTION": COORDINATE_INSTRUCTION,
+            "raw_document": raw_doc,
+            "strategy": strategy,
+            "issues": _serialize_for_prompt(issues),
+        },
+        priorities={
+            "COORDINATE_INSTRUCTION": 1,
+            "raw_document": 3,
+            "strategy": 2,
+            "issues": 2,
+        },
+    )
 
     try:
         response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a legal contract drafting engine that outputs clause revisions with exact text coordinates."},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=DraftingResultV2
@@ -484,12 +722,21 @@ def drafting_agent(state: ContractState) -> ContractState:
 
         print(f"[Agent 05] Generated {len(v2_revisions)} coordinate-mapped revisions.")
         if _logger: _logger.log_agent_complete('drafting', {'revisions': len(v2_revisions)})
+        _emit_pipeline_event(
+            state,
+            "pipeline.agent_completed",
+            "drafting",
+            duration_ms=int((time.time() - started_at) * 1000),
+            metadata={"revisions_count": len(v2_revisions)},
+        )
         return {
             "draft_revisions": legacy_revisions,
             "draft_revisions_v2": v2_revisions
         }
     except Exception as e:
         print(f"Drafting Agent Error: {e}")
+        if _logger: _logger.log_agent_failed('drafting', e)
+        _emit_pipeline_event(state, "pipeline.agent_failed", "drafting", error=str(e))
         return {"draft_revisions": [{"error": "Failed to draft revisions."}], "draft_revisions_v2": []}
 
 
@@ -502,11 +749,14 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
     """
     _logger = state.get('_task_logger')
     if _logger: _logger.log_agent_start('obligation_miner')
+    _emit_pipeline_event(state, "pipeline.agent_started", "obligation_miner")
+    started_at = time.time()
     print("[Agent 06: Obligation Miner] Extracting contractual obligations...")
 
     raw_doc = state.get('raw_document', '')
 
-    prompt = f"""
+    system_prompt = "You are a precise obligation extraction engine with text coordinate output."
+    user_template = """
     You are an expert Legal Obligation Analyst.
     Analyze the following contract text and extract ALL contractual obligations,
     deliverables, duties, and commitments.
@@ -527,14 +777,28 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
     {COORDINATE_INSTRUCTION}
 
     FULL CONTRACT TEXT:
-    {raw_doc}
+    {raw_document}
     """
+    prompt, _ = _fit_prompt(
+        model="gpt-4o-mini",
+        label="Agent 06 Obligation Miner",
+        system_prompt=system_prompt,
+        user_template=user_template,
+        sections={
+            "COORDINATE_INSTRUCTION": COORDINATE_INSTRUCTION,
+            "raw_document": raw_doc,
+        },
+        priorities={
+            "COORDINATE_INSTRUCTION": 1,
+            "raw_document": 3,
+        },
+    )
 
     try:
         response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a precise obligation extraction engine with text coordinate output."},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=ObligationMinerResultV2
@@ -548,12 +812,21 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
 
         print(f"[Agent 06] Extracted {len(v2_obligations)} obligations with coordinates.")
         if _logger: _logger.log_agent_complete('obligation_miner', {'obligations': len(v2_obligations)})
+        _emit_pipeline_event(
+            state,
+            "pipeline.agent_completed",
+            "obligation_miner",
+            duration_ms=int((time.time() - started_at) * 1000),
+            metadata={"obligations_count": len(v2_obligations)},
+        )
         return {
             "extracted_obligations": legacy_obligations,
             "obligations_v2": v2_obligations
         }
     except Exception as e:
         print(f"Obligation Miner Error: {e}")
+        if _logger: _logger.log_agent_failed('obligation_miner', e)
+        _emit_pipeline_event(state, "pipeline.agent_failed", "obligation_miner", error=str(e))
         return {"extracted_obligations": [], "obligations_v2": []}
 
 
@@ -566,12 +839,15 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
     """
     _logger = state.get('_task_logger')
     if _logger: _logger.log_agent_start('clause_classifier')
+    _emit_pipeline_event(state, "pipeline.agent_started", "clause_classifier")
+    started_at = time.time()
     print("[Agent 07: Clause Classifier] Classifying key contract clauses...")
 
     raw_doc = state.get('raw_document', '')
     clauses = state.get('extracted_clauses', {})
 
-    prompt = f"""
+    system_prompt = "You are a legal clause classification engine with text coordinate output."
+    user_template = """
     You are an expert Legal Clause Classifier.
     Review the following contract and classify key clauses into standard legal categories.
 
@@ -593,17 +869,33 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
     {COORDINATE_INSTRUCTION}
 
     FULL CONTRACT TEXT:
-    {raw_doc}
+    {raw_document}
 
     EXTRACTED CLAUSES (for reference):
-    {json.dumps(clauses)}
+    {clauses}
     """
+    prompt, _ = _fit_prompt(
+        model="gpt-4o-mini",
+        label="Agent 07 Clause Classifier",
+        system_prompt=system_prompt,
+        user_template=user_template,
+        sections={
+            "COORDINATE_INSTRUCTION": COORDINATE_INSTRUCTION,
+            "raw_document": raw_doc,
+            "clauses": _serialize_for_prompt(clauses),
+        },
+        priorities={
+            "COORDINATE_INSTRUCTION": 1,
+            "raw_document": 3,
+            "clauses": 1,
+        },
+    )
 
     try:
         response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are a legal clause classification engine with text coordinate output."},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=ClauseClassifierResultV2
@@ -617,12 +909,21 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
 
         print(f"[Agent 07] Classified {len(v2_clauses)} clauses with coordinates.")
         if _logger: _logger.log_agent_complete('clause_classifier', {'clauses': len(v2_clauses)})
+        _emit_pipeline_event(
+            state,
+            "pipeline.agent_completed",
+            "clause_classifier",
+            duration_ms=int((time.time() - started_at) * 1000),
+            metadata={"clauses_count": len(v2_clauses)},
+        )
         return {
             "classified_clauses": legacy_clauses,
             "classified_clauses_v2": v2_clauses
         }
     except Exception as e:
         print(f"Clause Classifier Error: {e}")
+        if _logger: _logger.log_agent_failed('clause_classifier', e)
+        _emit_pipeline_event(state, "pipeline.agent_failed", "clause_classifier", error=str(e))
         return {"classified_clauses": [], "classified_clauses_v2": []}
 
 
@@ -637,6 +938,8 @@ def review_aggregator(state: ContractState) -> ContractState:
     """
     _logger = state.get('_task_logger')
     if _logger: _logger.log_agent_start('review_aggregator')
+    _emit_pipeline_event(state, "pipeline.agent_started", "review_aggregator")
+    started_at = time.time()
     print("[Review Aggregator] Merging all agent outputs into unified review format...")
 
     raw_doc = state.get('raw_document', '')
@@ -772,6 +1075,13 @@ def review_aggregator(state: ContractState) -> ContractState:
 
     print(f"[Review Aggregator] Aggregated {len(findings)} findings, {len(quick_insights)} quick insights.")
     if _logger: _logger.log_agent_complete('review_aggregator', {'findings': len(findings), 'quick_insights': len(quick_insights)})
+    _emit_pipeline_event(
+        state,
+        "pipeline.agent_completed",
+        "review_aggregator",
+        duration_ms=int((time.time() - started_at) * 1000),
+        metadata={"findings_count": len(findings), "quick_insights_count": len(quick_insights)},
+    )
     return {
         "review_findings": findings,
         "quick_insights": quick_insights,
@@ -918,7 +1228,8 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
     Note any such patterns in your analysis.
     """
 
-    prompt = f"""
+    system_prompt = "You are a strategic Diff Engine that identifies deviations, evaluates playbook compliance, and generates BATNA compromises."
+    user_template = """
     You are a Senior Contract Negotiation Analyst and Counterparty Strategist performing a V1 vs V2 comparison.
 
     TASK: Compare the PREVIOUS VERSION (V1) against the CURRENT VERSION (V2) of this contract.
@@ -961,12 +1272,37 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
     V2 TEXT:
     {v2_raw_text}
     """
+    prompt, adjusted_sections = _fit_prompt(
+        model="gpt-4o",
+        label="Smart Diff Agent",
+        system_prompt=system_prompt,
+        user_template=user_template,
+        sections={
+            "COORDINATE_INSTRUCTION": COORDINATE_INSTRUCTION,
+            "rounds_block": rounds_block,
+            "v1_risk_score": str(v1_risk_score),
+            "playbook_rules_text": playbook_rules_text,
+            "v1_raw_text": v1_raw_text,
+            "v2_raw_text": v2_raw_text,
+        },
+        priorities={
+            "COORDINATE_INSTRUCTION": 1,
+            "rounds_block": 1,
+            "v1_risk_score": 1,
+            "playbook_rules_text": 2,
+            "v1_raw_text": 3,
+            "v2_raw_text": 3,
+        },
+        reserve_tokens=4096,
+    )
+    v1_raw_text = adjusted_sections["v1_raw_text"]
+    v2_raw_text = adjusted_sections["v2_raw_text"]
 
     try:
         response = client.beta.chat.completions.parse(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are a strategic Diff Engine that identifies deviations, evaluates playbook compliance, and generates BATNA compromises."},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=SmartDiffResult
@@ -1070,3 +1406,96 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
         import traceback
         traceback.print_exc()
         raise e
+
+
+class PreSignChecklistAssessment(BaseModel):
+    bilingual_required: bool = False
+    recommended_signature_type: Optional[str] = None
+    notes: list[str] = Field(default_factory=list)
+    rationale: str = ""
+
+
+def run_presign_checklist_agent(
+    *,
+    contract: dict,
+    matter: Optional[dict],
+    issues: list[dict],
+    bilingual_clauses: list[dict],
+) -> dict:
+    """
+    Lightweight AI advisor for the pre-signing checklist.
+
+    This helper is intentionally non-blocking. If the model call fails, callers
+    still receive deterministic heuristic guidance.
+    """
+    matter_industry = ((matter or {}).get("industry") or "").lower()
+    jurisdiction = (contract.get("jurisdiction") or "").lower()
+    parties = json.dumps(contract.get("parties") or {}, ensure_ascii=False)
+    unresolved_critical = [
+        issue for issue in issues
+        if (issue.get("severity") == "critical" and (issue.get("status") or "").lower() in ("open", "under_review"))
+    ]
+    has_bilingual = bool(bilingual_clauses) or bool(contract.get("id_raw_text") and contract.get("en_raw_text"))
+    regulated_keywords = ["banking", "finance", "insurance", "government", "ojk", "bi", "bfsi"]
+    heuristic_recommendation = (
+        "certified"
+        if any(keyword in matter_industry or keyword in jurisdiction for keyword in regulated_keywords)
+        else "simple"
+    )
+    heuristic_bilingual_required = "indonesia" in jurisdiction or "indones" in parties.lower()
+
+    system_prompt = (
+        "You are an Indonesian legal operations reviewer. "
+        "Assess whether a contract should have a bilingual version before signing, "
+        "whether certified digital signatures are recommended, and return concise notes."
+    )
+    user_prompt = f"""
+    CONTRACT SNAPSHOT:
+    title: {contract.get("title")}
+    status: {contract.get("status")}
+    jurisdiction: {contract.get("jurisdiction")}
+    contract_value: {contract.get("currency", "IDR")} {contract.get("contract_value")}
+    parties: {parties}
+    matter_industry: {(matter or {}).get("industry")}
+    risk_level: {contract.get("risk_level")}
+
+    NEGOTIATION:
+    total_issues: {len(issues)}
+    unresolved_critical: {len(unresolved_critical)}
+
+    BILINGUAL:
+    has_bilingual: {has_bilingual}
+    bilingual_clause_count: {len(bilingual_clauses)}
+
+    Use Indonesian signing and document practice. Return JSON with:
+    - bilingual_required: boolean
+    - recommended_signature_type: "certified" or "simple"
+    - notes: array of 1-3 short strings
+    - rationale: short paragraph
+    """
+
+    try:
+        response = client.beta.chat.completions.parse(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format=PreSignChecklistAssessment,
+        )
+        parsed = response.choices[0].message.parsed
+        return parsed.model_dump()
+    except Exception:
+        notes = []
+        if heuristic_bilingual_required and not has_bilingual:
+            notes.append("Bahasa Indonesia version is advisable before execution.")
+        if heuristic_recommendation == "certified":
+            notes.append("Certified PSrE signatures are recommended for regulated contexts.")
+        if unresolved_critical:
+            notes.append("Critical negotiation issues remain open and should block signing.")
+        return {
+            "bilingual_required": heuristic_bilingual_required,
+            "recommended_signature_type": heuristic_recommendation,
+            "notes": notes,
+            "rationale": "Fallback heuristic guidance generated because the AI pre-sign assessment was unavailable.",
+        }

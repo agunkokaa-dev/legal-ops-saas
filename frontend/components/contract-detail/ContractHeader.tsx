@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { createClient } from '@supabase/supabase-js'
 
@@ -30,6 +30,17 @@ export default function ContractHeader({
         risk_level: initialContract?.risk_level || 'LOW',
         end_date: initialContract?.end_date || ''
     })
+
+    useEffect(() => {
+        setContract(initialContract)
+        setEditForm({
+            title: initialContract?.title || '',
+            status: initialContract?.status || 'DRAFT',
+            contract_value: initialContract?.contract_value || '',
+            risk_level: initialContract?.risk_level || 'LOW',
+            end_date: initialContract?.end_date || ''
+        })
+    }, [initialContract])
 
     const handleUpdateContract = async (e: React.FormEvent) => {
         e.preventDefault()

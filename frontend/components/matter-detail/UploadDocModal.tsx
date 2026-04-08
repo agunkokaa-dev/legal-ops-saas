@@ -39,6 +39,10 @@ export default function UploadDocModal({ matterId, existingDocs = [] }: { matter
         } else {
             setIsOpen(false)
             setCandidateInfo(null)
+            if (res?.contractId) {
+                router.push(`/dashboard/contracts/${res.contractId}`)
+                router.refresh()
+            }
         }
     }
 
@@ -103,7 +107,30 @@ export default function UploadDocModal({ matterId, existingDocs = [] }: { matter
                                 <div className="flex justify-center gap-3 w-full mt-2 border-t border-white/5 pt-6">
                                     <button
                                         type="button"
-                                        onClick={resetModal}
+                                        onClick={async () => {
+                                            if (!candidateInfo) return
+                                            setIsConfirmingVersion(true)
+                                            try {
+                                                const { confirmVersion } = await import('@/app/actions/documentActions')
+                                                const res = await confirmVersion({
+                                                    pendingVersionId: candidateInfo.pending_version_id,
+                                                    matchedContractId: candidateInfo.matched_contract_id,
+                                                    action: 'reject',
+                                                    matterId,
+                                                })
+                                                if (res?.error) throw new Error(res.error)
+                                                resetModal()
+                                                const targetId = res?.data?.contract_id
+                                                if (targetId) {
+                                                    router.push(`/dashboard/contracts/${targetId}`)
+                                                    router.refresh()
+                                                }
+                                            } catch (err: any) {
+                                                setError(err.message || 'Failed to create standalone contract')
+                                            } finally {
+                                                setIsConfirmingVersion(false)
+                                            }
+                                        }}
                                         className="flex-1 px-4 py-2.5 bg-surface border border-surface-border hover:bg-white/5 hover:border-white/20 text-white rounded text-sm transition-all shadow-sm"
                                         disabled={isConfirmingVersion}
                                     >
@@ -117,13 +144,21 @@ export default function UploadDocModal({ matterId, existingDocs = [] }: { matter
                                             setIsConfirmingVersion(true)
                                             try {
                                                 const { confirmVersion } = await import('@/app/actions/documentActions')
-                                                await confirmVersion(candidateInfo.uploaded_contract_id, candidateInfo.matched_contract_id)
+                                                const res = await confirmVersion({
+                                                    pendingVersionId: candidateInfo.pending_version_id,
+                                                    matchedContractId: candidateInfo.matched_contract_id,
+                                                    action: 'confirm',
+                                                    matterId,
+                                                })
+                                                if (res?.error) throw new Error(res.error)
                                                 resetModal()
-                                                // Navigate to the PARENT (surviving) contract, not the deleted orphan
-                                                router.push(`/dashboard/contracts/${candidateInfo.matched_contract_id}`)
-                                                router.refresh()
-                                            } catch (err) {
-                                                console.error(err)
+                                                const targetId = res?.data?.contract_id
+                                                if (targetId) {
+                                                    router.push(`/dashboard/contracts/${targetId}`)
+                                                    router.refresh()
+                                                }
+                                            } catch (err: any) {
+                                                setError(err.message || 'Failed to confirm version')
                                             } finally {
                                                 setIsConfirmingVersion(false)
                                             }

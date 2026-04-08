@@ -1,0 +1,285 @@
+'use client'
+
+import { useAuth } from '@clerk/nextjs'
+import { useCallback, useEffect, useRef, useState } from 'react'
+
+export interface ContractSSEEvent {
+    event_id: string
+    event_type: string
+    contract_id: string | null
+    timestamp: string
+    data: Record<string, unknown>
+}
+
+type EventHandler = (event: ContractSSEEvent) => void
+
+interface UseContractSSEOptions {
+    contractId: string
+    enabled?: boolean
+    onEvent?: EventHandler
+    onConnected?: () => void
+    onDisconnected?: () => void
+    onPipelineProgress?: EventHandler
+    onPipelineCompleted?: EventHandler
+    onPipelineFailed?: EventHandler
+    onDiffStarted?: EventHandler
+    onDiffCompleted?: EventHandler
+    onDiffFailed?: EventHandler
+    onSigningUpdate?: EventHandler
+    onStatusChanged?: EventHandler
+    onNegotiationIssueUpdated?: EventHandler
+    onRoundCreated?: EventHandler
+    pollFallback?: () => void | Promise<void>
+    fallbackIntervalMs?: number
+}
+
+const CONTRACT_EVENT_TYPES = [
+    'connected',
+    'pipeline.started',
+    'pipeline.agent_started',
+    'pipeline.agent_completed',
+    'pipeline.agent_failed',
+    'pipeline.completed',
+    'pipeline.failed',
+    'diff.started',
+    'diff.completed',
+    'diff.failed',
+    'contract.status_changed',
+    'contract.risk_updated',
+    'signing.initiated',
+    'signing.signer_notified',
+    'signing.signer_viewed',
+    'signing.signer_signed',
+    'signing.signer_rejected',
+    'signing.completed',
+    'signing.expired',
+    'signing.emeterai_affixed',
+    'negotiation.issue_updated',
+    'negotiation.round_created',
+    'obligation.activated',
+    'task.created',
+] as const
+
+function getApiUrl() {
+    return (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+}
+
+export function useContractSSE({
+    contractId,
+    enabled = true,
+    onEvent,
+    onConnected,
+    onDisconnected,
+    onPipelineProgress,
+    onPipelineCompleted,
+    onPipelineFailed,
+    onDiffStarted,
+    onDiffCompleted,
+    onDiffFailed,
+    onSigningUpdate,
+    onStatusChanged,
+    onNegotiationIssueUpdated,
+    onRoundCreated,
+    pollFallback,
+    fallbackIntervalMs = 5000,
+}: UseContractSSEOptions) {
+    const { getToken } = useAuth()
+    const eventSourceRef = useRef<EventSource | null>(null)
+    const failCountRef = useRef(0)
+    const handlersRef = useRef({
+        onEvent,
+        onConnected,
+        onDisconnected,
+        onPipelineProgress,
+        onPipelineCompleted,
+        onPipelineFailed,
+        onDiffStarted,
+        onDiffCompleted,
+        onDiffFailed,
+        onSigningUpdate,
+        onStatusChanged,
+        onNegotiationIssueUpdated,
+        onRoundCreated,
+    })
+
+    const [isConnected, setIsConnected] = useState(false)
+    const [lastEvent, setLastEvent] = useState<ContractSSEEvent | null>(null)
+    const [fallbackContractId, setFallbackContractId] = useState<string | null>(null)
+    const isFallbackPolling = fallbackContractId === contractId
+
+    useEffect(() => {
+        handlersRef.current = {
+            onEvent,
+            onConnected,
+            onDisconnected,
+            onPipelineProgress,
+            onPipelineCompleted,
+            onPipelineFailed,
+            onDiffStarted,
+            onDiffCompleted,
+            onDiffFailed,
+            onSigningUpdate,
+            onStatusChanged,
+            onNegotiationIssueUpdated,
+            onRoundCreated,
+        }
+    }, [
+        onEvent,
+        onConnected,
+        onDisconnected,
+        onPipelineProgress,
+        onPipelineCompleted,
+        onPipelineFailed,
+        onDiffStarted,
+        onDiffCompleted,
+        onDiffFailed,
+        onSigningUpdate,
+        onStatusChanged,
+        onNegotiationIssueUpdated,
+        onRoundCreated,
+    ])
+
+    const routeEvent = useCallback((event: ContractSSEEvent) => {
+        const handlers = handlersRef.current
+        handlers.onEvent?.(event)
+
+        switch (event.event_type) {
+            case 'pipeline.agent_started':
+            case 'pipeline.agent_completed':
+                handlers.onPipelineProgress?.(event)
+                break
+            case 'pipeline.completed':
+                handlers.onPipelineCompleted?.(event)
+                break
+            case 'pipeline.failed':
+                handlers.onPipelineFailed?.(event)
+                break
+            case 'diff.started':
+                handlers.onDiffStarted?.(event)
+                break
+            case 'diff.completed':
+                handlers.onDiffCompleted?.(event)
+                break
+            case 'diff.failed':
+                handlers.onDiffFailed?.(event)
+                break
+            case 'contract.status_changed':
+                handlers.onStatusChanged?.(event)
+                break
+            case 'signing.initiated':
+            case 'signing.signer_notified':
+            case 'signing.signer_viewed':
+            case 'signing.signer_signed':
+            case 'signing.signer_rejected':
+            case 'signing.completed':
+            case 'signing.expired':
+            case 'signing.emeterai_affixed':
+            case 'obligation.activated':
+                handlers.onSigningUpdate?.(event)
+                break
+            case 'negotiation.issue_updated':
+                handlers.onNegotiationIssueUpdated?.(event)
+                break
+            case 'negotiation.round_created':
+                handlers.onRoundCreated?.(event)
+                break
+        }
+    }, [])
+
+    const connect = useCallback(async () => {
+        if (!enabled || !contractId || isFallbackPolling) {
+            return
+        }
+
+        const token = await getToken()
+        if (!token) {
+            return
+        }
+
+        eventSourceRef.current?.close()
+
+        const source = new EventSource(
+            `${getApiUrl()}/api/v1/events/contracts/${contractId}/stream?token=${encodeURIComponent(token)}`
+        )
+        eventSourceRef.current = source
+
+        const handleMessage = (message: MessageEvent<string>) => {
+            try {
+                const parsed = JSON.parse(message.data) as ContractSSEEvent
+                setLastEvent(parsed)
+                routeEvent(parsed)
+            } catch (error) {
+                console.error('[SSE] Failed to parse contract event', error)
+            }
+        }
+
+        for (const eventType of CONTRACT_EVENT_TYPES) {
+            source.addEventListener(eventType, handleMessage as EventListener)
+        }
+
+        source.onmessage = handleMessage
+        source.onopen = () => {
+            failCountRef.current = 0
+            setIsConnected(true)
+            handlersRef.current.onConnected?.()
+        }
+        source.onerror = () => {
+            failCountRef.current += 1
+            setIsConnected(false)
+            handlersRef.current.onDisconnected?.()
+
+            if (failCountRef.current > 3) {
+                console.warn('[SSE] Falling back to polling for contract stream', contractId)
+                source.close()
+                setFallbackContractId(contractId)
+            }
+        }
+    }, [contractId, enabled, getToken, isFallbackPolling, routeEvent])
+
+    useEffect(() => {
+        failCountRef.current = 0
+        if (!enabled || !contractId) {
+            eventSourceRef.current?.close()
+            return
+        }
+
+        void connect()
+        return () => {
+            eventSourceRef.current?.close()
+            eventSourceRef.current = null
+            setIsConnected(false)
+        }
+    }, [connect, contractId, enabled])
+
+    useEffect(() => {
+        if (!enabled || isFallbackPolling || !contractId) {
+            return
+        }
+
+        const refreshTimer = window.setInterval(() => {
+            void connect()
+        }, 50 * 60 * 1000)
+
+        return () => window.clearInterval(refreshTimer)
+    }, [connect, contractId, enabled, isFallbackPolling])
+
+    useEffect(() => {
+        if (!enabled || !isFallbackPolling || !pollFallback) {
+            return
+        }
+
+        void pollFallback()
+        const interval = window.setInterval(() => {
+            console.warn('[SSE] Using polling fallback for contract stream', contractId)
+            void pollFallback()
+        }, fallbackIntervalMs)
+
+        return () => window.clearInterval(interval)
+    }, [contractId, enabled, fallbackIntervalMs, isFallbackPolling, pollFallback])
+
+    return {
+        isConnected: enabled && isConnected,
+        isFallbackPolling,
+        lastEvent,
+    }
+}

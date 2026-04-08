@@ -179,19 +179,23 @@ class EscalateIssueRequest(BaseModel):
 class VersionCandidateResponse(BaseModel):
     """Returned by upload when a potential version match is detected."""
     is_version_candidate: bool = False
+    pending_version_id: Optional[str] = None
     matched_contract_id: Optional[str] = None
     matched_contract_title: Optional[str] = None
     similarity_score: float = 0.0
-    uploaded_contract_id: str  # The new contract ID created (pending link)
-    uploaded_filename: str
+    uploaded_filename: Optional[str] = None
 
 
 class ConfirmVersionLinkRequest(BaseModel):
-    """User confirms that a newly uploaded contract is a new version."""
-    new_contract_id: str
-    parent_contract_id: str
+    """User resolves a pending version candidate."""
+    pending_version_id: Optional[str] = None
+    matched_contract_id: Optional[str] = None
+    action: Optional[str] = None
+    matter_id: Optional[str] = None
+    # Legacy manual-link payload kept for older clients.
+    new_contract_id: Optional[str] = None
+    parent_contract_id: Optional[str] = None
 
 class DiffRequest(BaseModel):
     v1_version_id: Optional[str] = None
     v2_version_id: Optional[str] = None
-

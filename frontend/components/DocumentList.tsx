@@ -32,7 +32,10 @@ export default function DocumentList({ documents }: { documents: any[] }) {
         if (!linkingDoc || !selectedParentId) return;
         setIsLinking(true);
         try {
-            const res = await confirmVersion(linkingDoc.id, selectedParentId);
+            const res = await confirmVersion({
+                newContractId: linkingDoc.id,
+                parentContractId: selectedParentId,
+            });
             if (res.error) throw new Error(res.error);
             toast.success("Version successfully linked!");
             setLinkingDoc(null);

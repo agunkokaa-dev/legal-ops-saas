@@ -6,10 +6,11 @@ Handles:
 """
 import asyncio
 from fastapi import APIRouter, HTTPException, Depends, Request
+from supabase import Client
 
-from app.config import openai_client, qdrant, admin_supabase
+from app.config import openai_client
 from app.rate_limiter import limiter
-from app.dependencies import verify_clerk_token
+from app.dependencies import TenantQdrantClient, get_tenant_qdrant, get_tenant_supabase, verify_clerk_token
 from app.schemas import PlaybookVectorizeRequest
 from qdrant_client.http.models import PointStruct
 
@@ -21,9 +22,9 @@ async def async_embed(text: str) -> list[float]:
     return response.data[0].embedding
 
 
-async def async_qdrant_upsert(collection: str, points: list):
+async def async_qdrant_upsert(qdrant_client: TenantQdrantClient, collection: str, points: list):
     return await asyncio.to_thread(
-        qdrant.upsert,
+        qdrant_client.upsert,
         collection_name=collection,
         points=points
     )
@@ -34,7 +35,8 @@ async def async_qdrant_upsert(collection: str, points: list):
 async def vectorize_playbook_rule(
     request: Request,
     body: PlaybookVectorizeRequest,
-    claims: dict = Depends(verify_clerk_token)
+    claims: dict = Depends(verify_clerk_token),
+    qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
 ):
     try:
         tenant_id = claims["verified_tenant_id"]
@@ -44,12 +46,14 @@ async def vectorize_playbook_rule(
         
         # NON-BLOCKING Upsert
         await async_qdrant_upsert(
+            qdrant_client=qdrant_client,
             collection="company_rules",
             points=[PointStruct(
                 id=body.id, 
                 vector=vector,
                 payload={
-                    "user_id": tenant_id, 
+                    "tenant_id": tenant_id,
+                    "user_id": tenant_id,
                     "category": body.category,
                     "standard_position": body.standard_position,
                     "fallback_position": body.fallback_position,
@@ -68,16 +72,20 @@ async def vectorize_playbook_rule(
 
 @router.get("/categories")
 @limiter.limit("60/minute")
-async def get_playbook_categories(request: Request, claims: dict = Depends(verify_clerk_token)):
+async def get_playbook_categories(
+    request: Request,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
     print("🔥 [BACKEND] Endpoint /categories hit!")
     try:
         tenant_id = claims["verified_tenant_id"]
 
         # Fetch tenant-specific playbook categories (strict isolation)
-        tenant_res = admin_supabase.table("company_playbooks").select("category").eq("tenant_id", tenant_id).execute()
+        tenant_res = supabase.table("company_playbooks").select("category").eq("tenant_id", tenant_id).execute()
 
         # Fetch global/system playbook categories (tenant_id IS NULL = shared system rules)
-        global_res = admin_supabase.table("company_playbooks").select("category").is_("tenant_id", "null").execute()
+        global_res = supabase.table("company_playbooks").select("category").is_("tenant_id", "null").execute()
 
         all_rows = (tenant_res.data or []) + (global_res.data or [])
         print(f"🔥 [BACKEND] Supabase response: {all_rows}")

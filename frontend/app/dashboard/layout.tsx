@@ -4,8 +4,9 @@ import Sidebar from '@/components/Sidebar'
 import AssistantSidebar from '@/components/AssistantSidebar'
 import { ChevronLeft, ChevronRight, GripVertical } from 'lucide-react'
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { usePathname } from 'next/navigation'
-import { Toaster } from 'sonner'
+import { usePathname, useRouter } from 'next/navigation'
+import { useTenantSSE } from '@/hooks/useTenantSSE'
+import { toast } from 'sonner'
 
 export default function DashboardLayout({
     children,
@@ -17,6 +18,7 @@ export default function DashboardLayout({
     const [isDragging, setIsDragging] = useState(false);
     const dragRef = useRef(false);
     const pathname = usePathname();
+    const router = useRouter();
 
     const isContractDetailPage = pathname?.startsWith('/dashboard/contracts/');
     const isTaskPage = pathname?.includes('/dashboard/tasks');
@@ -62,6 +64,35 @@ export default function DashboardLayout({
     const togglePanel = () => {
         setIsCollapsed(!isCollapsed);
     };
+
+    useTenantSSE({
+        onContractCreated: (event) => {
+            router.refresh();
+            if (pathname === '/dashboard' || pathname?.includes('/documents')) {
+                toast.info(`"${String(event.data.contract_title || 'New contract')}" uploaded`)
+            }
+        },
+        onContractStatusChanged: (event) => {
+            router.refresh();
+            const newStatus = String(event.data.new_status || '');
+            const title = String(event.data.contract_title || 'Contract');
+            if (newStatus === 'Reviewed') {
+                toast.info(`"${title}" analysis complete`)
+            } else if (newStatus === 'Executed') {
+                toast.success(`"${title}" has been fully executed`)
+            }
+        },
+        onContractExecuted: (event) => {
+            router.refresh();
+            toast.success(`"${String(event.data.contract_title || 'Contract')}" has been executed`)
+        },
+        onTaskCreated: (event) => {
+            router.refresh();
+            if (event.data.task_title) {
+                toast.info(`New task: ${String(event.data.task_title)}`)
+            }
+        },
+    })
 
     return (
         <div className="bg-background text-white h-screen w-screen flex overflow-hidden">

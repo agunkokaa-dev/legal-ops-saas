@@ -1,12 +1,14 @@
 'use client'
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 import { uploadDocument } from '@/app/actions/documentActions';
 import ReactMarkdown from 'react-markdown';
 import WordDiff from './WordDiff';
+import { useContractSSE } from '@/hooks/useContractSSE';
+import { SSEStatusBadge } from '@/components/status/SSEStatusBadge';
 
 interface DiffDeviation {
     deviation_id: string;
@@ -42,6 +44,7 @@ interface SmartDiffResult {
     batna_fallbacks: BATNAFallback[];
     risk_delta: number;
     summary: string;
+    rounds?: Array<unknown>;
 }
 
 interface ContractVersion {
@@ -51,6 +54,16 @@ interface ContractVersion {
     risk_delta: number;
     created_at: string;
     raw_text?: string;
+}
+
+interface NegotiationIssue {
+    id: string;
+    title: string;
+    status: string;
+    severity: 'critical' | 'warning' | 'info';
+    linked_task_id?: string | null;
+    linked_task_status?: string | null;
+    reasoning_log?: AuditLogEntry[];
 }
 
 export default function WarRoomClient({
@@ -86,61 +99,25 @@ export default function WarRoomClient({
     const [showReasoningModal, setShowReasoningModal] = useState<{ devId: string; action: string } | null>(null);
     const [reasoningText, setReasoningText] = useState('');
     const [auditLogs, setAuditLogs] = useState<Record<string, AuditLogEntry[]>>({});
+    const [issues, setIssues] = useState<NegotiationIssue[]>([]);
+    const [isFinalizing, setIsFinalizing] = useState(false);
 
     // ── FILTERS ──
     const [severityFilters, setSeverityFilters] = useState<Record<string, boolean>>({});
     const [statusFilter, setStatusFilter] = useState<string | null>(null);
 
-    const [isPollingTimeout, setIsPollingTimeout] = useState(false);
-    const [isPollingFailed, setIsPollingFailed] = useState(false);
-    const pollAttempts = useRef(0);
+    const [waitingForRealtime, setWaitingForRealtime] = useState(false);
+    const [realtimeError, setRealtimeError] = useState<string | null>(null);
 
     useEffect(() => {
-        loadData();
+        void loadData();
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [contractId]);
 
-    // Polling mechanism to resolve Race Condition where V2 is uploaded but SmartDiffAgent is still saving
-    useEffect(() => {
-        let interval: NodeJS.Timeout;
-        if (!isLoading && !diffResult && !isPollingTimeout && !isPollingFailed) {
-            interval = setInterval(async () => {
-                pollAttempts.current += 1;
-                
-                // 1. Polling Timeout (The 60-Second Rule, 20 iterations * 3s)
-                if (pollAttempts.current >= 20) {
-                    clearInterval(interval);
-                    setIsPollingTimeout(true);
-                    return;
-                }
-
-                // 2. Inline check for backend failure using Supabase
-                try {
-                    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-                    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-                    const headers = { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` };
-                    const res = await fetch(`${supabaseUrl}/rest/v1/contracts?id=eq.${contractId}&select=*`, { headers });
-                    const [data] = await res.json();
-                    
-                    if (data?.status?.toLowerCase() === 'failed') {
-                        clearInterval(interval);
-                        setIsPollingFailed(true);
-                        return;
-                    }
-                } catch (e) {
-                    // Ignore inline fetch errors, just keep polling
-                }
-
-                loadData();
-            }, 3000);
-        }
-        return () => clearInterval(interval);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isLoading, diffResult, contractId, isPollingTimeout, isPollingFailed]);
-
-    const loadData = async () => {
+    const loadData = useCallback(async () => {
         try {
             setIsLoading(true);
+            setRealtimeError(null);
             const token = await getToken();
             const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
 
@@ -152,6 +129,12 @@ export default function WarRoomClient({
             if (!vRes.ok) throw new Error('Failed to fetch versions');
             const vData = await vRes.json();
             setVersions(vData.versions || []);
+            if (!vData.versions || vData.versions.length < 2) {
+                setWaitingForRealtime(true);
+                setDiffResult(null);
+                setLoadingStage('Waiting for the revised contract to finish processing...');
+                return;
+            }
             if (vData.versions && vData.versions.length > 2) {
                 setViewMode('v3');
             }
@@ -181,23 +164,114 @@ export default function WarRoomClient({
 
                 if (!diffRes.ok) {
                     const err = await diffRes.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Smart Diff execution failed');
+                    const detail = err.detail || 'Smart Diff execution failed';
+                    if (String(detail).toLowerCase().includes('not enough versions')) {
+                        setWaitingForRealtime(true);
+                        setDiffResult(null);
+                        setLoadingStage('Waiting for the revised contract to finish processing...');
+                        return;
+                    }
+                    throw new Error(detail);
                 }
                 diffData = await diffRes.json();
             }
 
+            setWaitingForRealtime(false);
             setDiffResult(diffData);
 
             if (diffData?.deviations?.length > 0) {
                 setSelectedDevId(diffData.deviations[0].deviation_id);
             }
 
+            const issuesRes = await fetch(`${apiUrl}/api/v1/negotiation/${contractId}/issues`, {
+                headers: { Authorization: `Bearer ${token}` }
+            });
+            if (issuesRes.ok) {
+                const issuesData = await issuesRes.json();
+                const nextIssues: NegotiationIssue[] = issuesData.issues || [];
+                setIssues(nextIssues);
+                setIssueStatuses(
+                    nextIssues.reduce<Record<string, string>>((acc, issue) => {
+                        acc[issue.id] = issue.status || 'open';
+                        return acc;
+                    }, {})
+                );
+                setAuditLogs(
+                    nextIssues.reduce<Record<string, AuditLogEntry[]>>((acc, issue) => {
+                        acc[issue.id] = Array.isArray(issue.reasoning_log) ? issue.reasoning_log : [];
+                        return acc;
+                    }, {})
+                );
+            }
+
         } catch (error: any) {
+            setWaitingForRealtime(false);
+            setRealtimeError(error.message || 'Failed to initialize War Room');
             toast.error(error.message || 'Failed to initialize War Room');
         } finally {
             setIsLoading(false);
         }
-    };
+    }, [contractId, getToken]);
+
+    const { isConnected: isSSEConnected, isFallbackPolling } = useContractSSE({
+        contractId,
+        enabled: true,
+        pollFallback: async () => {
+            if (!diffResult || waitingForRealtime) {
+                await loadData();
+            }
+        },
+        onPipelineProgress: (event) => {
+            if (!diffResult) {
+                setWaitingForRealtime(true);
+                setLoadingStage(String(event.data.message || 'Contract pipeline is still running...'));
+            }
+        },
+        onPipelineCompleted: async () => {
+            if (!diffResult) {
+                setWaitingForRealtime(true);
+                setLoadingStage('Contract review complete. Initializing Smart Diff...');
+                await loadData();
+            }
+        },
+        onPipelineFailed: (event) => {
+            setWaitingForRealtime(false);
+            setRealtimeError(String(event.data.error || 'Contract processing failed before Smart Diff completed'));
+        },
+        onDiffStarted: (event) => {
+            setWaitingForRealtime(true);
+            setLoadingStage(String(event.data.message || 'Smart Diff analysis in progress...'));
+        },
+        onDiffCompleted: async (event) => {
+            setWaitingForRealtime(false);
+            setLoadingStage('Loading Smart Diff results...');
+            await loadData();
+            toast.success(`Analysis complete: ${Number(event.data.deviations_count || 0)} deviations found`);
+        },
+        onDiffFailed: (event) => {
+            setWaitingForRealtime(false);
+            setRealtimeError(String(event.data.error || 'Smart Diff execution failed'));
+            toast.error(String(event.data.error || 'Smart Diff execution failed'));
+        },
+        onStatusChanged: async (event) => {
+            const nextStatus = String(event.data.new_status || '').toLowerCase();
+            if (nextStatus === 'failed') {
+                setWaitingForRealtime(false);
+                setRealtimeError('AI processing failed before Smart Diff could complete');
+            } else if (nextStatus === 'reviewed' && !diffResult) {
+                setLoadingStage('Contract review complete. Checking Smart Diff cache...');
+                await loadData();
+            }
+        },
+        onNegotiationIssueUpdated: (event) => {
+            if (event.data.issue_id && event.data.new_status) {
+                setIssueStatuses(prev => ({
+                    ...prev,
+                    [String(event.data.issue_id)]: String(event.data.new_status)
+                }));
+            }
+        },
+    });
 
     const handleEscalate = async (dev: DiffDeviation) => {
         setIsEscalating(true);
@@ -414,6 +488,49 @@ export default function WarRoomClient({
         }
     };
 
+    const allResolved = useMemo(() => {
+        if (!issues.length) return false;
+        return issues.every((issue) =>
+            ['accepted', 'rejected', 'countered', 'resolved', 'dismissed'].includes(issue.status) ||
+            (issue.status === 'escalated' && issue.linked_task_status === 'done')
+        );
+    }, [issues]);
+
+    const unresolvedCritical = useMemo(() => {
+        return issues.filter((issue) =>
+            !['accepted', 'rejected', 'countered', 'resolved', 'dismissed'].includes(issue.status) &&
+            !(issue.status === 'escalated' && issue.linked_task_status === 'done') &&
+            issue.severity === 'critical'
+        ).length;
+    }, [issues]);
+
+    const handleFinalizeForSigning = async () => {
+        setIsFinalizing(true);
+        try {
+            const token = await getToken();
+            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            const res = await fetch(`${apiUrl}/api/v1/negotiation/${contractId}/finalize-for-signing`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || 'Failed to finalize contract');
+
+            if (data.ready) {
+                toast.success('Contract finalized. Proceeding to signing preparation.');
+                router.push(`/dashboard/contracts/${contractId}/signing`);
+                return;
+            }
+
+            toast.error(data.reason || 'Cannot finalize yet.');
+            await loadData();
+        } catch (error: any) {
+            toast.error(error.message || 'Failed to finalize contract');
+        } finally {
+            setIsFinalizing(false);
+        }
+    };
+
     const sortedDeviations = useMemo(() => {
         if (!diffResult?.deviations) return [];
         let sorted = [...diffResult.deviations];
@@ -498,38 +615,21 @@ export default function WarRoomClient({
         );
     }
 
-    if (isPollingFailed) {
+    if (realtimeError) {
         return (
             <div className="flex-1 flex flex-col items-center justify-center bg-[#0a0a0a] h-[calc(100vh-70px)]">
                 <div className="bg-[#111] border border-rose-900/50 p-8 rounded-2xl shadow-[0_0_30px_rgba(225,29,72,0.1)] flex flex-col items-center max-w-md text-center">
                     <span className="text-4xl mb-4">❌</span>
                     <h3 className="text-rose-400 font-serif font-bold text-lg mb-3 tracking-wide">AI Processing Failed</h3>
                     <p className="text-zinc-400 text-sm leading-relaxed mb-6">
-                        Please check the document format or try uploading again. The agent returned a critical error.
-                    </p>
-                    <button onClick={() => router.push(`/dashboard/contracts/${contractId}`)} className="bg-rose-900/20 hover:bg-rose-900/40 text-rose-300 border border-rose-900/50 px-6 py-2 rounded uppercase text-xs font-bold tracking-widest transition-all">
-                        Return to Workspace
-                    </button>
-                </div>
-            </div>
-        );
-    }
-
-    if (isPollingTimeout) {
-        return (
-            <div className="flex-1 flex flex-col items-center justify-center bg-[#0a0a0a] h-[calc(100vh-70px)]">
-                <div className="bg-[#111] border border-amber-900/50 p-8 rounded-2xl shadow-[0_0_30px_rgba(245,158,11,0.1)] flex flex-col items-center max-w-md text-center">
-                    <span className="text-4xl mb-4">⚠️</span>
-                    <h3 className="text-amber-500 font-serif font-bold text-lg mb-3 tracking-wide">Analysis Timeout</h3>
-                    <p className="text-zinc-400 text-sm leading-relaxed mb-6">
-                        The document is too large or the AI server is busy.
+                        {realtimeError}
                     </p>
                     <div className="flex gap-4">
-                        <button onClick={() => { setIsPollingTimeout(false); pollAttempts.current = 0; setIsPollingFailed(false); loadData(); }} className="bg-amber-900/20 hover:bg-amber-900/40 text-amber-300 border border-amber-900/50 px-6 py-2 rounded uppercase text-xs font-bold tracking-widest transition-all">
+                        <button onClick={() => { void loadData(); }} className="bg-rose-900/20 hover:bg-rose-900/40 text-rose-300 border border-rose-900/50 px-6 py-2 rounded uppercase text-xs font-bold tracking-widest transition-all">
                             Try Again
                         </button>
                         <button onClick={() => router.push(`/dashboard/contracts/${contractId}`)} className="text-zinc-500 hover:text-zinc-300 px-6 py-2 rounded uppercase text-xs font-bold tracking-widest transition-all">
-                            Cancel
+                            Return to Workspace
                         </button>
                     </div>
                 </div>
@@ -543,9 +643,12 @@ export default function WarRoomClient({
                 {/* Skeleton Header */}
                 <section className="w-full h-14 bg-[#0a0a0a] border-b border-zinc-800/60 flex items-center justify-between px-8 shrink-0">
                     <div className="flex items-center gap-4">
-                        <div className="w-32 h-3 bg-zinc-800/50 rounded animate-pulse"></div>
-                        <div className="w-24 h-4 bg-zinc-800 rounded animate-pulse"></div>
+                        <div>
+                            <p className="text-[10px] uppercase tracking-[0.4em] text-zinc-500">Negotiation War Room</p>
+                            <p className="text-xs text-zinc-400 mt-1">{loadingStage}</p>
+                        </div>
                     </div>
+                    <SSEStatusBadge isConnected={isSSEConnected} isFallbackPolling={isFallbackPolling} />
                 </section>
 
                 <section className="flex-1 flex overflow-hidden">
@@ -570,9 +673,9 @@ export default function WarRoomClient({
                         <div className="absolute inset-0 bg-[#0a0a0a]/80 backdrop-blur-sm z-10 flex flex-col items-center justify-center">
                             <div className="flex items-center gap-4 mb-4">
                                 <span className="w-6 h-6 border-2 border-[#D4AF37]/20 rounded-full animate-spin border-t-[#D4AF37]"></span>
-                                <h3 className="font-serif text-[#D4AF37] text-lg tracking-wide animate-pulse">⏳ AI Co-Counsel is finalizing the War Room Diff...</h3>
+                                <h3 className="font-serif text-[#D4AF37] text-lg tracking-wide animate-pulse">{waitingForRealtime ? 'Waiting for live updates...' : 'AI Co-Counsel is finalizing the War Room Diff...'}</h3>
                             </div>
-                            <p className="text-xs text-zinc-500 uppercase tracking-widest max-w-sm text-center">Comparing V1 against V2 and generating BATNA strategies. Please wait.</p>
+                            <p className="text-xs text-zinc-500 uppercase tracking-widest max-w-sm text-center">{loadingStage}</p>
                         </div>
 
                         <div className="max-w-3xl w-full h-[800px] bg-[#0f0f0f] border border-zinc-800/40 rounded-xl p-16 overflow-hidden">
@@ -1066,6 +1169,27 @@ export default function WarRoomClient({
                         </button>
                     </div>
 
+                    <div className="rounded-xl border border-zinc-800/50 bg-[#0f0f0f] p-4">
+                        {allResolved ? (
+                            <button
+                                onClick={handleFinalizeForSigning}
+                                disabled={isFinalizing}
+                                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                            >
+                                <span className="material-symbols-outlined text-sm">
+                                    {isFinalizing ? 'progress_activity' : 'check_circle'}
+                                </span>
+                                {isFinalizing ? 'Finalizing...' : 'Finalize for Signing'}
+                            </button>
+                        ) : (
+                            <div className="w-full bg-zinc-900 text-zinc-400 py-3 px-4 rounded-lg text-center text-xs">
+                                {unresolvedCritical > 0
+                                    ? `${unresolvedCritical} critical issue(s) must be resolved before signing`
+                                    : `${issues.filter((issue) => ['open', 'under_review'].includes(issue.status)).length} issue(s) still pending`}
+                            </div>
+                        )}
+                    </div>
+
                     {/* DEVIATION NAVIGATOR */}
                     <div>
                         <div className="flex justify-between items-end mb-4">
@@ -1203,6 +1327,12 @@ export default function WarRoomClient({
                         <header className="mb-12 text-center">
                             <h1 className="font-serif text-2xl font-light text-zinc-100 tracking-tight mb-2">{contractTitle}</h1>
                             <p className="text-[10px] uppercase tracking-[0.4em] text-zinc-500 mb-6">Negotiation War Room Diff</p>
+                            <div className="mb-4 flex items-center justify-center gap-3">
+                                <SSEStatusBadge isConnected={isSSEConnected} isFallbackPolling={isFallbackPolling} />
+                                {(waitingForRealtime || isLoading) && (
+                                    <span className="text-[10px] uppercase tracking-widest text-zinc-500">{loadingStage}</span>
+                                )}
+                            </div>
                             
                             {/* ENHANCEMENT 3: VIEW MODE TOGGLE */}
                             <div className="inline-flex bg-[#141414] border border-zinc-800/80 rounded-lg p-1.5 shadow-inner mx-auto mb-4">

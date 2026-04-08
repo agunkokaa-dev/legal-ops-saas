@@ -6,11 +6,12 @@ Enforces strict tenant isolation via verify_clerk_token + manual .eq() scoping.
 from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import List
 import uuid
+from supabase import Client
 
 from app.schemas import ClauseCreate, ClauseResponse, ClauseMatchRequest, ClauseMatchResult
 from app.rate_limiter import limiter
-from app.dependencies import verify_clerk_token
-from app.config import admin_supabase, qdrant, openai_client
+from app.dependencies import TenantQdrantClient, get_tenant_qdrant, get_tenant_supabase, verify_clerk_token
+from app.config import openai_client
 from qdrant_client.http.models import PointStruct, Filter, FieldCondition, MatchValue
 
 router = APIRouter()
@@ -18,12 +19,16 @@ router = APIRouter()
 
 @router.get("/clauses", response_model=List[ClauseResponse])
 @limiter.limit("60/minute")
-async def get_clauses(request: Request, claims: dict = Depends(verify_clerk_token)):
+async def get_clauses(
+    request: Request,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
     """Fetch all clauses for the authenticated tenant."""
     tenant_id = claims["verified_tenant_id"]
 
     try:
-        result = admin_supabase.table("clause_library") \
+        result = supabase.table("clause_library") \
             .select("*") \
             .eq("tenant_id", tenant_id) \
             .order("category") \
@@ -38,7 +43,13 @@ async def get_clauses(request: Request, claims: dict = Depends(verify_clerk_toke
 
 @router.post("/clauses", response_model=ClauseResponse)
 @limiter.limit("20/minute")
-async def create_clause(request: Request, clause: ClauseCreate, claims: dict = Depends(verify_clerk_token)):
+async def create_clause(
+    request: Request,
+    clause: ClauseCreate,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+    qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
+):
     """Create a new clause, save to Supabase, and vectorize into Qdrant."""
     tenant_id = claims["verified_tenant_id"]
 
@@ -53,7 +64,7 @@ async def create_clause(request: Request, clause: ClauseCreate, claims: dict = D
             "guidance_notes": clause.guidance_notes,
         }
 
-        result = admin_supabase.table("clause_library") \
+        result = supabase.table("clause_library") \
             .insert(insert_payload) \
             .execute()
 
@@ -85,7 +96,7 @@ async def create_clause(request: Request, clause: ClauseCreate, claims: dict = D
     try:
         point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, new_clause_id))
 
-        qdrant.upsert(
+        qdrant_client.upsert(
             collection_name="clause_library_vectors",
             points=[
                 PointStruct(
@@ -113,7 +124,13 @@ async def create_clause(request: Request, clause: ClauseCreate, claims: dict = D
 
 @router.post("/clauses/match")
 @limiter.limit("20/minute")
-async def match_clause(request: Request, body: ClauseMatchRequest, claims: dict = Depends(verify_clerk_token)):
+async def match_clause(
+    request: Request,
+    body: ClauseMatchRequest,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+    qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
+):
     """Semantic search: find the best-matching approved clauses for a given vendor text block."""
     tenant_id = claims["verified_tenant_id"]
 
@@ -126,9 +143,7 @@ async def match_clause(request: Request, body: ClauseMatchRequest, claims: dict 
         query_vector = embedding_response.data[0].embedding
 
         # 2. Build Qdrant filter (strict tenant isolation + optional category)
-        must_conditions = [
-            FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))
-        ]
+        must_conditions = []
         if body.category:
             must_conditions.append(
                 FieldCondition(key="category", match=MatchValue(value=body.category))
@@ -136,7 +151,7 @@ async def match_clause(request: Request, body: ClauseMatchRequest, claims: dict 
         query_filter = Filter(must=must_conditions)
 
         # 3. Search Qdrant 'clause_library_vectors'
-        search_results = qdrant.search(
+        search_results = qdrant_client.search(
             collection_name="clause_library_vectors",
             query_vector=query_vector,
             query_filter=query_filter,
@@ -154,7 +169,7 @@ async def match_clause(request: Request, body: ClauseMatchRequest, claims: dict 
         if not clause_ids:
             return {"matches": []}
 
-        hydrated = admin_supabase.table("clause_library") \
+        hydrated = supabase.table("clause_library") \
             .select("id, category, clause_type, title, content, guidance_notes") \
             .in_("id", clause_ids) \
             .eq("tenant_id", tenant_id) \
@@ -189,7 +204,12 @@ async def match_clause(request: Request, body: ClauseMatchRequest, claims: dict 
 # =====================================================================
 @router.post("/clauses/repair-vectors")
 @limiter.limit("20/minute")
-async def repair_clause_vectors(request: Request, claims: dict = Depends(verify_clerk_token)):
+async def repair_clause_vectors(
+    request: Request,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+    qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
+):
     """
     Temporary maintenance endpoint: re-embeds ALL clauses for the
     authenticated tenant and upserts corrected payloads (with content)
@@ -201,7 +221,7 @@ async def repair_clause_vectors(request: Request, claims: dict = Depends(verify_
 
     try:
         # 1. Fetch all clauses for this tenant
-        res = admin_supabase.table("clause_library") \
+        res = supabase.table("clause_library") \
             .select("*") \
             .eq("tenant_id", tenant_id) \
             .execute()
@@ -232,7 +252,7 @@ async def repair_clause_vectors(request: Request, claims: dict = Depends(verify_
 
                 # 3. Upsert with FULL payload (the fix)
                 point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, clause_id))
-                qdrant.upsert(
+                qdrant_client.upsert(
                     collection_name="clause_library_vectors",
                     points=[
                         PointStruct(

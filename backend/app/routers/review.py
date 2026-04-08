@@ -17,10 +17,10 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse
 from supabase import Client
 
-from app.config import openai_client, admin_supabase
+from app.config import openai_client
 from app.rate_limiter import limiter
 from app.token_utils import truncate_to_tokens
-from app.dependencies import verify_clerk_token
+from app.dependencies import verify_clerk_token, get_tenant_supabase
 from app.review_schemas import ReviewResponse, ReviewFinding, BannerData, QuickInsight
 from app.routers.contracts import process_contract_background
 
@@ -60,6 +60,7 @@ async def analyze_contract(
     request: Request,
     payload: ReviewAnalyzeRequest,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     If review data exists in the contract_reviews table, returns it.
@@ -83,7 +84,7 @@ async def analyze_contract(
         if not claims.get("org_id"):
             try:
                 # Check if this contract belongs to a matter, and if so, inherit its tenant
-                contract_peek = admin_supabase.table("contracts") \
+                contract_peek = supabase.table("contracts") \
                     .select("tenant_id, matter_id") \
                     .eq("id", payload.contract_id) \
                     .limit(1) \
@@ -99,7 +100,7 @@ async def analyze_contract(
         print(f"🔍 [Review Analyze] contract_id={payload.contract_id} | allowed_tenants={allowed_tenants}")
 
         # Check for existing review
-        existing = admin_supabase.table("contract_reviews") \
+        existing = supabase.table("contract_reviews") \
             .select("*") \
             .eq("contract_id", payload.contract_id) \
             .in_("tenant_id", list(allowed_tenants)) \
@@ -125,7 +126,7 @@ async def analyze_contract(
         # Need to run fresh analysis
         raw_text = payload.raw_text
         if not raw_text:
-            contract_res = admin_supabase.table("contracts") \
+            contract_res = supabase.table("contracts") \
                 .select("draft_revisions, title, matter_id, tenant_id, status") \
                 .eq("id", payload.contract_id) \
                 .in_("tenant_id", list(allowed_tenants)) \
@@ -212,7 +213,7 @@ async def analyze_contract(
         }
 
         try:
-            admin_supabase.table("contract_reviews").insert({**review_record, "tenant_id": tenant_id}).execute()
+            supabase.table("contract_reviews").insert({**review_record, "tenant_id": tenant_id}).execute()
             print(f"✅ [Review] Stored review {review_id} with {len(findings)} findings.")
         except Exception as e:
             print(f"⚠️ [Review] Failed to store review: {e}")
@@ -222,7 +223,7 @@ async def analyze_contract(
         try:
             # Find the latest version for this contract
             latest_version_id = None
-            ver_res = admin_supabase.table("contract_versions") \
+            ver_res = supabase.table("contract_versions") \
                 .select("id") \
                 .eq("contract_id", payload.contract_id) \
                 .eq("tenant_id", tenant_id) \
@@ -252,7 +253,7 @@ async def analyze_contract(
                         "playbook_reference": f.get("playbook_reference")
                     })
                 if issue_rows:
-                    admin_supabase.table("negotiation_issues").insert([{**r, "tenant_id": tenant_id} for r in issue_rows]).execute()
+                    supabase.table("negotiation_issues").insert([{**r, "tenant_id": tenant_id} for r in issue_rows]).execute()
                     print(f"✅ [War Room] Persisted {len(issue_rows)} negotiation issues for contract {payload.contract_id}")
         except Exception as ni_err:
             print(f"⚠️ [War Room] Failed to persist negotiation issues (non-fatal): {ni_err}")
@@ -287,6 +288,7 @@ async def create_task_from_finding(
     request: Request,
     payload: CreateTaskFromFindingRequest,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """Creates a single task on the Kanban board from a review finding."""
     try:
@@ -307,14 +309,14 @@ async def create_task_from_finding(
             "source_document_name": payload.contract_id,
         }
 
-        res = admin_supabase.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
+        res = supabase.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
 
         if not res.data:
             raise HTTPException(status_code=500, detail="Failed to create task.")
 
         # Log activity
         try:
-            admin_supabase.table("activity_logs").insert({
+            supabase.table("activity_logs").insert({
                 "tenant_id": tenant_id,
                 "matter_id": payload.matter_id,
                 "task_id": task_payload["id"],
@@ -329,7 +331,7 @@ async def create_task_from_finding(
             finding_id = payload.finding.get('finding_id')
             if finding_id:
                 allowed_tenants = list(filter(None, [claims.get("org_id"), claims.get("sub")]))
-                admin_supabase.table("negotiation_issues") \
+                supabase.table("negotiation_issues") \
                     .update({"status": "escalated", "linked_task_id": task_payload["id"]}) \
                     .eq("finding_id", finding_id) \
                     .eq("contract_id", payload.contract_id) \
@@ -362,6 +364,7 @@ async def get_review(
     request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """Returns the most recent review for a contract."""
     try:
@@ -370,7 +373,7 @@ async def get_review(
         # Inherit org tenant from contract if org_id missing from JWT
         if not claims.get("org_id"):
             try:
-                peek = admin_supabase.table("contracts") \
+                peek = supabase.table("contracts") \
                     .select("tenant_id").eq("id", contract_id).limit(1).execute()
                 if peek.data:
                     allowed_tenants.add(peek.data[0]["tenant_id"])
@@ -378,7 +381,7 @@ async def get_review(
                 pass
         allowed_tenants = list(allowed_tenants)
 
-        res = admin_supabase.table("contract_reviews") \
+        res = supabase.table("contract_reviews") \
             .select("*") \
             .eq("contract_id", contract_id) \
             .in_("tenant_id", allowed_tenants) \
@@ -394,7 +397,7 @@ async def get_review(
         # Fetch matter_id from contracts table for the Review-to-Draft bridge
         matter_id = None
         try:
-            contract_res = admin_supabase.table("contracts") \
+            contract_res = supabase.table("contracts") \
                 .select("matter_id") \
                 .eq("id", contract_id) \
                 .in_("tenant_id", allowed_tenants) \
@@ -433,6 +436,7 @@ async def accept_finding(
     contract_id: str,
     payload: AcceptFindingRequest,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     Marks a finding as 'accepted' and applies the suggested revision
@@ -444,7 +448,7 @@ async def accept_finding(
         # Inherit org tenant from contract if org_id missing from JWT
         if not claims.get("org_id"):
             try:
-                peek = admin_supabase.table("contracts") \
+                peek = supabase.table("contracts") \
                     .select("tenant_id").eq("id", contract_id).limit(1).execute()
                 if peek.data:
                     allowed_tenants.add(peek.data[0]["tenant_id"])
@@ -453,7 +457,7 @@ async def accept_finding(
         allowed_tenants = list(allowed_tenants)
 
         # Fetch the review
-        res = admin_supabase.table("contract_reviews") \
+        res = supabase.table("contract_reviews") \
             .select("id, findings, raw_document, tenant_id") \
             .eq("contract_id", contract_id) \
             .in_("tenant_id", allowed_tenants) \
@@ -535,7 +539,7 @@ async def accept_finding(
                         f["coordinates"]["end_char"] += length_diff
 
         # Save updated review
-        admin_supabase.table("contract_reviews") \
+        supabase.table("contract_reviews") \
             .update({
                 "findings": findings,
                 "raw_document": updated_document
@@ -545,7 +549,7 @@ async def accept_finding(
             .execute()
 
         # Also update the contract's draft_revisions
-        contract_res = admin_supabase.table("contracts") \
+        contract_res = supabase.table("contracts") \
             .select("draft_revisions, tenant_id") \
             .eq("id", contract_id) \
             .in_("tenant_id", allowed_tenants) \
@@ -569,7 +573,7 @@ async def accept_finding(
             else:
                 revisions = {"latest_text": updated_document}
 
-            admin_supabase.table("contracts") \
+            supabase.table("contracts") \
                 .update({"draft_revisions": revisions}) \
                 .eq("id", contract_id) \
                 .eq("tenant_id", contract_tenant_id) \
@@ -588,5 +592,3 @@ async def accept_finding(
         print(f"❌ Accept Finding Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
-
-

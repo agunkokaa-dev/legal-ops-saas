@@ -14,9 +14,9 @@ import uuid
 from fastapi import APIRouter, HTTPException, Depends, Request
 from supabase import Client
 
-from app.config import openai_client, admin_supabase
+from app.config import openai_client
 from app.rate_limiter import limiter
-from app.dependencies import verify_clerk_token
+from app.dependencies import TenantQdrantClient, get_tenant_qdrant, get_tenant_supabase, verify_clerk_token
 from app.schemas import DraftGenerateRequest, DraftAuditRequest, DraftChatRequest, DraftSaveRequest
 from app.routers.contracts import process_contract_background
 
@@ -86,6 +86,7 @@ async def audit_draft(
     request: Request,
     payload: DraftAuditRequest,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     Inserts the raw-text draft into the `contracts` table and triggers the
@@ -99,14 +100,17 @@ async def audit_draft(
         contract_id = str(uuid.uuid4())
 
         # --- Step 1: Insert into contracts table ---
+        version_id = str(uuid.uuid4())
         try:
-            insert_res = admin_supabase.table("contracts").insert({
+            insert_res = supabase.table("contracts").insert({
                 "id": contract_id,
                 "tenant_id": tenant_id,
                 "matter_id": payload.matter_id,
                 "title": payload.title,
                 "draft_revisions": {"latest_text": payload.draft_text},
                 "status": "Review",
+                "version_count": 1,
+                "latest_version_id": version_id,
             }).execute()
 
             if not insert_res.data:
@@ -120,10 +124,25 @@ async def audit_draft(
             print(f"🚨 SUPABASE INSERT ERROR (contracts table - drafting audit): {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
+        try:
+            supabase.table("contract_versions").insert({
+                "id": version_id,
+                "tenant_id": tenant_id,
+                "contract_id": contract_id,
+                "version_number": 1,
+                "raw_text": payload.draft_text[:500000],
+                "uploaded_filename": payload.title,
+                "pipeline_output": {},
+            }).execute()
+        except Exception as e:
+            print(f"🚨 SUPABASE INSERT ERROR (contract_versions table - drafting audit): {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
         # --- Step 2: Trigger LangGraph background pipeline ---
         asyncio.create_task(
             process_contract_background(
                 contract_id=contract_id,
+                version_id=version_id,
                 tenant_id=tenant_id,
                 matter_id=payload.matter_id,
                 filename=payload.title,
@@ -157,22 +176,20 @@ from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 class ClauseSearchInput(BaseModel):
     query: str = Field(description="The risky vendor clause text to search for.")
 
-def get_clause_search_tool(tenant_id: str):
+def get_clause_search_tool(qdrant_client: TenantQdrantClient):
     @tool("search_standard_clauses", args_schema=ClauseSearchInput)
     def search_standard_clauses(query: str) -> str:
         """Search the company's approved standard clause library in Qdrant. Use this when you find a risky vendor clause and need to suggest a replacement."""
         try:
-            from app.config import qdrant, openai_client
-            from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+            from app.config import openai_client
             
             # Embed query
             response = openai_client.embeddings.create(input=query, model="text-embedding-3-small")
             
-            # Search Qdrant with STRICT tenant isolation
-            hits = qdrant.search(
+            # Search Qdrant through the tenant-scoped facade so tenant filtering cannot be bypassed.
+            hits = qdrant_client.search(
                 collection_name="clause_library_vectors",
                 query_vector=response.data[0].embedding,
-                query_filter=Filter(must=[FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))]),
                 limit=1,
                 score_threshold=0.5
             )
@@ -209,18 +226,18 @@ async def draft_chat(
     request: Request,
     payload: DraftChatRequest,
     claims: dict = Depends(verify_clerk_token),
+    qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
 ):
     """
     Clause Assistant: Agentic loop with tooling to answer draft questions
     and actively search the custom Clause Library.
     """
     try:
-        tenant_id = claims["verified_tenant_id"]
-        if not tenant_id:
+        if not claims["verified_tenant_id"]:
             raise HTTPException(status_code=401, detail="Invalid token claims")
 
         # 1. Get the tenant-aware tool
-        clause_tool = get_clause_search_tool(tenant_id)
+        clause_tool = get_clause_search_tool(qdrant_client)
         
         # 2. Initialize LLM
         llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
@@ -287,6 +304,7 @@ async def save_draft(
     request: Request,
     payload: DraftSaveRequest,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     Saves or updates a draft in the contracts table.
@@ -303,7 +321,7 @@ async def save_draft(
             # Smart passthrough: accept both legacy string and new JSONB object
             draft_revisions = payload.draft_text if isinstance(payload.draft_text, dict) else {"latest_text": payload.draft_text}
 
-            update_res = admin_supabase.table("contracts").update({
+            update_res = supabase.table("contracts").update({
                 "draft_revisions": draft_revisions,
                 "status": "Draft",
             }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
@@ -317,7 +335,7 @@ async def save_draft(
             # Smart passthrough: accept both legacy string and new JSONB object
             draft_revisions = payload.draft_text if isinstance(payload.draft_text, dict) else {"latest_text": payload.draft_text}
 
-            insert_res = admin_supabase.table("contracts").insert({
+            insert_res = supabase.table("contracts").insert({
                 "id": contract_id,
                 "tenant_id": tenant_id,
                 "matter_id": payload.matter_id,
@@ -348,6 +366,7 @@ async def load_draft(
     request: Request,
     matter_id: str,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
     contract_id: str | None = None,
 ):
     """
@@ -361,7 +380,7 @@ async def load_draft(
         
         if contract_id:
             # Load a specific contract by ID
-            res = admin_supabase.table("contracts") \
+            res = supabase.table("contracts") \
                 .select("id, draft_revisions, status, matter_id") \
                 .eq("id", contract_id) \
                 .eq("tenant_id", tenant_id) \
@@ -369,7 +388,7 @@ async def load_draft(
                 .execute()
         else:
             # Load the latest contract for this matter
-            res = admin_supabase.table("contracts") \
+            res = supabase.table("contracts") \
                 .select("id, draft_revisions, status") \
                 .eq("matter_id", matter_id) \
                 .eq("tenant_id", tenant_id) \
@@ -433,6 +452,7 @@ async def apply_suggestion(
     request: Request,
     payload: ApplySuggestionRequest,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     Intelligently locates the referenced clause based on original_issue and replaces it
@@ -444,7 +464,7 @@ async def apply_suggestion(
             raise HTTPException(status_code=401, detail="Invalid token claims")
 
         # 1. Fetch current draft text & history
-        res = admin_supabase.table("contracts") \
+        res = supabase.table("contracts") \
             .select("draft_revisions, id") \
             .eq("id", payload.contract_id) \
             .eq("tenant_id", tenant_id) \
@@ -504,7 +524,7 @@ async def apply_suggestion(
         })
         revisions["history"] = history
 
-        update_res = admin_supabase.table("contracts").update({
+        update_res = supabase.table("contracts").update({
             "draft_revisions": revisions
         }).eq("id", payload.contract_id).eq("tenant_id", tenant_id).execute()
 

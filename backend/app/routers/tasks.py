@@ -8,15 +8,16 @@ Handles:
 import asyncio
 import traceback
 from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Depends, Request
 from supabase import Client
 from qdrant_client.http.models import Filter, FieldCondition, MatchAny
 import json
 
-from app.config import openai_client, qdrant, COLLECTION_NAME, admin_supabase
+from app.config import openai_client, qdrant, COLLECTION_NAME
 from app.rate_limiter import limiter
-from app.dependencies import verify_clerk_token, get_tenant_supabase
+from app.dependencies import TenantQdrantClient, get_tenant_qdrant, verify_clerk_token, get_tenant_supabase
 from app.schemas import ApplyTemplateRequest, TaskAssistantRequest
 
 router = APIRouter()
@@ -183,7 +184,7 @@ async def async_chat_completion(messages: list, tools=None) -> any:
         kwargs["tool_choice"] = "auto"
     return await asyncio.to_thread(openai_client.chat.completions.create, **kwargs)
 
-async def async_qdrant_search(collection: str, query_vector: list, limit: int, query_filter=None) -> list:
+async def async_qdrant_search(qdrant_client: Any, collection: str, query_vector: list, limit: int, query_filter=None) -> list:
     """Async wrapper for qdrant-client v1.17+ query_points API."""
     try:
         kwargs = {
@@ -194,7 +195,7 @@ async def async_qdrant_search(collection: str, query_vector: list, limit: int, q
         }
         if query_filter:
             kwargs["query_filter"] = query_filter
-        response = await asyncio.to_thread(qdrant.query_points, **kwargs)
+        response = await asyncio.to_thread(qdrant_client.query_points, **kwargs)
         return response.points  # List[ScoredPoint] with .payload, .score, .id
     except Exception as e:
         import logging
@@ -279,7 +280,13 @@ async def create_tasks_from_template(request: Request, req: ApplyTemplateRequest
 
 @router.post("/ai/task-assistant")
 @limiter.limit("20/minute")
-async def ask_task_assistant(request: Request, req: TaskAssistantRequest, claims: dict = Depends(verify_clerk_token), supabase: Client = Depends(get_tenant_supabase)):
+async def ask_task_assistant(
+    request: Request,
+    req: TaskAssistantRequest,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+    qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
+):
     try:
         # SECURITY: tenant_id MUST come exclusively from the verified JWT — never from the request body.
         tenant_id = claims["verified_tenant_id"]
@@ -341,6 +348,7 @@ async def ask_task_assistant(request: Request, req: TaskAssistantRequest, claims
 
         if contract_ids_to_search:
             contract_results = await async_qdrant_search(
+                qdrant_client=qdrant_client,
                 collection=COLLECTION_NAME,
                 query_vector=question_vector,
                 limit=8 if source == "document" else 4, 
@@ -353,7 +361,7 @@ async def ask_task_assistant(request: Request, req: TaskAssistantRequest, claims
 
         combined_context += "=== KONTEKS HUKUM NASIONAL (INDONESIA) ===\n"
         try:
-            law_results = await async_qdrant_search("id_national_laws", question_vector, 2)
+            law_results = await async_qdrant_search(qdrant, "id_national_laws", question_vector, 2)
             for hit in law_results:
                 combined_context += f"TAG SUMBER: [{hit.payload.get('source_law', 'Unknown Law')}, Pasal {hit.payload.get('pasal', 'Unknown Pasal')}]\nTeks: {hit.payload.get('text', '')}\n\n"
         except Exception:
@@ -417,10 +425,9 @@ Context:
                 for tool_call in response_message.tool_calls:
                     fn_name = tool_call.function.name
                     if fn_name == "get_user_tasks":
-                        # We use admin_supabase to bypass RLS JWT issues while strictly filtering by verified tenant_id
-                        fn_res = get_user_tasks_tool_logic(tenant_id=tenant_id, supabase=admin_supabase)
+                        fn_res = get_user_tasks_tool_logic(tenant_id=tenant_id, supabase=supabase)
                     elif fn_name == "get_high_risk_contracts":
-                        fn_res = get_high_risk_contracts_tool_logic(tenant_id=tenant_id, supabase=admin_supabase)
+                        fn_res = get_high_risk_contracts_tool_logic(tenant_id=tenant_id, supabase=supabase)
                     else:
                         fn_res = f"Unknown tool: {fn_name}"
                     messages.append({"tool_call_id": tool_call.id, "role": "tool", "name": fn_name, "content": fn_res})

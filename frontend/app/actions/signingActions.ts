@@ -54,6 +54,7 @@ export interface InitiateSigningPayload {
     require_emeterai?: boolean
     emeterai_page?: number
     expires_in_days?: number
+    message_to_signers?: string
 }
 
 export async function initiateSigning(contractId: string, payload: InitiateSigningPayload) {
@@ -134,13 +135,14 @@ export async function sendSignerReminder(contractId: string, signerId: string) {
 export async function finalizeContractForSigning(contractId: string) {
     try {
         const headers = await getAuthHeaders()
-        const res = await fetch(`${API_URL}/api/v1/negotiation/${contractId}/finalize`, {
+        const res = await fetch(`${API_URL}/api/v1/negotiation/${contractId}/finalize-for-signing`, {
             method: 'POST',
             headers,
         })
         const data = await res.json()
         if (!res.ok) return { error: data.detail || 'Failed to finalize contract' }
         revalidatePath(`/dashboard/contracts/${contractId}`)
+        revalidatePath(`/dashboard/contracts/${contractId}/signing`)
         return { data }
     } catch (e: any) {
         return { error: e.message || 'Failed to finalize contract' }

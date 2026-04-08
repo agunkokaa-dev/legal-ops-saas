@@ -28,6 +28,9 @@ export async function uploadDocument(matterId: string, formData: FormData, paren
         }
 
         const contractId: string | undefined = ingestRes.data?.contract_id
+        const versionCandidate = ingestRes.data?.is_version_candidate
+            ? ingestRes.data
+            : ingestRes.data?.version_candidate || null
 
         revalidatePath(`/dashboard/matters/${matterId}`)
         if (parentContractId) {
@@ -39,7 +42,7 @@ export async function uploadDocument(matterId: string, formData: FormData, paren
         return {
             success: true,
             contractId,
-            versionCandidate: ingestRes.data?.version_candidate || null,
+            versionCandidate,
         }
     } catch (e: any) {
         console.error("🔥 ERROR UPLOADING DOCUMENT:", e)
@@ -189,12 +192,20 @@ export async function getContractById(contractId: string) {
 }
 
 // 7. Confirm Version Link
-export async function confirmVersion(newContractId: string, parentContractId: string) {
+export async function confirmVersion(payload: {
+    pendingVersionId: string
+    matchedContractId: string
+    action: 'confirm' | 'reject'
+    matterId?: string
+} | {
+    newContractId: string
+    parentContractId: string
+}) {
     const { userId } = await auth()
     if (!userId) return { error: "Unauthorized" }
 
     const { confirmVersionLink } = await import('@/app/actions/backend')
-    const res = await confirmVersionLink(newContractId, parentContractId)
+    const res = await confirmVersionLink(payload)
     
     revalidatePath(`/dashboard`)
     return res

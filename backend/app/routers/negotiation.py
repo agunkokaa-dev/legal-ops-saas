@@ -8,18 +8,19 @@ Handles:
 """
 import uuid
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Depends, Request
 from supabase import Client
 
-from app.config import admin_supabase, qdrant, openai_client, COLLECTION_NAME
-from app.dependencies import verify_clerk_token, get_tenant_supabase
+from app.config import openai_client, COLLECTION_NAME
+from app.dependencies import TenantQdrantClient, get_tenant_qdrant, verify_clerk_token, get_tenant_supabase
 from app.schemas import EscalateIssueRequest, DiffRequest
 from app.review_schemas import SmartDiffResult
 from app.task_logger import TaskLogger
 from app.rate_limiter import limiter
-from app.token_utils import truncate_to_tokens
+from app.token_budget import allocate_budget
+from app.event_bus import SSEEvent, event_bus
 from graph import run_smart_diff_agent
 import asyncio
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
@@ -27,6 +28,21 @@ from pydantic import BaseModel
 from typing import Optional
 
 router = APIRouter()
+
+
+async def publish_negotiation_event(
+    event_type: str,
+    tenant_id: str,
+    *,
+    contract_id: str | None = None,
+    data: dict | None = None,
+):
+    await event_bus.publish(SSEEvent(
+        event_type=event_type,
+        tenant_id=tenant_id,
+        contract_id=contract_id,
+        data=data or {},
+    ))
 
 
 class UpdateIssueStatusRequest(BaseModel):
@@ -45,6 +61,7 @@ async def list_contract_versions(
     request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     Returns all versions of a contract, ordered by version number.
@@ -53,10 +70,11 @@ async def list_contract_versions(
     try:
         tenant_id = claims["verified_tenant_id"]
 
-        res = admin_supabase.table("contract_versions") \
+        res = supabase.table("contract_versions") \
             .select("id, contract_id, version_number, risk_score, risk_level, uploaded_filename, created_at, raw_text") \
             .eq("contract_id", contract_id) \
             .eq("tenant_id", tenant_id) \
+            .gt("version_number", 0) \
             .order("version_number") \
             .execute()
 
@@ -99,6 +117,7 @@ async def list_negotiation_issues(
     status: str = None,
     version_id: str = None,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     Returns all negotiation issues for a contract, optionally filtered
@@ -107,7 +126,7 @@ async def list_negotiation_issues(
     try:
         tenant_id = claims["verified_tenant_id"]
 
-        query = admin_supabase.table("negotiation_issues") \
+        query = supabase.table("negotiation_issues") \
             .select("*") \
             .eq("contract_id", contract_id) \
             .eq("tenant_id", tenant_id) \
@@ -120,6 +139,17 @@ async def list_negotiation_issues(
 
         res = query.execute()
         issues = res.data or []
+
+        task_ids = [issue.get("linked_task_id") for issue in issues if issue.get("linked_task_id")]
+        task_status_map = {}
+        if task_ids:
+            task_res = supabase.table("tasks").select("id, status") \
+                .eq("tenant_id", tenant_id).in_("id", task_ids).execute()
+            task_status_map = {task["id"]: task.get("status") for task in (task_res.data or [])}
+
+        for issue in issues:
+            if issue.get("linked_task_id"):
+                issue["linked_task_status"] = task_status_map.get(issue["linked_task_id"])
 
         # Aggregate counts by severity
         severity_counts = {"critical": 0, "warning": 0, "info": 0}
@@ -153,6 +183,7 @@ async def escalate_issue(
     contract_id: str,
     payload: EscalateIssueRequest,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     Escalates a negotiation issue to a Kanban task.
@@ -162,7 +193,7 @@ async def escalate_issue(
         tenant_id = claims["verified_tenant_id"]
 
         # Fetch the issue
-        issue_res = admin_supabase.table("negotiation_issues") \
+        issue_res = supabase.table("negotiation_issues") \
             .select("*") \
             .eq("id", payload.issue_id) \
             .eq("tenant_id", tenant_id) \
@@ -201,13 +232,13 @@ async def escalate_issue(
             "source_document_name": contract_id,
         }
 
-        task_res = admin_supabase.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
+        task_res = supabase.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
 
         if not task_res.data:
             raise HTTPException(status_code=500, detail="Failed to create task.")
 
         # Link task back to the issue and update status
-        admin_supabase.table("negotiation_issues") \
+        supabase.table("negotiation_issues") \
             .update({
                 "status": "escalated",
                 "linked_task_id": task_id
@@ -218,7 +249,7 @@ async def escalate_issue(
 
         # Log activity
         try:
-            admin_supabase.table("activity_logs").insert({
+            supabase.table("activity_logs").insert({
                 "tenant_id": tenant_id,
                 "matter_id": payload.matter_id,
                 "task_id": task_id,
@@ -227,6 +258,17 @@ async def escalate_issue(
             }).execute()
         except Exception:
             pass
+
+        await publish_negotiation_event(
+            "task.created",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "task_id": task_id,
+                "task_title": task_payload["title"],
+                "source": "negotiation.escalate",
+            },
+        )
 
         return {
             "status": "success",
@@ -251,6 +293,7 @@ async def get_smart_diff(
     request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     Returns the cached Diff Result if it has already been generated.
@@ -258,10 +301,11 @@ async def get_smart_diff(
     try:
         tenant_id = claims["verified_tenant_id"]
 
-        res = admin_supabase.table("contract_versions") \
+        res = supabase.table("contract_versions") \
             .select("pipeline_output") \
             .eq("contract_id", contract_id) \
             .eq("tenant_id", tenant_id) \
+            .gt("version_number", 0) \
             .order("version_number", desc=True) \
             .limit(1) \
             .execute()
@@ -297,6 +341,8 @@ async def generate_smart_diff(
     contract_id: str,
     payload: DiffRequest = None,
     claims: dict = Depends(verify_clerk_token),
+    qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     On-Demand Agent: Compares V1 vs V2, evaluates Playbook compliance,
@@ -308,10 +354,11 @@ async def generate_smart_diff(
         _diff_logger.log_agent_start("smart_diff")
 
         # 1. Get the latest 2 versions
-        res = admin_supabase.table("contract_versions") \
+        res = supabase.table("contract_versions") \
             .select("*") \
             .eq("contract_id", contract_id) \
             .eq("tenant_id", tenant_id) \
+            .gt("version_number", 0) \
             .order("version_number", desc=True) \
             .limit(2) \
             .execute()
@@ -332,23 +379,10 @@ async def generate_smart_diff(
         user_id = claims.get("sub", "")
         
         def fetch_rules():
-            # Try tenant first
-            hits, _ = qdrant.scroll(
+            hits, _ = qdrant_client.scroll(
                 collection_name="company_rules",
-                scroll_filter=Filter(must=[
-                    FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))
-                ]),
                 limit=50
             )
-            if not hits:
-                # Fallback to user
-                hits, _ = qdrant.scroll(
-                    collection_name="company_rules",
-                    scroll_filter=Filter(must=[
-                        FieldCondition(key="user_id", match=MatchValue(value=user_id))
-                    ]),
-                    limit=50
-                )
             return hits
             
         try:
@@ -366,7 +400,7 @@ async def generate_smart_diff(
         # 3. Fetch prior rounds context for multi-round intelligence
         prior_rounds_context = None
         try:
-            rounds_res = admin_supabase.table("negotiation_rounds") \
+            rounds_res = supabase.table("negotiation_rounds") \
                 .select("round_number, diff_snapshot, concession_analysis") \
                 .eq("contract_id", contract_id) \
                 .eq("tenant_id", tenant_id) \
@@ -383,16 +417,56 @@ async def generate_smart_diff(
         except Exception as rounds_err:
             print(f"Warning: Failed to fetch prior rounds: {rounds_err}")
 
-        # 4. Enforce Token Body Limits (128k Safe Target)
-        safe_playbook, pb_truncated = truncate_to_tokens(playbook_rules_text, 10000, "gpt-4o")
-        safe_v1, v1_truncated = truncate_to_tokens(v1_text, 45000, "gpt-4o")
-        safe_v2, v2_truncated = truncate_to_tokens(v2_text, 45000, "gpt-4o")
+        budget_allocation = allocate_budget(
+            inputs={
+                "v1_text": v1_text,
+                "v2_text": v2_text,
+                "playbook_rules": playbook_rules_text,
+                "prior_rounds": prior_rounds_context or "",
+            },
+            priorities={
+                "v1_text": 3,
+                "v2_text": 3,
+                "playbook_rules": 2,
+                "prior_rounds": 1,
+            },
+            total_budget=102_400,
+            model="gpt-4o",
+            system_prompt_tokens=3_000,
+        )
+        safe_v1, v1_tokens = budget_allocation["v1_text"]
+        safe_v2, v2_tokens = budget_allocation["v2_text"]
+        safe_playbook, playbook_tokens = budget_allocation["playbook_rules"]
+        safe_rounds, rounds_tokens = budget_allocation["prior_rounds"]
 
         _diff_logger.input_metadata.update({
-            "v1_truncated": v1_truncated,
-            "v2_truncated": v2_truncated,
-            "playbook_truncated": pb_truncated
+            "v1_tokens": v1_tokens,
+            "v2_tokens": v2_tokens,
+            "playbook_tokens": playbook_tokens,
+            "prior_rounds_tokens": rounds_tokens,
+            "budget_total": v1_tokens + v2_tokens + playbook_tokens + rounds_tokens,
+            "v1_truncated": safe_v1 != v1_text,
+            "v2_truncated": safe_v2 != v2_text,
+            "playbook_truncated": safe_playbook != playbook_rules_text,
+            "prior_rounds_truncated": safe_rounds != (prior_rounds_context or ""),
         })
+        print(
+            f"[SMART DIFF] Token allocation: V1={v1_tokens:,} V2={v2_tokens:,} "
+            f"Playbook={playbook_tokens:,} Rounds={rounds_tokens:,} "
+            f"Total={v1_tokens + v2_tokens + playbook_tokens + rounds_tokens:,}"
+        )
+
+        await publish_negotiation_event(
+            "diff.started",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "v1_version": v1.get("version_number"),
+                "v2_version": v2.get("version_number"),
+                "playbook_rules_count": 0 if playbook_rules_text == "No custom playbook rules defined." else len([line for line in playbook_rules_text.splitlines() if line.strip()]),
+                "message": "Starting Smart Diff analysis with GPT-4o...",
+            },
+        )
 
         # 5. Execute Smart Diff Agent
         diff_result_dict = await asyncio.to_thread(
@@ -401,7 +475,7 @@ async def generate_smart_diff(
             v2_raw_text=safe_v2,
             v1_risk_score=v1_score,
             playbook_rules_text=safe_playbook,
-            prior_rounds_context=prior_rounds_context
+            prior_rounds_context=safe_rounds
         )
 
         # 5. Pre-Sync: Insert all deviations as persistent negotiation_issues
@@ -423,7 +497,7 @@ async def generate_smart_diff(
                 })
             
             if issues_payload:
-                issues_res = admin_supabase.table("negotiation_issues").insert([{**iss, "tenant_id": tenant_id} for iss in issues_payload]).execute()
+                issues_res = supabase.table("negotiation_issues").insert([{**iss, "tenant_id": tenant_id} for iss in issues_payload]).execute()
                 inserted_issues = issues_res.data or []
                 
                 # Replace the ephemeral deviation_ids with the REAL Supabase UUIDs
@@ -438,10 +512,10 @@ async def generate_smart_diff(
         pipeline_output = v2.get("pipeline_output") or {}
         pipeline_output["diff_result"] = diff_result_dict
 
-        admin_supabase.table("contract_versions") \
+        supabase.table("contract_versions") \
             .update({
                 "pipeline_output": pipeline_output,
-                "is_truncated": v2_truncated
+                "is_truncated": safe_v2 != v2_text
             }) \
             .eq("id", v2.get("id")) \
             .eq("tenant_id", tenant_id) \
@@ -450,7 +524,7 @@ async def generate_smart_diff(
         # 7. Track this as a negotiation round with REAL IDs
         try:
             round_number = v2.get("version_number", 2) - 1
-            admin_supabase.table("negotiation_rounds").upsert({
+            supabase.table("negotiation_rounds").upsert({
                 "tenant_id": tenant_id,
                 "contract_id": contract_id,
                 "round_number": round_number,
@@ -459,19 +533,49 @@ async def generate_smart_diff(
                 "diff_snapshot": diff_result_dict
             }, on_conflict="contract_id,round_number").execute()
             print(f"✅ Negotiation Round {round_number} tracked for contract {contract_id}")
+            await publish_negotiation_event(
+                "negotiation.round_created",
+                tenant_id,
+                contract_id=contract_id,
+                data={
+                    "round_number": round_number,
+                    "from_version_id": v1.get("id"),
+                    "to_version_id": v2.get("id"),
+                },
+            )
         except Exception as round_err:
             print(f"Warning: Failed to track negotiation round: {round_err}")
 
+        await publish_negotiation_event(
+            "diff.completed",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "deviations_count": len(diff_result_dict.get("deviations", [])),
+                "critical_count": sum(1 for d in diff_result_dict.get("deviations", []) if d.get("severity") == "critical"),
+                "risk_delta": diff_result_dict.get("risk_delta", 0),
+                "message": "Smart Diff analysis complete",
+            },
+        )
         _diff_logger.complete(result_summary={"deviations": len(diff_result_dict.get("deviations", []))})
         return diff_result_dict
 
     except Exception as e:
         print(f"❌ Smart Diff Error: {e}")
         if '_diff_logger' in locals(): _diff_logger.fail(e)
+        await publish_negotiation_event(
+            "diff.failed",
+            claims["verified_tenant_id"],
+            contract_id=contract_id,
+            data={
+                "error": str(e)[:500],
+                "message": "Smart Diff analysis failed",
+            },
+        )
         traceback.print_exc()
         try:
             # Catch backend failures correctly: update document status to failed
-            admin_supabase.table("contracts").update({
+            supabase.table("contracts").update({
                 "status": "Failed"
             }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
         except Exception as update_err:
@@ -491,6 +595,7 @@ async def update_issue_status(
     issue_id: str,
     payload: UpdateIssueStatusRequest,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     Updates the status of a negotiation issue and appends to the reasoning audit log.
@@ -505,7 +610,7 @@ async def update_issue_status(
             raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(sorted(valid_statuses))}")
 
         # Fetch current issue
-        issue_res = admin_supabase.table("negotiation_issues") \
+        issue_res = supabase.table("negotiation_issues") \
             .select("*") \
             .eq("id", issue_id) \
             .eq("contract_id", contract_id) \
@@ -517,10 +622,11 @@ async def update_issue_status(
             raise HTTPException(status_code=404, detail="Negotiation issue not found.")
 
         issue = issue_res.data[0]
+        previous_status = issue.get("status", "open")
         current_log = issue.get("reasoning_log") or []
 
         # 1. Fetch Deviation Context from rounds
-        rounds_res = admin_supabase.table("negotiation_rounds") \
+        rounds_res = supabase.table("negotiation_rounds") \
             .select("diff_snapshot") \
             .eq("contract_id", contract_id) \
             .eq("tenant_id", tenant_id) \
@@ -538,7 +644,7 @@ async def update_issue_status(
 
         # 2. Draft Accumulation (V3-Draft)
         draft_version = None
-        vs_res = admin_supabase.table("contract_versions") \
+        vs_res = supabase.table("contract_versions") \
             .select("*") \
             .eq("contract_id", contract_id) \
             .eq("tenant_id", tenant_id) \
@@ -565,7 +671,7 @@ async def update_issue_status(
                 "risk_score": latest_v.get("risk_score", 0.0),
                 "risk_level": latest_v.get("risk_level", "Unknown"),
             }
-            res_insert = admin_supabase.table("contract_versions").insert({**draft_payload, "tenant_id": tenant_id}).execute()
+            res_insert = supabase.table("contract_versions").insert({**draft_payload, "tenant_id": tenant_id}).execute()
             if res_insert.data:
                 draft_version = res_insert.data[0]
 
@@ -628,7 +734,7 @@ async def update_issue_status(
             elif payload.status == 'escalated':
                 # Create Kanban Approval Task
                 try:
-                    fetch_matter_id = admin_supabase.table("contracts").select("matter_id").eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+                    fetch_matter_id = supabase.table("contracts").select("matter_id").eq("id", contract_id).eq("tenant_id", tenant_id).execute()
                     matter_id = fetch_matter_id.data[0].get("matter_id") if fetch_matter_id.data else None
                     task_payload = {
                         "tenant_id": tenant_id,
@@ -638,16 +744,16 @@ async def update_issue_status(
                         "status": "backlog",
                         "priority": "high",
                     }
-                    task_res = admin_supabase.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
+                    task_res = supabase.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
                     if task_res.data:
                         linked_task_id = task_res.data[0]["id"]
-                        admin_supabase.table("negotiation_issues").update({"linked_task_id": linked_task_id}).eq("id", issue_id).eq("tenant_id", tenant_id).execute()
+                        supabase.table("negotiation_issues").update({"linked_task_id": linked_task_id}).eq("id", issue_id).eq("tenant_id", tenant_id).execute()
                 except Exception as e:
                     print(f"Failed to create escalation task: {e}")
 
             # Persist Draft Update State
             if draft_version:
-                admin_supabase.table("contract_versions").update({
+                supabase.table("contract_versions").update({
                     "raw_text": draft_text,
                     "risk_score": draft_version.get("risk_score"),
                     "risk_level": draft_version.get("risk_level")
@@ -680,7 +786,7 @@ async def update_issue_status(
         if payload.status in ('accepted', 'rejected', 'resolved', 'dismissed'):
             update_payload["resolved_at"] = now
 
-        admin_supabase.table("negotiation_issues") \
+        supabase.table("negotiation_issues") \
             .update(update_payload) \
             .eq("id", issue_id) \
             .eq("tenant_id", tenant_id) \
@@ -688,7 +794,7 @@ async def update_issue_status(
 
         # Log activity
         try:
-            admin_supabase.table("activity_logs").insert({
+            supabase.table("activity_logs").insert({
 
                 "tenant_id": tenant_id,
                 "action": f"Issue status changed to {payload.status.upper()}: {issue.get('title', '')[:60]}",
@@ -696,6 +802,20 @@ async def update_issue_status(
             }).execute()
         except Exception:
             pass
+
+        await publish_negotiation_event(
+            "negotiation.issue_updated",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "issue_id": issue_id,
+                "issue_title": issue.get("title", "Untitled Issue"),
+                "old_status": previous_status,
+                "new_status": payload.status,
+                "actor": payload.actor or user_id,
+                "message": f"Issue '{issue.get('title', 'Untitled Issue')}' changed to {payload.status}",
+            },
+        )
 
         return {
             "status": "success",
@@ -723,6 +843,7 @@ async def list_negotiation_rounds(
     request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
     Returns all negotiation rounds for a contract, ordered by round number.
@@ -731,7 +852,7 @@ async def list_negotiation_rounds(
     try:
         tenant_id = claims["verified_tenant_id"]
 
-        res = admin_supabase.table("negotiation_rounds") \
+        res = supabase.table("negotiation_rounds") \
             .select("*") \
             .eq("contract_id", contract_id) \
             .eq("tenant_id", tenant_id) \
@@ -754,87 +875,175 @@ async def list_negotiation_rounds(
 
 
 # =====================================================================
-# POST /finalize — Transition Contract to "Pending Approval" / "Ready to Sign"
+# POST /finalize-for-signing — Transition Contract to "Pending Approval"
 # =====================================================================
 
 @router.post("/{contract_id}/finalize")
+@router.post("/{contract_id}/finalize-for-signing")
 @limiter.limit("10/minute")
 async def finalize_for_signing(
     request: Request,
     contract_id: str,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     """
-    Triggered when all deviations in the War Room are resolved.
+    Bridge War Room → Signing Center.
 
-    Validates that no critical issues remain open, then transitions
-    the contract status to 'Ready to Sign' so the Signing Center can proceed.
-
-    Blocked if any critical negotiation issues are still open/under_review.
+    A contract can move to signing once no unresolved critical negotiation
+    issues remain. Non-critical unresolved items are returned as warnings.
     """
     try:
         tenant_id = claims["verified_tenant_id"]
 
-        # Verify contract exists and belongs to tenant
-        contract_res = admin_supabase.table("contracts").select("id, status, title") \
-            .eq("id", contract_id).eq("tenant_id", tenant_id).limit(1).execute()
+        contract_res = supabase.table("contracts").select("*") \
+            .eq("id", contract_id).eq("tenant_id", tenant_id).single().execute()
         if not contract_res.data:
             raise HTTPException(status_code=404, detail="Contract not found")
-        contract = contract_res.data[0]
+        contract = contract_res.data
 
-        # Block finalization if critical issues remain open
-        open_critical_res = admin_supabase.table("negotiation_issues") \
-            .select("id, title, severity, status") \
-            .eq("contract_id", contract_id) \
-            .eq("tenant_id", tenant_id) \
-            .in_("status", ["open", "under_review"]) \
-            .eq("severity", "critical") \
-            .execute()
+        allowed_statuses = {"Reviewed", "Negotiating"}
+        if contract.get("status") not in allowed_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Contract status is '{contract.get('status')}'. "
+                    f"Finalization requires one of: {', '.join(sorted(allowed_statuses))}"
+                ),
+            )
 
-        open_critical = open_critical_res.data or []
-        if open_critical:
+        issues_res = supabase.table("negotiation_issues").select(
+            "id, title, status, severity, linked_task_id"
+        ).eq("contract_id", contract_id).eq("tenant_id", tenant_id).execute()
+        issues = issues_res.data or []
+
+        task_ids = [issue.get("linked_task_id") for issue in issues if issue.get("linked_task_id")]
+        task_status_map = {}
+        if task_ids:
+            task_res = supabase.table("tasks").select("id, status") \
+                .eq("tenant_id", tenant_id).in_("id", task_ids).execute()
+            task_status_map = {task["id"]: task.get("status") for task in (task_res.data or [])}
+
+        unresolved_issues = []
+        for issue in issues:
+            status = (issue.get("status") or "").lower()
+            if status in {"accepted", "rejected", "countered", "resolved", "dismissed"}:
+                continue
+            if status == "escalated" and issue.get("linked_task_id") and task_status_map.get(issue["linked_task_id"]) == "done":
+                continue
+            unresolved_issues.append(issue)
+
+        unresolved_critical = [issue for issue in unresolved_issues if issue.get("severity") == "critical"]
+        if unresolved_critical:
             return {
-                "status": "blocked",
-                "reason": f"{len(open_critical)} critical issue(s) must be resolved before finalizing.",
-                "blocking_issues": [{"id": i["id"], "title": i["title"]} for i in open_critical],
+                "ready": False,
+                "blocked": True,
+                "reason": f"{len(unresolved_critical)} critical issue(s) still unresolved",
+                "unresolved_critical": [
+                    {"id": issue["id"], "title": issue["title"], "status": issue["status"]}
+                    for issue in unresolved_critical
+                ],
+                "unresolved_total": len(unresolved_issues),
             }
 
-        # Count all remaining open issues (non-critical warnings are acceptable)
-        open_any_res = admin_supabase.table("negotiation_issues") \
-            .select("id, severity") \
+        latest_version_res = supabase.table("contract_versions").select("*") \
             .eq("contract_id", contract_id) \
             .eq("tenant_id", tenant_id) \
-            .in_("status", ["open", "under_review"]) \
-            .execute()
-        open_any = open_any_res.data or []
+            .order("version_number", desc=True).limit(1).execute()
+        if not latest_version_res.data:
+            raise HTTPException(status_code=400, detail="No contract version found")
+        latest_version = latest_version_res.data[0]
 
-        now = datetime.now(timezone.utc).isoformat() if hasattr(datetime, 'now') else __import__('datetime').datetime.now(__import__('datetime').timezone.utc).isoformat()
+        draft_revisions = contract.get("draft_revisions") or {}
+        final_text = draft_revisions.get("latest_text") or latest_version.get("raw_text") or ""
 
-        # Transition contract to Ready to Sign
-        admin_supabase.table("contracts").update({
-            "status": "Ready to Sign",
-            "updated_at": now,
+        bilingual_res = supabase.table("bilingual_clauses").select("id, sync_status") \
+            .eq("contract_id", contract_id).eq("tenant_id", tenant_id).execute()
+        bilingual_clauses = bilingual_res.data or []
+        has_bilingual = bool(bilingual_clauses)
+        bilingual_all_synced = all(clause.get("sync_status") == "synced" for clause in bilingual_clauses) if bilingual_clauses else True
+
+        if has_bilingual:
+            try:
+                from app.routers.bilingual import assemble_bilingual_contract_texts
+
+                id_text, en_text, _ = assemble_bilingual_contract_texts(contract_id, tenant_id, supabase)
+                draft_revisions["id_text"] = id_text
+                draft_revisions["en_text"] = en_text
+                if latest_version.get("id"):
+                    supabase.table("contract_versions").update({
+                        "id_raw_text": id_text,
+                        "en_raw_text": en_text,
+                    }).eq("id", latest_version["id"]).eq("tenant_id", tenant_id).execute()
+            except Exception as exc:
+                print(f"[NEGOTIATION] Bilingual finalization warning: {exc}")
+
+        finalized_at = datetime.now(timezone.utc).isoformat()
+        supabase.table("contracts").update({
+            "status": "Pending Approval",
+            "updated_at": finalized_at,
+            "draft_revisions": {
+                **draft_revisions,
+                "final_text": final_text,
+                "finalized_at": finalized_at,
+                "finalized_by": claims.get("sub", "unknown"),
+            },
         }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
 
-        # Log
         try:
-            admin_supabase.table("activity_logs").insert({
+            supabase.table("activity_logs").insert({
                 "tenant_id": tenant_id,
-                "action": f"Contract finalized for signing: {contract.get('title', '')[:80]}",
-                "actor_name": claims.get("sub", "user"),
+                "contract_id": contract_id,
+                "action": "negotiation_finalized",
+                "detail": (
+                    f"Contract finalized for signing. {len(issues)} issues reviewed. "
+                    + (
+                        "Bilingual document synced."
+                        if has_bilingual and bilingual_all_synced
+                        else ("Bilingual clauses still out of sync." if has_bilingual else "Monolingual final text prepared.")
+                    )
+                ),
+                "actor": claims.get("sub", "unknown"),
+                "actor_name": claims.get("sub", "unknown"),
             }).execute()
         except Exception:
-            pass
+            try:
+                supabase.table("activity_logs").insert({
+                    "tenant_id": tenant_id,
+                    "contract_id": contract_id,
+                    "action": "negotiation_finalized",
+                    "actor_name": claims.get("sub", "unknown"),
+                }).execute()
+            except Exception:
+                pass
+
+        await publish_negotiation_event(
+            "contract.status_changed",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "contract_id": contract_id,
+                "old_status": contract.get("status"),
+                "new_status": "Pending Approval",
+                "message": "Contract finalized for signing.",
+            },
+        )
 
         return {
-            "status": "finalized",
+            "ready": True,
+            "blocked": False,
             "contract_id": contract_id,
-            "new_status": "Ready to Sign",
-            "open_warnings": len(open_any),
-            "message": (
-                f"Contract is ready for signing. "
-                + (f"{len(open_any)} non-critical issue(s) remain open (acceptable)." if open_any else "All issues resolved.")
-            ),
+            "status": "Pending Approval",
+            "issues_summary": {
+                "total": len(issues),
+                "resolved": len(issues) - len(unresolved_issues),
+                "unresolved_warnings": len([issue for issue in unresolved_issues if issue.get("severity") != "critical"]),
+            },
+            "bilingual": {
+                "has_bilingual": has_bilingual,
+                "all_synced": bilingual_all_synced,
+            },
+            "next_step": f"Run pre-sign compliance checklist: POST /api/v1/signing/{contract_id}/checklist",
         }
 
     except HTTPException:

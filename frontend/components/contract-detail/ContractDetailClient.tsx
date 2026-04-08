@@ -14,6 +14,8 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { createNote } from '@/app/actions/noteActions';
+import { useContractSSE } from '@/hooks/useContractSSE';
+import { SSEStatusBadge } from '@/components/status/SSEStatusBadge';
 
 export default function ContractDetailClient({
     pdfUrl,
@@ -343,66 +345,146 @@ export default function ContractDetailClient({
     const [taskError, setTaskError] = useState<{ error_summary: string; error_log_id: string | null; attempt?: number } | null>(null);
     const [errorLogDetail, setErrorLogDetail] = useState<any>(null);
     const [showDetailedLog, setShowDetailedLog] = useState(false);
+    const [pipelineProgress, setPipelineProgress] = useState<{
+        currentAgent: string
+        agentIndex: number
+        totalAgents: number
+        message: string
+    } | null>(null);
 
-    // Auto-polling for status updates
     useEffect(() => {
-        if (!liveContract?.id) return;
-        let interval: NodeJS.Timeout;
-
-        const checkStatus = async () => {
-            try {
-                const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-                const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-                const headers = { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` };
-
-                const res = await fetch(`${supabaseUrl}/rest/v1/contracts?id=eq.${liveContract.id}&select=*`, { headers });
-                const [data] = await res.json();
-
-                if (data && data.status !== liveContract.status) {
-                    setLiveContract(data);
-
-                    const newStatus = (data.status || '').toLowerCase();
-                    const isFailed = newStatus === 'failed';
-                    const isRetrying = newStatus.startsWith('retrying');
-
-                    if (isFailed) {
-                        // Extract error info from draft_revisions field
-                        const dr = data.draft_revisions;
-                        const errorLogId = dr?.error_log_id || null;
-                        const errorSummary = dr?.error_summary || 'An unknown error occurred during AI analysis.';
-                        setTaskError({ error_summary: errorSummary, error_log_id: errorLogId });
-                        toast.error('AI Analysis Failed. See the error panel for details.', {
-                            style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' }
-                        });
-                        clearInterval(interval);
-                    } else if (isRetrying) {
-                        toast.loading(`Retrying analysis... (${data.status})`, {
-                            id: 'retry-toast',
-                            style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
-                        });
-                    } else if (!newStatus.includes('processing') && !newStatus.includes('ingesting') && !newStatus.includes('in progress')) {
-                        toast.success('✅ AI Analysis Complete. The War Room is ready.', {
-                            style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
-                        });
-                        clearInterval(interval);
-                        router.refresh();
-                    }
-                }
-            } catch (err) {
-                console.error('Polling error:', err);
-            }
-        };
-
-        const isProcessing = ['processing', 'ingesting', 'in progress'].some(
-            s => liveContract?.status?.toLowerCase().includes(s)
-        ) || liveContract?.status?.toLowerCase().startsWith('retrying');
-
-        if (isProcessing) {
-            interval = setInterval(checkStatus, 3000);
+        setLiveContract(contract);
+        if ((contract?.status || '').toLowerCase() !== 'failed') {
+            setTaskError(null);
         }
+    }, [contract]);
 
-        return () => { if (interval) clearInterval(interval); };
-    }, [liveContract?.status, liveContract?.id, router]);
+    const pollContractStatus = useCallback(async () => {
+        if (!liveContract?.id) return;
+
+        try {
+            const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+            const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+            const headers = { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` };
+
+            const res = await fetch(`${supabaseUrl}/rest/v1/contracts?id=eq.${liveContract.id}&select=*`, { headers });
+            const [data] = await res.json();
+            if (!data) return;
+
+            setLiveContract(data);
+
+            const newStatus = (data.status || '').toLowerCase();
+            if (newStatus === 'failed') {
+                const dr = data.draft_revisions;
+                const errorLogId = dr?.error_log_id || null;
+                const errorSummary = dr?.error_summary || 'An unknown error occurred during AI analysis.';
+                setTaskError({ error_summary: errorSummary, error_log_id: errorLogId });
+                setPipelineProgress(null);
+                toast.error('AI Analysis Failed. See the error panel for details.', {
+                    style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' }
+                });
+                return;
+            }
+
+            if (newStatus.startsWith('retrying')) {
+                toast.loading(`Retrying analysis... (${data.status})`, {
+                    id: 'retry-toast',
+                    style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+                });
+                return;
+            }
+
+            if (!newStatus.includes('processing') && !newStatus.includes('ingesting') && !newStatus.includes('in progress')) {
+                setPipelineProgress(null);
+                router.refresh();
+            }
+        } catch (err) {
+            console.error('Polling fallback error:', err);
+        }
+    }, [liveContract?.id, router]);
+
+    const liveStatus = (liveContract?.status || '').toLowerCase();
+    const isRealtimeTracked = ['processing', 'ingesting', 'in progress', 'signing in progress', 'partially signed'].some(
+        status => liveStatus.includes(status)
+    ) || liveStatus.startsWith('retrying');
+
+    const { isConnected: isSSEConnected, isFallbackPolling } = useContractSSE({
+        contractId: liveContract?.id || contract?.id || '',
+        enabled: Boolean(liveContract?.id) && isRealtimeTracked,
+        pollFallback: pollContractStatus,
+        onPipelineProgress: (event) => {
+            setPipelineProgress({
+                currentAgent: String(event.data.agent_name || ''),
+                agentIndex: Number(event.data.agent_index || 0),
+                totalAgents: Number(event.data.total_agents || 0),
+                message: String(event.data.message || 'Pipeline update received'),
+            });
+        },
+        onPipelineCompleted: () => {
+            setPipelineProgress(null);
+            toast.success('AI Analysis Complete. The War Room is ready.', {
+                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+            });
+            router.refresh();
+        },
+        onPipelineFailed: (event) => {
+            setPipelineProgress(null);
+            setTaskError({
+                error_summary: String(event.data.error || 'An unknown error occurred during AI analysis.'),
+                error_log_id: null,
+            });
+            toast.error('AI Analysis Failed. See the error panel for details.', {
+                style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' }
+            });
+            router.refresh();
+        },
+        onStatusChanged: (event) => {
+            setLiveContract((prev: any) => ({
+                ...prev,
+                status: event.data.new_status || prev?.status,
+            }));
+
+            const newStatus = String(event.data.new_status || '').toLowerCase();
+            if (newStatus.startsWith('retrying')) {
+                toast.loading(`Retrying analysis... (${String(event.data.new_status || '')})`, {
+                    id: 'retry-toast',
+                    style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+                });
+            }
+
+            if (newStatus === 'failed') {
+                setPipelineProgress(null);
+            }
+
+            router.refresh();
+        },
+        onSigningUpdate: (event) => {
+            if (event.data.message) {
+                toast.info(String(event.data.message), {
+                    style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+                });
+            }
+            router.refresh();
+        },
+    });
+
+    const shouldShowPipelineProgress = Boolean(pipelineProgress) || liveStatus.includes('processing') || liveStatus.startsWith('retrying');
+    const truncationWarning = useMemo(() => {
+        const draftRevisions = liveContract?.draft_revisions
+        if (!draftRevisions) return null
+        if (typeof draftRevisions === 'object' && !Array.isArray(draftRevisions)) {
+            return draftRevisions.truncation_warning ?? null
+        }
+        if (typeof draftRevisions === 'string') {
+            try {
+                const parsed = JSON.parse(draftRevisions)
+                return parsed?.truncation_warning ?? null
+            } catch {
+                return null
+            }
+        }
+        return null
+    }, [liveContract?.draft_revisions]);
 
     // Fetch full error log detail on demand
     const fetchErrorLogDetail = useCallback(async (logId: string) => {
@@ -534,11 +616,17 @@ export default function ContractDetailClient({
 
     return (
         <div className="flex flex-col h-full w-full overflow-hidden">
-            {liveContract?.is_truncated && (
-                <div className="w-full bg-yellow-500/20 border-b border-yellow-500/50 p-2 flex items-center justify-center gap-2">
-                    <span className="material-symbols-outlined text-yellow-500 text-sm">warning</span>
-                    <p className="text-yellow-500 text-xs font-bold uppercase tracking-wide">
-                        Warning: This document is exceptionally large. Only the first ~100,000 words were analyzed by the AI.
+            {truncationWarning && (
+                <div className="w-full border-b border-amber-500/30 bg-amber-900/20 px-4 py-3">
+                    <div className="flex items-center justify-center gap-2 text-amber-400">
+                        <span className="material-symbols-outlined text-sm">warning</span>
+                        <p className="text-xs font-bold uppercase tracking-wide">Document Truncated</p>
+                    </div>
+                    <p className="mt-1 text-center text-xs text-amber-300/80">
+                        {truncationWarning.message}
+                    </p>
+                    <p className="mt-1 text-center text-[11px] text-amber-300/60">
+                        Some clauses in the middle of the document may not have been analyzed.
                     </p>
                 </div>
             )}
@@ -605,6 +693,9 @@ export default function ContractDetailClient({
                 }
             >
                 <div className="flex items-center gap-3 ml-auto">
+                    {isRealtimeTracked && (
+                        <SSEStatusBadge isConnected={isSSEConnected} isFallbackPolling={isFallbackPolling} />
+                    )}
                     {/* Explicit V2 Upload Input (Hidden but needed) */}
                     <input
                         type="file"
@@ -664,6 +755,35 @@ export default function ContractDetailClient({
                     })()}
                 </div>
             </ContractHeader>
+
+            {shouldShowPipelineProgress && (
+                <div className="border-b border-[#d4af37]/10 bg-[#111] px-6 py-3">
+                    <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                            <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-neutral-800">
+                                <div
+                                    className="h-full bg-[#d4af37] transition-all duration-500"
+                                    style={{
+                                        width: `${pipelineProgress
+                                            ? Math.max(8, (pipelineProgress.agentIndex / pipelineProgress.totalAgents) * 100)
+                                            : 12
+                                        }%`
+                                    }}
+                                />
+                            </div>
+                            <p className="text-[11px] uppercase tracking-widest text-neutral-400">
+                                {pipelineProgress?.message || 'Waiting for AI pipeline updates...'}
+                                {pipelineProgress && (
+                                    <span className="ml-2 text-[#d4af37]">
+                                        ({pipelineProgress.agentIndex}/{pipelineProgress.totalAgents})
+                                    </span>
+                                )}
+                            </p>
+                        </div>
+                        <SSEStatusBadge isConnected={isSSEConnected} isFallbackPolling={isFallbackPolling} />
+                    </div>
+                </div>
+            )}
 
             <div className="flex flex-1 w-full overflow-hidden bg-background">
                 {/* LEFT: PDF Viewer or Live Draft Viewer */}

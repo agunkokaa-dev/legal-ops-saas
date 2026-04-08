@@ -11,6 +11,7 @@ import AISidebar from './AISidebar'
 import FindingCard from './FindingCard'
 import Link from 'next/link'
 import { createTask } from '@/app/actions/taskActions'
+import { useContractSSE } from '@/hooks/useContractSSE'
 
 // ── Types ──
 interface TextCoordinate {
@@ -71,6 +72,8 @@ export default function ContractReviewClient({
     const [isLoading, setIsLoading] = useState(true)
     const [loadingPhase, setLoadingPhase] = useState<'checking' | 'analyzing' | 'finalizing'>('checking')
     const [error, setError] = useState<string | null>(null)
+    const [awaitingPipeline, setAwaitingPipeline] = useState(false)
+    const [progressMessage, setProgressMessage] = useState<string | null>(null)
 
     // ── UI State ──
     const [showHero, setShowHero] = useState(true)
@@ -90,6 +93,7 @@ export default function ContractReviewClient({
 
     // ── Load Review Data ──
     const loadReview = useCallback(async (forceRefresh = false) => {
+        let keepLoading = false
         try {
             setIsLoading(true)
             setError(null)
@@ -116,29 +120,20 @@ export default function ContractReviewClient({
             }
 
             setLoadingPhase('analyzing')
+            const res = await fetch(`${apiUrl}/api/v1/review/analyze`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify({ contract_id: contractId })
+            })
 
-            // Poll loop: the backend returns 202 while the ingestion pipeline is still running
-            const MAX_POLL_ATTEMPTS = 20
-            let pollAttempt = 0
-            let res: Response
-
-            while (true) {
-                res = await fetch(`${apiUrl}/api/v1/review/analyze`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        Authorization: `Bearer ${token}`
-                    },
-                    body: JSON.stringify({ contract_id: contractId })
-                })
-
-                if (res.status === 202 && pollAttempt < MAX_POLL_ATTEMPTS) {
-                    pollAttempt++
-                    // Pipeline still running — wait and retry
-                    await new Promise(r => setTimeout(r, 5000))
-                    continue
-                }
-                break
+            if (res.status === 202) {
+                setAwaitingPipeline(true)
+                setProgressMessage('Waiting for the contract pipeline to finish...')
+                keepLoading = true
+                return
             }
 
             if (!res.ok) {
@@ -148,18 +143,60 @@ export default function ContractReviewClient({
 
             setLoadingPhase('finalizing')
             const data = await res.json()
+            setAwaitingPipeline(false)
+            setProgressMessage(null)
             setReviewData(data.review)
         } catch (e: any) {
             console.error('Review load error:', e)
+            setAwaitingPipeline(false)
             setError(e.message || 'Failed to load review')
         } finally {
-            setIsLoading(false)
+            if (!keepLoading) {
+                setIsLoading(false)
+            }
         }
     }, [contractId, getToken])
 
     useEffect(() => {
         loadReview()
     }, [loadReview])
+
+    const isRealtimeTracked = awaitingPipeline || ['processing', 'retrying'].some(status =>
+        (contractStatus || '').toLowerCase().includes(status)
+    )
+
+    useContractSSE({
+        contractId,
+        enabled: isRealtimeTracked,
+        pollFallback: () => loadReview(true),
+        onPipelineProgress: (event) => {
+            setLoadingPhase('analyzing')
+            setAwaitingPipeline(true)
+            setProgressMessage(String(event.data.message || 'Pipeline is still running...'))
+        },
+        onPipelineCompleted: async () => {
+            setProgressMessage('Pipeline complete. Loading review...')
+            setAwaitingPipeline(false)
+            await loadReview(true)
+        },
+        onPipelineFailed: (event) => {
+            setAwaitingPipeline(false)
+            setIsLoading(false)
+            setError(String(event.data.error || 'Pipeline failed before review analysis completed'))
+        },
+        onStatusChanged: async (event) => {
+            const newStatus = String(event.data.new_status || '').toLowerCase()
+            if (newStatus === 'reviewed' && (awaitingPipeline || !reviewData)) {
+                setProgressMessage('Contract reviewed. Loading analysis...')
+                await loadReview(true)
+            }
+            if (newStatus === 'failed') {
+                setAwaitingPipeline(false)
+                setIsLoading(false)
+                setError('Contract processing failed before review analysis completed')
+            }
+        },
+    })
 
     // ── Hero Handlers ──
     const handleHeroDismiss = useCallback(() => {
@@ -312,6 +349,9 @@ export default function ContractReviewClient({
             finalizing: { title: 'Finalizing Results', subtitle: 'Structuring findings and insights...' }
         }
         const phase = phaseMessages[loadingPhase]
+        const subtitle = loadingPhase === 'analyzing' && progressMessage
+            ? progressMessage
+            : phase.subtitle
         return (
             <div className="flex-1 flex flex-col items-center justify-center bg-[#0a0a0a] gap-6">
                 <div className="relative">
@@ -322,7 +362,7 @@ export default function ContractReviewClient({
                 </div>
                 <div className="text-center">
                     <p className="text-white font-serif text-lg mb-1">{phase.title}</p>
-                    <p className="text-zinc-500 text-xs tracking-wide">{phase.subtitle}</p>
+                    <p className="text-zinc-500 text-xs tracking-wide">{subtitle}</p>
                 </div>
                 {loadingPhase === 'analyzing' && (
                     <div className="flex gap-2 mt-2">

@@ -1,37 +1,23 @@
 """
 Pariana Backend — E-Signature & E-Meterai Router
-
-Handles the full PSrE (Penyelenggara Sertifikasi Elektronik) signing lifecycle:
-
-  POST /api/v1/signing/{contract_id}/checklist   → Pre-sign compliance checklist
-  POST /api/v1/signing/{contract_id}/initiate    → Start signing ceremony
-  POST /api/v1/signing/webhook/{provider}        → PSrE webhook callbacks (no auth — HMAC verified)
-  GET  /api/v1/signing/{contract_id}/status      → Signing session + signer status
-  POST /api/v1/signing/{contract_id}/cancel      → Cancel active signing session
-  POST /api/v1/signing/{contract_id}/remind/{signer_id} → Send reminder to signer
-  GET  /api/v1/signing/{contract_id}/download    → Download signed PDF
-
-Regulatory context:
-  - UU ITE (UU 11/2008 jo. UU 19/2016): Legal basis for e-signatures
-  - PP 71/2019: Implementing regulation for electronic systems
-  - UU Bea Meterai (UU 10/2020): e-Meterai required for docs > Rp 5.000.000
-  - PSrE-certified signatures required for BFSI/government contracts (QES)
 """
 
-import os
-import uuid
-import traceback
+import io
 import logging
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+import os
+import traceback
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Request, Response
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+import jwt
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from pydantic import BaseModel, Field
 from supabase import Client
 
-from app.config import admin_supabase
-from app.dependencies import verify_clerk_token, get_tenant_supabase
+from app.config import CLERK_PEM_KEY, admin_supabase
+from app.dependencies import _create_rls_supabase_client, _extract_tenant_id, get_tenant_supabase, verify_clerk_token
+from app.event_bus import SSEEvent, event_bus
 from app.rate_limiter import limiter
 from app.signing_providers import get_signing_provider
 from app.signing_providers.base import SignerConfig, SignatureType
@@ -40,262 +26,15 @@ logger = logging.getLogger("pariana.signing")
 
 router = APIRouter()
 
-EMETERAI_THRESHOLD_IDR = 5_000_000  # UU Bea Meterai: e-Meterai required if value > Rp 5M
-SIGNING_WEBHOOK_BASE_URL = os.getenv("SIGNING_WEBHOOK_BASE_URL", "http://localhost:8000/api/v1/signing/webhook")
+EMETERAI_THRESHOLD_IDR = 5_000_000
+SIGNING_WEBHOOK_BASE_URL = os.getenv(
+    "SIGNING_WEBHOOK_BASE_URL",
+    "http://localhost:8000/api/v1/signing/webhook",
+)
 
+RESOLVED_NEGOTIATION_STATUSES = {"accepted", "rejected", "countered", "resolved", "dismissed"}
+ACTIVE_SIGNING_SESSION_STATUSES = {"pending_signatures", "partially_signed"}
 
-# ═══════════════════════════════════════════════════════════════
-# HELPERS
-# ═══════════════════════════════════════════════════════════════
-
-def _log_audit(session_id: str, tenant_id: str, event_type: str, actor: str, detail: str, metadata: dict = None):
-    """Insert a row into signing_audit_log. Fire-and-forget (errors are swallowed)."""
-    try:
-        admin_supabase.table("signing_audit_log").insert({
-            "session_id": session_id,
-            "tenant_id": tenant_id,
-            "event_type": event_type,
-            "event_actor": actor,
-            "event_detail": detail,
-            "event_metadata": metadata or {},
-        }).execute()
-    except Exception as e:
-        logger.error("audit_log_error | session=%s | event=%s | err=%s", session_id, event_type, e)
-
-
-async def _on_contract_executed(contract_id: str, tenant_id: str, session_id: str, signed_document_path: str):
-    """
-    Called when the last signer completes signing.
-
-    1. Update contract status → 'Executed'
-    2. Activate pending obligations → 'active'
-    3. Create reminder tasks for obligations with due_dates
-    4. Log to audit trail
-    """
-    try:
-        # 1. Update contract status
-        admin_supabase.table("contracts").update({
-            "status": "Executed",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
-
-        # 2. Activate pending obligations
-        admin_supabase.table("contract_obligations").update({
-            "status": "active",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("contract_id", contract_id).eq("tenant_id", tenant_id).eq("status", "pending").execute()
-
-        # 3. Fetch activated obligations with due dates to create reminder tasks
-        obligations_res = admin_supabase.table("contract_obligations").select(
-            "id, description, due_date"
-        ).eq("contract_id", contract_id).eq("tenant_id", tenant_id).eq("status", "active").execute()
-
-        obligations_with_due_dates = [
-            ob for ob in (obligations_res.data or [])
-            if ob.get("due_date")
-        ]
-
-        # Fetch matter_id from contract for task linkage
-        contract_res = admin_supabase.table("contracts").select("matter_id").eq(
-            "id", contract_id
-        ).eq("tenant_id", tenant_id).single().execute()
-        matter_id = (contract_res.data or {}).get("matter_id")
-
-        for ob in obligations_with_due_dates:
-            task_title = f"Obligation Due: {ob['description'][:100]}"
-            admin_supabase.table("tasks").insert({
-                "tenant_id": tenant_id,
-                "title": task_title,
-                "description": ob["description"],
-                "due_date": ob["due_date"],
-                "priority": "high",
-                "status": "todo",
-                "matter_id": matter_id,
-            }).execute()
-
-        # 4. Audit log
-        _log_audit(
-            session_id, tenant_id,
-            "contract_executed",
-            "system",
-            f"Contract executed. {len(obligations_with_due_dates)} obligation reminder tasks created.",
-            {"contract_id": contract_id, "signed_document_path": signed_document_path},
-        )
-
-        logger.info(
-            "contract_executed | contract=%s | obligations_activated=%d",
-            contract_id, len(obligations_with_due_dates),
-        )
-
-    except Exception as e:
-        logger.error("on_contract_executed_error | contract=%s | err=%s", contract_id, e)
-        traceback.print_exc()
-
-
-# ═══════════════════════════════════════════════════════════════
-# ENDPOINT 1: PRE-SIGN COMPLIANCE CHECKLIST
-# ═══════════════════════════════════════════════════════════════
-
-@router.post("/{contract_id}/checklist")
-@limiter.limit("30/minute")
-async def run_presign_checklist(
-    request: Request,
-    contract_id: str,
-    claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_tenant_supabase),
-):
-    """
-    AI-powered pre-signing compliance checklist.
-
-    Checks:
-    1. All critical negotiation issues resolved
-    2. Bilingual compliance (UU 24/2009 Pasal 31)
-    3. e-Meterai requirement (UU Bea Meterai — value > Rp 5M)
-    4. Signature type recommendation (Certified/QES vs Simple)
-    5. Document completeness (text content exists)
-    """
-    try:
-        tenant_id = claims["verified_tenant_id"]
-        checklist = []
-
-        # ── Fetch contract ──
-        contract_res = admin_supabase.table("contracts").select("*") \
-            .eq("id", contract_id).eq("tenant_id", tenant_id).limit(1).execute()
-        if not contract_res.data:
-            raise HTTPException(status_code=404, detail="Contract not found")
-        contract = contract_res.data[0]
-
-        # ── Check 1: Negotiation issues resolved ──
-        issues_res = admin_supabase.table("negotiation_issues").select("id, status, severity") \
-            .eq("contract_id", contract_id).eq("tenant_id", tenant_id).execute()
-        issues = issues_res.data or []
-        open_critical = [i for i in issues if i["status"] in ("open", "under_review") and i["severity"] == "critical"]
-        open_any = [i for i in issues if i["status"] in ("open", "under_review")]
-        resolved_count = len(issues) - len(open_any)
-
-        checklist.append({
-            "check": "all_issues_resolved",
-            "passed": len(open_critical) == 0,
-            "blocking": len(open_critical) > 0,
-            "detail": (
-                f"{resolved_count}/{len(issues)} issues resolved. "
-                + (f"{len(open_critical)} critical issue(s) still open — must resolve before signing."
-                   if open_critical else "All critical issues resolved.")
-            ),
-        })
-
-        # ── Check 2: Bilingual compliance ──
-        has_bilingual_texts = bool(contract.get("is_bilingual"))
-        bilingual_res = admin_supabase.table("bilingual_clauses").select("id") \
-            .eq("contract_id", contract_id).eq("tenant_id", tenant_id).limit(1).execute()
-        has_bilingual_clauses = bool(bilingual_res.data)
-
-        checklist.append({
-            "check": "bilingual_compliance",
-            "passed": has_bilingual_texts or has_bilingual_clauses,
-            "blocking": False,
-            "detail": (
-                "Document has bilingual version (Bahasa Indonesia + English)."
-                if (has_bilingual_texts or has_bilingual_clauses)
-                else "No bilingual version detected. UU 24/2009 Pasal 31 requires Bahasa Indonesia "
-                     "for agreements where Indonesian parties are involved."
-            ),
-        })
-
-        # ── Check 3: e-Meterai requirement ──
-        contract_value = float(contract.get("contract_value") or 0)
-        needs_emeterai = contract_value > EMETERAI_THRESHOLD_IDR
-        currency = contract.get("currency", "IDR")
-
-        checklist.append({
-            "check": "emeterai_required",
-            "passed": True,  # Informational — always passes; tells user IF e-Meterai is needed
-            "blocking": False,
-            "detail": (
-                f"Contract value: {currency} {contract_value:,.0f}. "
-                + ("e-Meterai REQUIRED (value > Rp 5.000.000, per UU Bea Meterai UU 10/2020)."
-                   if needs_emeterai
-                   else "e-Meterai not required (value ≤ Rp 5.000.000).")
-            ),
-            "emeterai_required": needs_emeterai,
-        })
-
-        # ── Check 4: Signature type recommendation ──
-        matter_res = admin_supabase.table("matters").select("industry, matter_type") \
-            .eq("id", contract.get("matter_id")).eq("tenant_id", tenant_id).limit(1).execute()
-        matter = (matter_res.data or [{}])[0] if matter_res.data else {}
-        matter_industry = (matter.get("industry") or "").lower()
-
-        regulated_keywords = [
-            "banking", "finance", "insurance", "bfsi", "government",
-            "perbankan", "keuangan", "asuransi", "pemerintah", "investasi",
-        ]
-        is_regulated = any(kw in matter_industry for kw in regulated_keywords)
-        recommended_type = "certified" if is_regulated else "simple"
-
-        checklist.append({
-            "check": "signature_type",
-            "passed": True,
-            "blocking": False,
-            "detail": (
-                f"Certified Digital Signature (QES) RECOMMENDED — regulated industry detected ({matter_industry})."
-                if is_regulated
-                else "Simple Electronic Signature is acceptable for this contract type."
-            ),
-            "recommended_type": recommended_type,
-        })
-
-        # ── Check 5: Document completeness ──
-        draft_revisions = contract.get("draft_revisions")
-        has_draft_text = False
-        if draft_revisions:
-            if isinstance(draft_revisions, dict):
-                has_draft_text = bool(draft_revisions.get("latest_text"))
-            elif isinstance(draft_revisions, str):
-                has_draft_text = len(draft_revisions.strip()) > 0
-
-        version_res = admin_supabase.table("contract_versions").select("id, raw_text") \
-            .eq("contract_id", contract_id).eq("tenant_id", tenant_id) \
-            .order("version_number", desc=True).limit(1).execute()
-        has_version_text = bool(
-            version_res.data and version_res.data[0].get("raw_text")
-        )
-
-        checklist.append({
-            "check": "document_completeness",
-            "passed": has_draft_text or has_version_text,
-            "blocking": not (has_draft_text or has_version_text),
-            "detail": (
-                "Final document text found and ready for signing."
-                if (has_draft_text or has_version_text)
-                else "No document text found. Upload or draft the contract before initiating signing."
-            ),
-        })
-
-        # ── Summary ──
-        has_blockers = any(c.get("blocking", False) for c in checklist)
-        all_passed = all(c["passed"] for c in checklist)
-
-        return {
-            "contract_id": contract_id,
-            "checklist": checklist,
-            "ready_to_sign": not has_blockers,
-            "all_checks_passed": all_passed,
-            "emeterai_required": needs_emeterai,
-            "recommended_signature_type": recommended_type,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("checklist_error | contract=%s | err=%s", contract_id, e)
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ═══════════════════════════════════════════════════════════════
-# ENDPOINT 2: INITIATE SIGNING CEREMONY
-# ═══════════════════════════════════════════════════════════════
 
 class SignerInput(BaseModel):
     full_name: str
@@ -307,8 +46,8 @@ class SignerInput(BaseModel):
     title: Optional[str] = None
     signing_order_index: int = 0
     signing_page: Optional[int] = None
-    signing_position_x: Optional[float] = None
-    signing_position_y: Optional[float] = None
+    signing_position_x: Optional[float] = 0.3
+    signing_position_y: Optional[float] = 0.8
 
 
 class InitiateSigningInput(BaseModel):
@@ -317,7 +56,674 @@ class InitiateSigningInput(BaseModel):
     signature_type: str = "certified"
     require_emeterai: bool = False
     emeterai_page: Optional[int] = None
-    expires_in_days: int = 7
+    expires_in_days: int = Field(default=7, ge=1, le=30)
+    message_to_signers: Optional[str] = None
+
+
+class CancelSigningInput(BaseModel):
+    reason: str = ""
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso_now() -> str:
+    return _utc_now().isoformat()
+
+
+def _clean_filename_part(value: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in (value or "contract"))
+    return safe.strip("_") or "contract"
+
+
+def _log_signing_event(
+    supabase_client: Client,
+    session_id: str,
+    tenant_id: str,
+    event_type: str,
+    actor: str,
+    detail: str,
+    metadata: Optional[dict] = None,
+) -> None:
+    try:
+        supabase_client.table("signing_audit_log").insert({
+            "session_id": session_id,
+            "tenant_id": tenant_id,
+            "event_type": event_type,
+            "event_actor": actor,
+            "event_detail": detail,
+            "event_metadata": metadata or {},
+        }).execute()
+    except Exception as exc:
+        logger.error("signing_audit_insert_failed | session=%s | event=%s | err=%s", session_id, event_type, exc)
+
+
+def _log_activity_event(
+    supabase_client: Optional[Client] = None,
+    *,
+    tenant_id: str,
+    action: str,
+    detail: str,
+    actor: str,
+    contract_id: Optional[str] = None,
+    matter_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+) -> None:
+    if supabase_client is None:
+        # AUDITED: Requires service-role only for background/webhook callers without a user request context.
+        supabase_client = admin_supabase
+    rich_payload = {
+        "tenant_id": tenant_id,
+        "contract_id": contract_id,
+        "matter_id": matter_id,
+        "task_id": task_id,
+        "action": action,
+        "detail": detail,
+        "actor": actor,
+        "actor_name": actor,
+    }
+    fallback_payload = {
+        "tenant_id": tenant_id,
+        "contract_id": contract_id,
+        "matter_id": matter_id,
+        "task_id": task_id,
+        "action": f"{action}: {detail}"[:240],
+        "actor_name": actor,
+    }
+    try:
+        supabase_client.table("activity_logs").insert(rich_payload).execute()
+    except Exception:
+        try:
+            supabase_client.table("activity_logs").insert(fallback_payload).execute()
+        except Exception as exc:
+            logger.warning("activity_log_insert_failed | action=%s | err=%s", action, exc)
+
+
+async def _publish_signing_event(
+    event_type: str,
+    tenant_id: str,
+    *,
+    contract_id: Optional[str] = None,
+    data: Optional[dict] = None,
+) -> None:
+    await event_bus.publish(SSEEvent(
+        event_type=event_type,
+        tenant_id=tenant_id,
+        contract_id=contract_id,
+        data=data or {},
+    ))
+
+
+def _get_issue_signer_status_counts(signers: list[dict]) -> dict[str, int]:
+    total = len(signers)
+    signed = sum(1 for signer in signers if signer.get("status") == "signed")
+    pending = sum(1 for signer in signers if signer.get("status") in ("pending", "notified", "viewed"))
+    rejected = sum(1 for signer in signers if signer.get("status") == "rejected")
+    percentage = round((signed / total) * 100) if total else 0
+    return {
+        "total_signers": total,
+        "signed": signed,
+        "pending": pending,
+        "rejected": rejected,
+        "percentage": percentage,
+        "percent_complete": percentage,
+        "is_complete": total > 0 and signed == total,
+    }
+
+
+def _is_expired(expires_at: Optional[str]) -> bool:
+    if not expires_at:
+        return False
+    try:
+        return datetime.fromisoformat(expires_at.replace("Z", "+00:00")) < _utc_now()
+    except Exception:
+        return False
+
+
+def _is_issue_resolved_for_signing(issue: dict, task_status_map: dict[str, str]) -> bool:
+    status = (issue.get("status") or "").lower()
+    if status in RESOLVED_NEGOTIATION_STATUSES:
+        return True
+    if status == "escalated":
+        linked_task_id = issue.get("linked_task_id")
+        return bool(linked_task_id and task_status_map.get(linked_task_id) == "done")
+    return False
+
+
+def _verify_query_token(token: str) -> dict:
+    if not CLERK_PEM_KEY:
+        raise HTTPException(status_code=500, detail="Server authentication configuration error.")
+    try:
+        claims = jwt.decode(token, CLERK_PEM_KEY, algorithms=["RS256"])
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+
+    tenant_id = _extract_tenant_id(claims)
+    if not tenant_id:
+        raise HTTPException(status_code=401, detail="No valid tenant identity found in token")
+    claims["verified_tenant_id"] = tenant_id
+    return claims
+
+
+def _verify_authorization_header(authorization: Optional[str]) -> Optional[dict]:
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    return _verify_query_token(authorization.split(" ", 1)[1])
+
+
+def _document_preview_url(contract_id: str, session: dict) -> Optional[str]:
+    if session.get("status") == "completed":
+        return None
+    return session.get("provider_document_url")
+
+
+async def _generate_final_pdf(
+    contract_id: str,
+    tenant_id: str,
+    contract: dict,
+    supabase_client: Client,
+) -> Optional[bytes]:
+    bilingual_clauses = supabase_client.table("bilingual_clauses").select("id") \
+        .eq("contract_id", contract_id).eq("tenant_id", tenant_id).limit(1).execute()
+    if bilingual_clauses.data:
+        try:
+            from app.routers.bilingual import generate_bilingual_pdf_bytes
+
+            pdf_bytes = generate_bilingual_pdf_bytes(contract_id, tenant_id, supabase_client)
+            if pdf_bytes:
+                return pdf_bytes
+        except Exception as exc:
+            logger.warning("bilingual_pdf_generation_failed | contract=%s | err=%s", contract_id, exc)
+
+    final_text = (
+        (contract.get("draft_revisions") or {}).get("final_text")
+        or (contract.get("draft_revisions") or {}).get("latest_text")
+    )
+    if not final_text:
+        latest_version = supabase_client.table("contract_versions").select("raw_text") \
+            .eq("contract_id", contract_id).eq("tenant_id", tenant_id) \
+            .order("version_number", desc=True).limit(1).execute()
+        if latest_version.data:
+            final_text = latest_version.data[0].get("raw_text") or ""
+
+    if not final_text or len(final_text.strip()) < 10:
+        return None
+
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
+        from xml.sax.saxutils import escape
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail=f"ReportLab is not installed correctly: {exc}")
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    story = []
+
+    for raw_line in final_text.splitlines():
+        line = escape(raw_line.strip())
+        if not line:
+            story.append(Spacer(1, 8))
+        elif line.startswith("### "):
+            story.append(Paragraph(line[4:], styles["Heading3"]))
+        elif line.startswith("## "):
+            story.append(Paragraph(line[3:], styles["Heading2"]))
+        elif line.startswith("# "):
+            story.append(Paragraph(line[2:], styles["Heading1"]))
+        else:
+            story.append(Paragraph(line, styles["BodyText"]))
+
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def _store_pdf_to_storage(
+    storage_path: str,
+    pdf_bytes: bytes,
+) -> Optional[str]:
+    try:
+        # AUDITED: Requires service-role for storage upload in provider/background flows.
+        admin_supabase.storage.from_("matter-files").upload(
+            path=storage_path,
+            file=pdf_bytes,
+            file_options={"content-type": "application/pdf"},
+        )
+        return storage_path
+    except Exception as exc:
+        logger.warning("storage_upload_failed | path=%s | err=%s", storage_path, exc)
+        return None
+
+
+def _build_task_status_map(tenant_id: str, issues: list[dict], supabase_client: Client) -> dict[str, str]:
+    task_ids = [issue.get("linked_task_id") for issue in issues if issue.get("linked_task_id")]
+    if not task_ids:
+        return {}
+    task_res = supabase_client.table("tasks").select("id, status") \
+        .eq("tenant_id", tenant_id).in_("id", task_ids).execute()
+    return {task["id"]: task.get("status") for task in (task_res.data or [])}
+
+
+def _extract_ai_presign_guidance(
+    contract: dict,
+    matter: Optional[dict],
+    issues: list[dict],
+    bilingual_clauses: list[dict],
+) -> dict:
+    try:
+        from graph import run_presign_checklist_agent
+
+        return run_presign_checklist_agent(
+            contract=contract,
+            matter=matter,
+            issues=issues,
+            bilingual_clauses=bilingual_clauses,
+        )
+    except Exception as exc:
+        logger.warning("presign_ai_guidance_failed | contract=%s | err=%s", contract.get("id"), exc)
+        return {
+            "bilingual_required": False,
+            "recommended_signature_type": None,
+            "notes": [],
+            "rationale": "AI presign guidance unavailable.",
+        }
+
+
+def _build_presign_checklist(
+    contract_id: str,
+    tenant_id: str,
+    supabase_client: Client,
+    contract: Optional[dict] = None,
+) -> dict:
+    contract = contract or (
+        supabase_client.table("contracts").select("*")
+        .eq("id", contract_id).eq("tenant_id", tenant_id).single().execute().data
+    )
+    if not contract:
+        raise HTTPException(status_code=404, detail="Contract not found")
+
+    matter = None
+    if contract.get("matter_id"):
+        matter_res = supabase_client.table("matters").select("*") \
+            .eq("id", contract["matter_id"]).eq("tenant_id", tenant_id).single().execute()
+        matter = matter_res.data if matter_res.data else None
+
+    issues_res = supabase_client.table("negotiation_issues").select(
+        "id, title, status, severity, linked_task_id"
+    ).eq("contract_id", contract_id).eq("tenant_id", tenant_id).execute()
+    issues = issues_res.data or []
+    task_status_map = _build_task_status_map(tenant_id, issues, supabase_client)
+
+    bilingual_res = supabase_client.table("bilingual_clauses").select("id, sync_status") \
+        .eq("contract_id", contract_id).eq("tenant_id", tenant_id).execute()
+    bilingual_clauses = bilingual_res.data or []
+
+    ai_guidance = _extract_ai_presign_guidance(contract, matter, issues, bilingual_clauses)
+
+    unresolved_issues = [issue for issue in issues if not _is_issue_resolved_for_signing(issue, task_status_map)]
+    open_critical = [issue for issue in unresolved_issues if issue.get("severity") == "critical"]
+    open_any = [issue for issue in unresolved_issues if (issue.get("status") or "").lower() in ("open", "under_review")]
+
+    checklist = [{
+        "check_id": "negotiation_resolved",
+        "check_name": "Negotiation Issues Resolved",
+        "passed": len(open_critical) == 0,
+        "blocking": len(open_critical) > 0,
+        "severity": "critical" if open_critical else ("warning" if unresolved_issues else "passed"),
+        "detail": (
+            f"{len(issues) - len(unresolved_issues)}/{len(issues)} issues resolved."
+            + (f" {len(open_critical)} critical issues still unresolved." if open_critical else "")
+            + (
+                f" {len(unresolved_issues) - len(open_critical)} non-critical item(s) still pending."
+                if unresolved_issues and not open_critical
+                else ""
+            )
+        ).strip(),
+    }]
+
+    has_bilingual = bool(contract.get("id_raw_text") and contract.get("en_raw_text")) or bool(bilingual_clauses)
+    bilingual_synced = all(clause.get("sync_status") == "synced" for clause in bilingual_clauses) if bilingual_clauses else True
+    bilingual_required = bool(ai_guidance.get("bilingual_required"))
+    bilingual_warning = (
+        "Bilingual structure exists but some clauses are out of sync."
+        if has_bilingual and not bilingual_synced
+        else None
+    )
+    if not has_bilingual and bilingual_required:
+        bilingual_detail = (
+            "No bilingual version detected. AI review recommends a Bahasa Indonesia version before execution."
+        )
+    elif has_bilingual:
+        bilingual_detail = "Dokumen bilingual tersedia." + (" Semua klausul sinkron." if bilingual_synced else " Sebagian klausul belum sinkron.")
+    else:
+        bilingual_detail = (
+            "No bilingual version detected. UU 24/2009 may require Bahasa Indonesia where an Indonesian party is involved."
+        )
+    checklist.append({
+        "check_id": "bilingual_compliance",
+        "check_name": "Bilingual Compliance (UU 24/2009 Pasal 31)",
+        "passed": has_bilingual,
+        "blocking": False,
+        "severity": "passed" if has_bilingual and bilingual_synced else "warning",
+        "detail": bilingual_detail + (f" {bilingual_warning}" if bilingual_warning else ""),
+        "action": None if has_bilingual else "Create or finalize the bilingual version in the Bilingual Editor before signing.",
+    })
+
+    contract_value = float(contract.get("contract_value", 0) or 0)
+    currency = contract.get("currency", "IDR")
+    needs_emeterai = (currency == "IDR" and contract_value > EMETERAI_THRESHOLD_IDR) or (
+        currency != "IDR" and contract_value > 0
+    )
+    checklist.append({
+        "check_id": "emeterai_requirement",
+        "check_name": "e-Meterai (Bea Meterai Elektronik)",
+        "passed": True,
+        "blocking": False,
+        "severity": "info",
+        "detail": (
+            f"Nilai kontrak: {currency} {contract_value:,.0f}. e-Meterai WAJIB."
+            if needs_emeterai
+            else f"Nilai kontrak: {currency} {contract_value:,.0f}. e-Meterai tidak wajib."
+        ),
+        "emeterai_required": needs_emeterai,
+    })
+
+    matter_industry = ((matter or {}).get("industry") or "").lower()
+    jurisdiction = (contract.get("jurisdiction") or "").lower()
+    regulated_keywords = [
+        "banking", "finance", "insurance", "bfsi", "government",
+        "perbankan", "keuangan", "asuransi", "pemerintah", "ojk", "bi",
+    ]
+    is_regulated = any(keyword in matter_industry for keyword in regulated_keywords) or any(
+        keyword in jurisdiction for keyword in regulated_keywords
+    )
+    recommended_type = ai_guidance.get("recommended_signature_type") or ("certified" if is_regulated else "simple")
+    checklist.append({
+        "check_id": "signature_type",
+        "check_name": "Tipe Tanda Tangan Digital",
+        "passed": True,
+        "blocking": False,
+        "severity": "warning" if recommended_type == "certified" else "info",
+        "detail": (
+            "Sektor terregulasi terdeteksi. Tanda tangan tersertifikasi/PSrE direkomendasikan."
+            if recommended_type == "certified"
+            else "Tanda tangan elektronik sederhana dinilai cukup untuk kontrak ini."
+        ),
+        "recommended_type": recommended_type,
+    })
+
+    draft_revisions = contract.get("draft_revisions") or {}
+    final_text = draft_revisions.get("final_text") or draft_revisions.get("latest_text")
+    latest_version = supabase_client.table("contract_versions").select("id, raw_text") \
+        .eq("contract_id", contract_id).eq("tenant_id", tenant_id) \
+        .order("version_number", desc=True).limit(1).execute()
+    has_version_text = bool(latest_version.data and latest_version.data[0].get("raw_text"))
+    has_content = bool(final_text and len(final_text.strip()) > 100)
+    checklist.append({
+        "check_id": "document_completeness",
+        "check_name": "Kelengkapan Dokumen",
+        "passed": has_content or has_version_text,
+        "blocking": not (has_content or has_version_text),
+        "severity": "critical" if not (has_content or has_version_text) else "passed",
+        "detail": (
+            "Dokumen final tersedia dan siap untuk ditandatangani."
+            if has_content or has_version_text
+            else "Tidak ada teks dokumen final yang dapat dipakai untuk membuat PDF penandatanganan."
+        ),
+    })
+
+    risk_score = float(contract.get("risk_score", 0) or 0)
+    risk_level = contract.get("risk_level", "Unknown")
+    checklist.append({
+        "check_id": "risk_assessment",
+        "check_name": "Penilaian Risiko",
+        "passed": risk_level not in ("High", "Critical"),
+        "blocking": False,
+        "severity": "warning" if risk_level in ("High", "Critical") else ("info" if risk_level == "Medium" else "passed"),
+        "detail": (
+            f"Risk Score: {risk_score:.1f}/100 ({risk_level}). "
+            + (
+                "Kontrak berisiko tinggi. Pastikan temuan risiko sudah ditinjau sebelum tanda tangan."
+                if risk_level in ("High", "Critical")
+                else ""
+            )
+        ).strip(),
+    })
+
+    has_blockers = any(item.get("blocking") for item in checklist)
+    all_passed = all(item.get("passed") for item in checklist)
+    warnings_count = sum(1 for item in checklist if item.get("severity") == "warning")
+
+    return {
+        "contract_id": contract_id,
+        "checklist": checklist,
+        "ready_to_sign": not has_blockers,
+        "all_checks_passed": all_passed,
+        "warnings_count": warnings_count,
+        "summary": {
+            "emeterai_required": needs_emeterai,
+            "recommended_signature_type": recommended_type,
+            "is_regulated_industry": is_regulated,
+            "has_bilingual": has_bilingual,
+            "risk_level": risk_level,
+            "ai_guidance": ai_guidance,
+        },
+        "emeterai_required": needs_emeterai,
+        "recommended_signature_type": recommended_type,
+        "next_step": (
+            f"POST /api/v1/signing/{contract_id}/initiate"
+            if not has_blockers
+            else "Resolve the blocking checklist items before initiating signing."
+        ),
+    }
+
+
+async def _run_checklist_internal(
+    contract_id: str,
+    tenant_id: str,
+    supabase_client: Client,
+    contract: Optional[dict] = None,
+) -> dict:
+    return _build_presign_checklist(contract_id, tenant_id, supabase_client, contract)
+
+
+async def _handle_signing_complete(
+    session: dict,
+    contract_id: str,
+    tenant_id: str,
+    signing_provider,
+) -> dict:
+    # AUDITED: Requires service-role due to webhook/background completion outside a browser request context.
+    session_id = session["id"]
+    current_session = admin_supabase.table("signing_sessions").select("status") \
+        .eq("id", session_id).single().execute()
+    if current_session.data and current_session.data.get("status") == "completed":
+        return {"status": "already_completed"}
+
+    contract_res = admin_supabase.table("contracts").select("status, matter_id, title, contract_value") \
+        .eq("id", contract_id).eq("tenant_id", tenant_id).single().execute()
+    contract = contract_res.data or {}
+    previous_contract_status = contract.get("status")
+
+    signed_pdf = None
+    try:
+        signed_pdf = await signing_provider.download_signed_document(session["provider_document_id"])
+    except Exception as exc:
+        logger.warning("signed_pdf_download_failed | session=%s | err=%s", session_id, exc)
+
+    signed_document_path = None
+    if signed_pdf:
+        timestamp = _utc_now().strftime("%Y%m%d_%H%M%S")
+        signed_document_path = _store_pdf_to_storage(
+            f"signed-contracts/{tenant_id}/{contract_id}/signed_{timestamp}.pdf",
+            signed_pdf,
+        )
+
+    completion_time = _iso_now()
+    admin_supabase.table("signing_signers").update({
+        "status": "signed",
+        "signed_at": completion_time,
+    }).eq("session_id", session_id).in_("status", ["pending", "notified", "viewed"]).execute()
+    admin_supabase.table("signing_sessions").update({
+        "status": "completed",
+        "completed_at": completion_time,
+        "signed_document_path": signed_document_path,
+    }).eq("id", session_id).execute()
+
+    admin_supabase.table("contracts").update({
+        "status": "Executed",
+        "updated_at": completion_time,
+    }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+
+    obligations_res = admin_supabase.table("contract_obligations").select("*") \
+        .eq("contract_id", contract_id).eq("tenant_id", tenant_id) \
+        .eq("status", "pending").execute()
+    obligations = obligations_res.data or []
+    activated_count = 0
+    if obligations:
+        admin_supabase.table("contract_obligations").update({
+            "status": "active",
+            "updated_at": completion_time,
+        }).eq("contract_id", contract_id).eq("tenant_id", tenant_id).eq("status", "pending").execute()
+        activated_count = len(obligations)
+
+    tasks_created = 0
+    matter_id = contract.get("matter_id")
+    contract_title = contract.get("title", "Contract")
+    for obligation in obligations:
+        if not obligation.get("due_date"):
+            continue
+        admin_supabase.table("tasks").insert({
+            "tenant_id": tenant_id,
+            "matter_id": matter_id,
+            "title": f"Kewajiban: {(obligation.get('description') or 'Contract obligation')[:80]}",
+            "description": (
+                f"Kewajiban kontraktual dari '{contract_title}'.\n\n"
+                f"{obligation.get('description', '')}\n\n"
+                f"Tenggat: {obligation.get('due_date')}\n"
+                f"Contract ID: {contract_id}"
+            ),
+            "due_date": obligation.get("due_date"),
+            "priority": "high",
+            "status": "todo",
+        }).execute()
+        tasks_created += 1
+
+    contract_value = float(contract.get("contract_value", 0) or 0)
+    if matter_id and contract_value > 0 and previous_contract_status != "Executed":
+        matter_res = admin_supabase.table("matters").select("total_contract_value") \
+            .eq("id", matter_id).eq("tenant_id", tenant_id).single().execute()
+        if matter_res.data:
+            current_total = float(matter_res.data.get("total_contract_value", 0) or 0)
+            admin_supabase.table("matters").update({
+                "total_contract_value": current_total + contract_value,
+            }).eq("id", matter_id).eq("tenant_id", tenant_id).execute()
+
+    _log_signing_event(
+        admin_supabase,
+        session_id,
+        tenant_id,
+        "session_completed",
+        "system",
+        (
+            f"Semua pihak telah menandatangani. Kontrak dieksekusi. "
+            f"{activated_count} kewajiban diaktifkan. {tasks_created} tugas dibuat."
+        ),
+        {
+            "signed_document_path": signed_document_path,
+            "obligations_activated": activated_count,
+            "tasks_created": tasks_created,
+        },
+    )
+    _log_activity_event(
+        supabase_client=admin_supabase,
+        tenant_id=tenant_id,
+        contract_id=contract_id,
+        matter_id=matter_id,
+        action="contract_executed",
+        detail=(
+            f"Kontrak '{contract_title}' telah dieksekusi. "
+            f"{activated_count} kewajiban aktif. {tasks_created} tugas pengingat dibuat."
+        ),
+        actor="system",
+    )
+
+    await _publish_signing_event(
+        "signing.completed",
+        tenant_id,
+        contract_id=contract_id,
+        data={
+            "session_id": session_id,
+            "signed_document_path": signed_document_path,
+            "message": "All parties have signed. Contract is executed.",
+        },
+    )
+    await _publish_signing_event(
+        "contract.status_changed",
+        tenant_id,
+        contract_id=contract_id,
+        data={
+            "contract_id": contract_id,
+            "old_status": previous_contract_status,
+            "new_status": "Executed",
+            "message": "Contract executed.",
+        },
+    )
+    await _publish_signing_event(
+        "contract.executed",
+        tenant_id,
+        contract_id=contract_id,
+        data={
+            "contract_id": contract_id,
+            "signed_document_path": signed_document_path,
+            "obligations_activated": activated_count,
+            "tasks_created": tasks_created,
+        },
+    )
+    if activated_count:
+        await _publish_signing_event(
+            "obligation.activated",
+            tenant_id,
+            contract_id=contract_id,
+            data={"count": activated_count, "message": "Contract obligations are now active."},
+        )
+    for _ in range(tasks_created):
+        await _publish_signing_event(
+            "task.created",
+            tenant_id,
+            contract_id=contract_id,
+            data={"source": "signing.obligation_activation"},
+        )
+
+    return {
+        "status": "completed",
+        "signed_document_path": signed_document_path,
+        "obligations_activated": activated_count,
+        "tasks_created": tasks_created,
+    }
+
+
+@router.post("/{contract_id}/checklist")
+@limiter.limit("30/minute")
+async def run_presign_checklist(
+    request: Request,
+    contract_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    try:
+        tenant_id = claims["verified_tenant_id"]
+        return await _run_checklist_internal(contract_id, tenant_id, supabase)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("presign_checklist_failed | contract=%s | err=%s", contract_id, exc)
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @router.post("/{contract_id}/initiate")
@@ -329,403 +735,250 @@ async def initiate_signing(
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase),
 ):
-    """
-    Start a signing ceremony.
-
-    Flow:
-    1. Validate contract exists and belongs to tenant
-    2. Fetch the latest contract text (from draft_revisions or contract_versions)
-    3. If require_emeterai: affix e-Meterai via PSrE provider
-    4. Upload document to PSrE provider, configure signers
-    5. Create signing_sessions + signing_signers DB records
-    6. Update contract status → 'Signing in Progress'
-    7. Return signing URLs for each signer
-    """
     try:
         tenant_id = claims["verified_tenant_id"]
         user_id = claims.get("sub", "unknown")
 
+        contract_res = supabase.table("contracts").select("*") \
+            .eq("id", contract_id).eq("tenant_id", tenant_id).single().execute()
+        contract = contract_res.data
+        if not contract:
+            raise HTTPException(status_code=404, detail="Contract not found")
+
+        if contract.get("status") not in ("Pending Approval", "Ready to Sign"):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Contract status is '{contract.get('status')}'. "
+                    "Signing requires 'Pending Approval' or 'Ready to Sign'."
+                ),
+            )
+
         if not payload.signers:
             raise HTTPException(status_code=400, detail="At least one signer is required")
 
-        # ── 1. Fetch contract ──
-        contract_res = admin_supabase.table("contracts").select("*") \
-            .eq("id", contract_id).eq("tenant_id", tenant_id).limit(1).execute()
-        if not contract_res.data:
-            raise HTTPException(status_code=404, detail="Contract not found")
-        contract = contract_res.data[0]
-
-        # ── 2. Build a minimal PDF from contract text ──
-        # We use the raw text from the latest version or draft_revisions.
-        # In production, this should be a properly formatted PDF export.
-        pdf_bytes = None
-        filename = f"{contract.get('title', 'contract').replace(' ', '_')}_for_signing.pdf"
-
-        version_res = admin_supabase.table("contract_versions").select("id, raw_text, uploaded_filename") \
-            .eq("contract_id", contract_id).eq("tenant_id", tenant_id) \
-            .order("version_number", desc=True).limit(1).execute()
-
-        latest_version = version_res.data[0] if version_res.data else None
-        version_id = latest_version["id"] if latest_version else None
-
-        if latest_version and latest_version.get("uploaded_filename"):
-            filename = latest_version["uploaded_filename"]
-
-        # Generate a simple text-based PDF using reportlab if available, else a placeholder
-        contract_text = ""
-        if latest_version and latest_version.get("raw_text"):
-            contract_text = latest_version["raw_text"]
-        elif contract.get("draft_revisions"):
-            dr = contract["draft_revisions"]
-            if isinstance(dr, dict) and dr.get("latest_text"):
-                contract_text = dr["latest_text"]
-            elif isinstance(dr, str):
-                contract_text = dr
-
-        try:
-            from reportlab.pdfgen import canvas as rl_canvas
-            from reportlab.lib.pagesizes import A4
-            import io as _io
-            buf = _io.BytesIO()
-            c = rl_canvas.Canvas(buf, pagesize=A4)
-            width, height = A4
-            c.setFont("Helvetica-Bold", 14)
-            c.drawString(72, height - 72, contract.get("title", "Contract"))
-            c.setFont("Helvetica", 10)
-            y = height - 110
-            for line in (contract_text or "")[:8000].split("\n"):
-                if y < 72:
-                    c.showPage()
-                    y = height - 72
-                c.drawString(72, y, line[:120])
-                y -= 14
-            c.save()
-            pdf_bytes = buf.getvalue()
-        except ImportError:
-            # reportlab not installed — use a minimal PDF stub
-            pdf_bytes = (
-                b"%PDF-1.4\n1 0 obj<</Type /Catalog /Pages 2 0 R>>endobj\n"
-                b"2 0 obj<</Type /Pages /Kids [3 0 R] /Count 1>>endobj\n"
-                b"3 0 obj<</Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]>>endobj\n"
-                b"xref\n0 4\n0000000000 65535 f\ntrailer<</Size 4 /Root 1 0 R>>\n%%EOF"
+        checklist_result = await _run_checklist_internal(contract_id, tenant_id, supabase, contract)
+        if not checklist_result["ready_to_sign"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Pre-sign checklist has blocking issues. Resolve them before initiating signing.",
             )
 
-        # ── 3. Affix e-Meterai if required ──
-        emeterai_serial = None
-        emeterai_page = payload.emeterai_page
-        signing_provider = get_signing_provider()
+        pdf_bytes = await _generate_final_pdf(contract_id, tenant_id, contract, supabase)
+        if not pdf_bytes:
+            raise HTTPException(status_code=500, detail="Failed to generate final PDF document")
 
+        provider = get_signing_provider()
+        emeterai_result = None
         if payload.require_emeterai:
-            em_page = emeterai_page if emeterai_page is not None else -1  # -1 = last page
-            emeterai_result = await signing_provider.affix_emeterai(pdf_bytes, em_page)
-            emeterai_serial = emeterai_result.serial_number
-            logger.info("emeterai_affixed | contract=%s | serial=%s", contract_id, emeterai_serial)
-
-        # ── 4. Upload document to PSrE and configure signers ──
-        signer_configs = [
-            SignerConfig(
-                full_name=s.full_name,
-                email=s.email,
-                phone=s.phone,
-                privy_id=s.privy_id,
-                organization=s.organization,
-                role=s.role,
-                title=s.title,
-                signing_order_index=s.signing_order_index,
-                signing_page=s.signing_page,
-                signing_position_x=s.signing_position_x,
-                signing_position_y=s.signing_position_y,
+            emeterai_result = await provider.affix_emeterai(
+                pdf_bytes=pdf_bytes,
+                page_number=payload.emeterai_page or -1,
             )
-            for s in payload.signers
-        ]
 
-        sig_type = SignatureType.CERTIFIED if payload.signature_type == "certified" else SignatureType.SIMPLE
+        timestamp = _utc_now().strftime("%Y%m%d_%H%M%S")
+        storage_filename = f"{_clean_filename_part(contract.get('title', 'contract'))}_{timestamp}_final.pdf"
+        storage_path = _store_pdf_to_storage(
+            f"signing-documents/{tenant_id}/{contract_id}/{storage_filename}",
+            pdf_bytes,
+        )
 
         provider_name = os.getenv("SIGNING_PROVIDER", "mock")
         callback_url = f"{SIGNING_WEBHOOK_BASE_URL}/{provider_name}"
-
-        upload_result = await signing_provider.upload_document(
+        signer_configs = [
+            SignerConfig(
+                full_name=signer.full_name,
+                email=signer.email,
+                phone=signer.phone,
+                privy_id=signer.privy_id,
+                organization=signer.organization,
+                role=signer.role,
+                title=signer.title,
+                signing_order_index=signer.signing_order_index,
+                signing_page=signer.signing_page,
+                signing_position_x=signer.signing_position_x,
+                signing_position_y=signer.signing_position_y,
+            )
+            for signer in payload.signers
+        ]
+        signature_type = SignatureType.CERTIFIED if payload.signature_type == "certified" else SignatureType.SIMPLE
+        upload_result = await provider.upload_document(
             pdf_bytes=pdf_bytes,
-            filename=filename,
+            filename=storage_filename,
             signers=signer_configs,
             signing_order=payload.signing_order,
-            signature_type=sig_type,
+            signature_type=signature_type,
             callback_url=callback_url,
         )
 
-        # ── 5. Create DB records ──
-        session_id = str(uuid.uuid4())
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=payload.expires_in_days)).isoformat()
+        latest_version = supabase.table("contract_versions").select("id") \
+            .eq("contract_id", contract_id).eq("tenant_id", tenant_id) \
+            .order("version_number", desc=True).limit(1).execute()
+        version_id = latest_version.data[0]["id"] if latest_version.data else None
 
-        session_data = {
-            "id": session_id,
+        expires_at = (_utc_now() + timedelta(days=payload.expires_in_days)).isoformat()
+        session_payload = {
             "tenant_id": tenant_id,
             "contract_id": contract_id,
             "version_id": version_id,
             "provider": provider_name,
             "provider_document_id": upload_result.provider_document_id,
             "provider_document_url": upload_result.provider_document_url,
-            "document_filename": filename,
+            "document_filename": storage_filename,
+            "document_storage_path": storage_path,
             "signing_order": payload.signing_order,
             "signature_type": payload.signature_type,
             "require_emeterai": payload.require_emeterai,
-            "emeterai_page": emeterai_page,
-            "emeterai_provider_id": emeterai_serial,
+            "emeterai_page": payload.emeterai_page,
+            "emeterai_provider_id": emeterai_result.serial_number if emeterai_result else None,
             "status": "pending_signatures",
             "initiated_by": user_id,
-            "initiated_at": datetime.now(timezone.utc).isoformat(),
+            "initiated_at": _iso_now(),
             "expires_at": expires_at,
-            "provider_metadata": upload_result.metadata,
+            "pre_sign_checklist": checklist_result["checklist"],
+            "provider_metadata": {
+                **(upload_result.metadata or {}),
+                "message_to_signers": payload.message_to_signers,
+                "summary": checklist_result.get("summary") or {},
+            },
         }
-        admin_supabase.table("signing_sessions").insert(session_data).execute()
+        session_res = supabase.table("signing_sessions").insert(session_payload).execute()
+        if not session_res.data:
+            raise HTTPException(status_code=500, detail="Failed to create signing session")
+        session = session_res.data[0]
+        session_id = session["id"]
 
-        # Insert signer records
-        for s in payload.signers:
-            signer_record = {
+        for signer in payload.signers:
+            supabase.table("signing_signers").insert({
                 "session_id": session_id,
                 "tenant_id": tenant_id,
-                "full_name": s.full_name,
-                "email": s.email,
-                "phone": s.phone,
-                "privy_id": s.privy_id,
-                "organization": s.organization,
-                "role": s.role,
-                "title": s.title,
-                "signing_order_index": s.signing_order_index,
-                "signing_url": upload_result.signer_urls.get(s.email),
-                "signing_page": s.signing_page,
-                "signing_position_x": s.signing_position_x,
-                "signing_position_y": s.signing_position_y,
+                "full_name": signer.full_name,
+                "email": signer.email,
+                "phone": signer.phone,
+                "privy_id": signer.privy_id,
+                "organization": signer.organization,
+                "role": signer.role,
+                "title": signer.title,
+                "signing_order_index": signer.signing_order_index,
+                "signing_url": upload_result.signer_urls.get(signer.email, ""),
+                "signing_page": signer.signing_page,
+                "signing_position_x": signer.signing_position_x,
+                "signing_position_y": signer.signing_position_y,
                 "status": "notified",
-                "notified_at": datetime.now(timezone.utc).isoformat(),
-                "provider_signer_id": upload_result.signer_ids.get(s.email),
-            }
-            admin_supabase.table("signing_signers").insert(signer_record).execute()
+                "notified_at": _iso_now(),
+                "provider_signer_id": upload_result.signer_ids.get(signer.email, ""),
+            }).execute()
 
-        # ── 6. Update contract status ──
-        admin_supabase.table("contracts").update({
+        supabase.table("contracts").update({
             "status": "Signing in Progress",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": _iso_now(),
         }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
 
-        # ── 7. Audit log ──
-        _log_audit(
-            session_id, tenant_id,
+        _log_signing_event(
+            supabase,
+            session_id,
+            tenant_id,
             "session_created",
             user_id,
-            f"Signing ceremony initiated with {len(payload.signers)} signer(s). "
-            f"Provider: {provider_name}. Order: {payload.signing_order}.",
-            {
-                "provider_document_id": upload_result.provider_document_id,
-                "signers": [s.email for s in payload.signers],
-                "emeterai_serial": emeterai_serial,
-            },
+            f"Signing ceremony initiated with {len(payload.signers)} signer(s). Provider: {provider_name}.",
+            {"signers": [signer.email for signer in payload.signers], "signing_order": payload.signing_order},
+        )
+        if emeterai_result:
+            _log_signing_event(
+                supabase,
+                session_id,
+                tenant_id,
+                "emeterai_affixed",
+                "system",
+                f"e-Meterai affixed. Serial: {emeterai_result.serial_number}.",
+                {
+                    "serial": emeterai_result.serial_number,
+                    "verification_url": emeterai_result.verification_url,
+                },
+            )
+        for signer in payload.signers:
+            _log_signing_event(
+                supabase,
+                session_id,
+                tenant_id,
+                "signer_notified",
+                "system",
+                f"Signing invitation sent to {signer.full_name} ({signer.email})",
+                {"email": signer.email, "role": signer.role},
+            )
+
+        _log_activity_event(
+            supabase_client=supabase,
+            tenant_id=tenant_id,
+            contract_id=contract_id,
+            matter_id=contract.get("matter_id"),
+            action="signing_initiated",
+            detail=f"Signing ceremony started with {len(payload.signers)} signer(s). Provider: {provider_name}.",
+            actor=user_id,
         )
 
-        return {
-            "session_id": session_id,
-            "provider_document_id": upload_result.provider_document_id,
-            "provider_document_url": upload_result.provider_document_url,
-            "signing_urls": upload_result.signer_urls,
-            "expires_at": expires_at,
-            "emeterai_serial": emeterai_serial,
-            "status": "pending_signatures",
-        }
+        await _publish_signing_event(
+            "signing.initiated",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "session_id": session_id,
+                "provider": provider_name,
+                "signers_count": len(payload.signers),
+                "message": "Signing ceremony started.",
+            },
+        )
+        await _publish_signing_event(
+            "contract.status_changed",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "contract_id": contract_id,
+                "old_status": contract.get("status"),
+                "new_status": "Signing in Progress",
+                "message": "Contract moved to signing.",
+            },
+        )
+        for signer in payload.signers:
+            await _publish_signing_event(
+                "signing.signer_notified",
+                tenant_id,
+                contract_id=contract_id,
+                data={
+                    "signer_email": signer.email,
+                    "signer_name": signer.full_name,
+                    "message": f"{signer.full_name} has been notified to sign.",
+                },
+            )
 
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "contract_id": contract_id,
+            "contract_status": "Signing in Progress",
+            "provider": provider_name,
+            "provider_document_id": upload_result.provider_document_id,
+            "expires_at": expires_at,
+            "emeterai": {
+                "applied": bool(emeterai_result),
+                "serial": emeterai_result.serial_number if emeterai_result else None,
+            },
+            "signers": [{
+                "full_name": signer.full_name,
+                "email": signer.email,
+                "role": signer.role,
+                "signing_url": upload_result.signer_urls.get(signer.email, ""),
+                "status": "notified",
+            } for signer in payload.signers],
+            "message": f"Dokumen telah diunggah ke {provider_name}. Undangan penandatanganan telah dikirim.",
+        }
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("initiate_signing_error | contract=%s | err=%s", contract_id, e)
+    except Exception as exc:
+        logger.error("initiate_signing_failed | contract=%s | err=%s", contract_id, exc)
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(exc))
 
-
-# ═══════════════════════════════════════════════════════════════
-# ENDPOINT 3: WEBHOOK HANDLER (PUBLIC — HMAC VERIFIED)
-# ═══════════════════════════════════════════════════════════════
-
-@router.post("/webhook/{provider}")
-async def handle_signing_webhook(
-    provider: str,
-    request: Request,
-):
-    """
-    Receive webhook callbacks from PSrE providers.
-
-    This endpoint is intentionally PUBLIC (no JWT auth) because PSrE
-    providers cannot authenticate as our users. Security is provided
-    by HMAC signature verification inside parse_webhook().
-
-    Supported event types:
-      signer_signed      — one signer has completed
-      signer_rejected    — one signer rejected
-      document_completed — all signers done, signed PDF available
-      document_expired   — signing deadline passed
-    """
-    body = await request.body()
-    headers = dict(request.headers)
-
-    try:
-        signing_provider = get_signing_provider()
-        event = signing_provider.parse_webhook(headers, body)
-    except ValueError as e:
-        logger.warning("webhook_signature_invalid | provider=%s | err=%s", provider, e)
-        raise HTTPException(status_code=401, detail=f"Invalid webhook signature: {e}")
-    except Exception as e:
-        logger.error("webhook_parse_error | provider=%s | err=%s", provider, e)
-        raise HTTPException(status_code=400, detail="Failed to parse webhook")
-
-    event_type = event.get("event_type", "")
-    provider_doc_id = event.get("document_id", "")
-    signer_email = event.get("signer_email", "")
-
-    # Find the session by provider_document_id (no tenant filter — webhook has no JWT)
-    session_res = admin_supabase.table("signing_sessions").select("*") \
-        .eq("provider_document_id", provider_doc_id).limit(1).execute()
-
-    if not session_res.data:
-        logger.warning("webhook_session_not_found | provider_doc_id=%s", provider_doc_id)
-        return {"status": "ignored", "reason": "session not found"}
-
-    session = session_res.data[0]
-    session_id = session["id"]
-    tenant_id = session["tenant_id"]
-    contract_id = session["contract_id"]
-
-    _log_audit(session_id, tenant_id, "webhook_received", provider,
-               f"Webhook received: {event_type}", {"payload": event})
-
-    try:
-        if event_type == "signer_signed":
-            # Update the specific signer record
-            now = datetime.now(timezone.utc).isoformat()
-            update_data = {
-                "status": "signed",
-                "signed_at": event.get("signed_at", now),
-                "updated_at": now,
-            }
-            if event.get("certificate_serial"):
-                update_data["certificate_serial"] = event["certificate_serial"]
-            if event.get("certificate_issuer"):
-                update_data["certificate_issuer"] = event["certificate_issuer"]
-            if event.get("signature_hash"):
-                update_data["signature_hash"] = event["signature_hash"]
-            if event.get("signer_id"):
-                update_data["provider_signer_id"] = event["signer_id"]
-
-            admin_supabase.table("signing_signers").update(update_data) \
-                .eq("session_id", session_id).eq("email", signer_email).execute()
-
-            # Check if all signers have signed
-            signers_res = admin_supabase.table("signing_signers").select("status") \
-                .eq("session_id", session_id).execute()
-            all_signed = all(s["status"] == "signed" for s in (signers_res.data or []))
-            any_signed = any(s["status"] == "signed" for s in (signers_res.data or []))
-
-            if all_signed:
-                new_session_status = "completed"
-            elif any_signed:
-                new_session_status = "partially_signed"
-            else:
-                new_session_status = "pending_signatures"
-
-            admin_supabase.table("signing_sessions").update({
-                "status": new_session_status,
-                "updated_at": now,
-            }).eq("id", session_id).execute()
-
-            # Update contract status
-            if new_session_status == "partially_signed":
-                admin_supabase.table("contracts").update({
-                    "status": "Partially Signed",
-                    "updated_at": now,
-                }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
-
-            _log_audit(session_id, tenant_id, "signer_signed", signer_email,
-                       f"Signer {signer_email} completed signing.", {"event": event})
-
-        elif event_type == "signer_rejected":
-            now = datetime.now(timezone.utc).isoformat()
-            admin_supabase.table("signing_signers").update({
-                "status": "rejected",
-                "rejected_at": now,
-                "rejection_reason": event.get("reason", ""),
-                "updated_at": now,
-            }).eq("session_id", session_id).eq("email", signer_email).execute()
-
-            _log_audit(session_id, tenant_id, "signer_rejected", signer_email,
-                       f"Signer {signer_email} rejected. Reason: {event.get('reason', '')}",
-                       {"event": event})
-
-        elif event_type == "document_completed":
-            now = datetime.now(timezone.utc).isoformat()
-
-            # Download the signed PDF from the provider
-            signed_pdf_bytes = await signing_provider.download_signed_document(provider_doc_id)
-
-            # Store in Supabase Storage
-            signed_filename = f"signed/{contract_id}/{session_id}/signed_{session['document_filename']}"
-            try:
-                admin_supabase.storage.from_("matter-files").upload(
-                    path=signed_filename,
-                    file=signed_pdf_bytes,
-                    file_options={"content-type": "application/pdf"},
-                )
-                signed_storage_path = signed_filename
-            except Exception as store_err:
-                logger.error("signed_doc_storage_error | session=%s | err=%s", session_id, store_err)
-                signed_storage_path = None
-
-            # Update session
-            admin_supabase.table("signing_sessions").update({
-                "status": "completed",
-                "completed_at": now,
-                "signed_document_path": signed_storage_path,
-                "updated_at": now,
-            }).eq("id", session_id).execute()
-
-            # Mark all signers as signed
-            admin_supabase.table("signing_signers").update({
-                "status": "signed",
-                "signed_at": now,
-                "updated_at": now,
-            }).eq("session_id", session_id).eq("status", "notified").execute()
-
-            # Activate obligations + update contract status → Executed
-            await _on_contract_executed(contract_id, tenant_id, session_id, signed_storage_path or "")
-
-            _log_audit(session_id, tenant_id, "session_completed", "system",
-                       "All signers completed. Signed PDF stored. Contract executed.",
-                       {"signed_document_path": signed_storage_path})
-
-        elif event_type == "document_expired":
-            now = datetime.now(timezone.utc).isoformat()
-            admin_supabase.table("signing_sessions").update({
-                "status": "expired",
-                "updated_at": now,
-            }).eq("id", session_id).execute()
-
-            admin_supabase.table("contracts").update({
-                "status": "Reviewed",  # Revert to pre-signing state
-                "updated_at": now,
-            }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
-
-            _log_audit(session_id, tenant_id, "session_expired", "system",
-                       "Signing session expired before all signers completed.",
-                       {"event": event})
-
-        return {"status": "ok", "processed_event": event_type}
-
-    except Exception as e:
-        logger.error("webhook_processing_error | session=%s | event=%s | err=%s", session_id, event_type, e)
-        traceback.print_exc()
-        # Return 200 to prevent provider from retrying infinitely
-        return {"status": "error", "detail": str(e)}
-
-
-# ═══════════════════════════════════════════════════════════════
-# ENDPOINT 4: GET SIGNING STATUS
-# ═══════════════════════════════════════════════════════════════
 
 @router.get("/{contract_id}/status")
 @limiter.limit("60/minute")
@@ -735,61 +988,246 @@ async def get_signing_status(
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase),
 ):
-    """
-    Get current signing status for a contract.
-    Returns the most recent session, all signers, and recent audit events.
-    """
     try:
         tenant_id = claims["verified_tenant_id"]
-
-        session_res = admin_supabase.table("signing_sessions").select("*") \
+        session_res = supabase.table("signing_sessions").select("*") \
             .eq("contract_id", contract_id).eq("tenant_id", tenant_id) \
             .order("created_at", desc=True).limit(1).execute()
-
         if not session_res.data:
             return {"has_signing_session": False}
 
         session = session_res.data[0]
-
-        signers_res = admin_supabase.table("signing_signers").select("*") \
+        signers_res = supabase.table("signing_signers").select("*") \
             .eq("session_id", session["id"]).eq("tenant_id", tenant_id) \
             .order("signing_order_index").execute()
-
-        audit_res = admin_supabase.table("signing_audit_log").select("*") \
+        audit_res = supabase.table("signing_audit_log").select("*") \
             .eq("session_id", session["id"]).eq("tenant_id", tenant_id) \
-            .order("created_at", desc=True).limit(20).execute()
-
+            .order("created_at", desc=True).limit(50).execute()
         signers = signers_res.data or []
-        signed_count = sum(1 for s in signers if s["status"] == "signed")
-        pending_count = sum(1 for s in signers if s["status"] in ("pending", "notified", "viewed"))
-        rejected_count = sum(1 for s in signers if s["status"] == "rejected")
+        progress = _get_issue_signer_status_counts(signers)
 
         return {
             "has_signing_session": True,
-            "session": session,
+            "session": {
+                **session,
+                "is_expired": _is_expired(session.get("expires_at")),
+                "preview_url": _document_preview_url(contract_id, session),
+            },
             "signers": signers,
             "audit_trail": audit_res.data or [],
-            "progress": {
-                "total_signers": len(signers),
-                "signed": signed_count,
-                "pending": pending_count,
-                "rejected": rejected_count,
-                "percent_complete": round(signed_count / len(signers) * 100) if signers else 0,
-            },
+            "progress": progress,
         }
-
-    except Exception as e:
-        logger.error("get_signing_status_error | contract=%s | err=%s", contract_id, e)
+    except Exception as exc:
+        logger.error("get_signing_status_failed | contract=%s | err=%s", contract_id, exc)
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
-# ═══════════════════════════════════════════════════════════════
-# ENDPOINT 5: CANCEL SIGNING
-# ═══════════════════════════════════════════════════════════════
+@router.post("/webhook/{provider}")
+async def handle_signing_webhook(provider: str, request: Request):
+    body = await request.body()
+    headers = dict(request.headers)
 
-class CancelSigningInput(BaseModel):
-    reason: str = ""
+    try:
+        signing_provider = get_signing_provider()
+        event = signing_provider.parse_webhook(headers, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid webhook signature: {exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to parse webhook: {exc}")
+
+    provider_document_id = event.get("document_id") or event.get("document_token") or event.get("id")
+    if not provider_document_id:
+        raise HTTPException(status_code=400, detail="Missing document identifier in webhook payload")
+
+    session_res = admin_supabase.table("signing_sessions").select("*") \
+        .eq("provider_document_id", provider_document_id).single().execute()
+    if not session_res.data:
+        logger.warning("signing_webhook_unknown_document | provider=%s | doc_id=%s", provider, provider_document_id)
+        return {"status": "ignored", "reason": "Unknown document"}
+
+    session = session_res.data
+    session_id = session["id"]
+    tenant_id = session["tenant_id"]
+    contract_id = session["contract_id"]
+    event_type = event.get("event_type") or event.get("type") or ""
+    signer_email = event.get("signer_email") or event.get("email") or ""
+
+    try:
+        # AUDITED: Requires service-role because webhook requests are provider-originated and do not carry a user Clerk JWT.
+        if event_type in ("signer_viewed", "document_viewed"):
+            if signer_email:
+                admin_supabase.table("signing_signers").update({
+                    "status": "viewed",
+                    "viewed_at": _iso_now(),
+                }).eq("session_id", session_id).eq("email", signer_email).execute()
+                _log_signing_event(
+                    admin_supabase,
+                    session_id,
+                    tenant_id,
+                    "signer_viewed",
+                    signer_email,
+                    f"{signer_email} membuka dokumen untuk ditinjau.",
+                )
+                await _publish_signing_event(
+                    "signing.signer_viewed",
+                    tenant_id,
+                    contract_id=contract_id,
+                    data={"signer_email": signer_email, "message": f"{signer_email} viewed the document."},
+                )
+
+        elif event_type in ("signer_signed", "document_signed"):
+            update_payload = {
+                "status": "signed",
+                "signed_at": event.get("signed_at", _iso_now()),
+                "certificate_serial": event.get("certificate_serial", ""),
+                "certificate_issuer": event.get("certificate_issuer", ""),
+                "signature_algorithm": event.get("signature_algorithm", ""),
+                "signature_hash": event.get("signature_hash", ""),
+            }
+            if signer_email:
+                admin_supabase.table("signing_signers").update(update_payload) \
+                    .eq("session_id", session_id).eq("email", signer_email).execute()
+                _log_signing_event(
+                    admin_supabase,
+                    session_id,
+                    tenant_id,
+                    "signer_signed",
+                    signer_email,
+                    f"{signer_email} telah menandatangani dokumen.",
+                    {"certificate_serial": event.get("certificate_serial", "")},
+                )
+
+            signers_res = admin_supabase.table("signing_signers").select("*") \
+                .eq("session_id", session_id).execute()
+            signers = signers_res.data or []
+            progress = _get_issue_signer_status_counts(signers)
+
+            if progress["is_complete"]:
+                await _handle_signing_complete(session, contract_id, tenant_id, signing_provider)
+            else:
+                admin_supabase.table("signing_sessions").update({
+                    "status": "partially_signed",
+                }).eq("id", session_id).execute()
+                admin_supabase.table("contracts").update({
+                    "status": "Partially Signed",
+                    "updated_at": _iso_now(),
+                }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+                await _publish_signing_event(
+                    "contract.status_changed",
+                    tenant_id,
+                    contract_id=contract_id,
+                    data={
+                        "contract_id": contract_id,
+                        "old_status": "Signing in Progress",
+                        "new_status": "Partially Signed",
+                        "message": "Contract is partially signed.",
+                    },
+                )
+                await _publish_signing_event(
+                    "signing.signer_signed",
+                    tenant_id,
+                    contract_id=contract_id,
+                    data={
+                        "signer_email": signer_email,
+                        "progress": progress,
+                        "message": f"{signer_email} has signed the contract.",
+                    },
+                )
+
+        elif event_type in ("signer_rejected", "document_rejected"):
+            rejection_reason = event.get("reason", "No reason provided")
+            if signer_email:
+                admin_supabase.table("signing_signers").update({
+                    "status": "rejected",
+                    "rejected_at": _iso_now(),
+                    "rejection_reason": rejection_reason,
+                }).eq("session_id", session_id).eq("email", signer_email).execute()
+            admin_supabase.table("signing_sessions").update({
+                "status": "rejected",
+            }).eq("id", session_id).execute()
+            admin_supabase.table("contracts").update({
+                "status": "Pending Approval",
+                "updated_at": _iso_now(),
+            }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+            _log_signing_event(
+                admin_supabase,
+                session_id,
+                tenant_id,
+                "signer_rejected",
+                signer_email or "unknown",
+                f"{signer_email or 'A signer'} menolak menandatangani. Alasan: {rejection_reason}",
+                {"reason": rejection_reason},
+            )
+            await _publish_signing_event(
+                "signing.signer_rejected",
+                tenant_id,
+                contract_id=contract_id,
+                data={"signer_email": signer_email, "reason": rejection_reason, "message": "A signer rejected signing."},
+            )
+            await _publish_signing_event(
+                "contract.status_changed",
+                tenant_id,
+                contract_id=contract_id,
+                data={
+                    "contract_id": contract_id,
+                    "old_status": session.get("status"),
+                    "new_status": "Pending Approval",
+                    "message": "Signing was rejected and returned to pending approval.",
+                },
+            )
+
+        elif event_type in ("document_completed", "completed"):
+            await _handle_signing_complete(session, contract_id, tenant_id, signing_provider)
+
+        elif event_type in ("document_expired", "expired"):
+            admin_supabase.table("signing_sessions").update({
+                "status": "expired",
+            }).eq("id", session_id).execute()
+            admin_supabase.table("contracts").update({
+                "status": "Pending Approval",
+                "updated_at": _iso_now(),
+            }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+            _log_signing_event(
+                admin_supabase,
+                session_id,
+                tenant_id,
+                "session_expired",
+                "system",
+                "Batas waktu penandatanganan telah berakhir.",
+            )
+            await _publish_signing_event(
+                "signing.expired",
+                tenant_id,
+                contract_id=contract_id,
+                data={"message": "Signing deadline expired."},
+            )
+            await _publish_signing_event(
+                "contract.status_changed",
+                tenant_id,
+                contract_id=contract_id,
+                data={
+                    "contract_id": contract_id,
+                    "old_status": session.get("status"),
+                    "new_status": "Pending Approval",
+                    "message": "Signing session expired and contract returned to pending approval.",
+                },
+            )
+
+        _log_signing_event(
+            admin_supabase,
+            session_id,
+            tenant_id,
+            "webhook_received",
+            "system",
+            f"Webhook received: {event_type}",
+            {"raw_payload": event},
+        )
+        return {"status": "processed", "event_type": event_type}
+    except Exception as exc:
+        logger.error("signing_webhook_processing_failed | session=%s | event=%s | err=%s", session_id, event_type, exc)
+        traceback.print_exc()
+        return {"status": "error", "detail": str(exc)}
 
 
 @router.post("/{contract_id}/cancel")
@@ -801,175 +1239,152 @@ async def cancel_signing(
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase),
 ):
-    """Cancel an active signing session."""
     try:
         tenant_id = claims["verified_tenant_id"]
         user_id = claims.get("sub", "unknown")
 
-        session_res = admin_supabase.table("signing_sessions").select("*") \
+        session_res = supabase.table("signing_sessions").select("*") \
             .eq("contract_id", contract_id).eq("tenant_id", tenant_id) \
-            .in_("status", ["pending_signatures", "partially_signed"]) \
+            .in_("status", list(ACTIVE_SIGNING_SESSION_STATUSES)) \
             .order("created_at", desc=True).limit(1).execute()
-
         if not session_res.data:
             raise HTTPException(status_code=404, detail="No active signing session found")
-
         session = session_res.data[0]
-        session_id = session["id"]
 
-        # Cancel with provider
-        signing_provider = get_signing_provider()
-        if session.get("provider_document_id"):
-            await signing_provider.cancel_signing(session["provider_document_id"], payload.reason)
+        provider = get_signing_provider()
+        try:
+            await provider.cancel_signing(session["provider_document_id"], payload.reason)
+        except Exception as exc:
+            logger.warning("provider_cancel_failed | session=%s | err=%s", session["id"], exc)
 
-        now = datetime.now(timezone.utc).isoformat()
-        admin_supabase.table("signing_sessions").update({
+        supabase.table("signing_sessions").update({
             "status": "cancelled",
-            "cancelled_at": now,
+            "cancelled_at": _iso_now(),
             "cancellation_reason": payload.reason,
-            "updated_at": now,
-        }).eq("id", session_id).execute()
-
-        # Revert contract status to allow re-initiation
-        admin_supabase.table("contracts").update({
-            "status": "Ready to Sign",
-            "updated_at": now,
+        }).eq("id", session["id"]).execute()
+        supabase.table("contracts").update({
+            "status": "Pending Approval",
+            "updated_at": _iso_now(),
         }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
 
-        _log_audit(session_id, tenant_id, "session_cancelled", user_id,
-                   f"Signing session cancelled. Reason: {payload.reason}")
-
-        return {"status": "cancelled", "session_id": session_id}
-
+        _log_signing_event(
+            supabase,
+            session["id"],
+            tenant_id,
+            "session_cancelled",
+            user_id,
+            f"Penandatanganan dibatalkan. Alasan: {payload.reason or 'Tidak ada alasan'}",
+            {"reason": payload.reason},
+        )
+        await _publish_signing_event(
+            "contract.status_changed",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "contract_id": contract_id,
+                "old_status": session.get("status"),
+                "new_status": "Pending Approval",
+                "message": "Signing session cancelled.",
+            },
+        )
+        return {"status": "cancelled", "contract_id": contract_id, "contract_status": "Pending Approval"}
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("cancel_signing_error | contract=%s | err=%s", contract_id, e)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("cancel_signing_failed | contract=%s | err=%s", contract_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
-
-# ═══════════════════════════════════════════════════════════════
-# ENDPOINT 6: SEND REMINDER
-# ═══════════════════════════════════════════════════════════════
 
 @router.post("/{contract_id}/remind/{signer_id}")
 @limiter.limit("20/minute")
-async def send_signer_reminder(
+async def send_reminder(
     request: Request,
     contract_id: str,
     signer_id: str,
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase),
 ):
-    """Send a reminder email to a pending signer."""
     try:
         tenant_id = claims["verified_tenant_id"]
-        user_id = claims.get("sub", "unknown")
-
-        # Fetch signer record (with tenant check via session)
-        signer_res = admin_supabase.table("signing_signers").select("*, signing_sessions(*)") \
-            .eq("id", signer_id).eq("tenant_id", tenant_id).limit(1).execute()
-
-        if not signer_res.data:
+        signer_res = supabase.table("signing_signers").select("*") \
+            .eq("id", signer_id).eq("tenant_id", tenant_id).single().execute()
+        signer = signer_res.data
+        if not signer:
             raise HTTPException(status_code=404, detail="Signer not found")
+        if signer.get("status") == "signed":
+            return {"status": "already_signed", "message": f"{signer.get('full_name')} sudah menandatangani."}
 
-        signer = signer_res.data[0]
-        session = signer.get("signing_sessions") or {}
+        session_res = supabase.table("signing_sessions").select("id, provider_document_id") \
+            .eq("id", signer["session_id"]).single().execute()
+        session = session_res.data
+        if not session:
+            raise HTTPException(status_code=404, detail="Signing session not found")
 
-        if signer["status"] not in ("pending", "notified", "viewed"):
-            raise HTTPException(status_code=400,
-                                detail=f"Cannot send reminder — signer status is '{signer['status']}'")
-
-        signing_provider = get_signing_provider()
-        provider_doc_id = session.get("provider_document_id", "")
-        success = await signing_provider.send_reminder(provider_doc_id, signer["email"])
-
-        if success:
-            now = datetime.now(timezone.utc).isoformat()
-            admin_supabase.table("signing_signers").update({
-                "status": "notified",
-                "notified_at": now,
-                "updated_at": now,
-            }).eq("id", signer_id).execute()
-
-            _log_audit(
-                signer["session_id"], tenant_id,
-                "reminder_sent", user_id,
-                f"Reminder sent to {signer['email']}.",
-            )
-
-        return {"sent": success, "email": signer["email"]}
-
+        provider = get_signing_provider()
+        await provider.send_reminder(session["provider_document_id"], signer["email"])
+        _log_signing_event(
+            supabase,
+            signer["session_id"],
+            tenant_id,
+            "reminder_sent",
+            claims.get("sub", "unknown"),
+            f"Pengingat dikirim ke {signer.get('full_name')} ({signer.get('email')})",
+        )
+        return {"status": "sent", "message": f"Pengingat dikirim ke {signer.get('full_name')}", "email": signer["email"]}
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error("send_reminder_error | signer=%s | err=%s", signer_id, e)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("send_reminder_failed | signer=%s | err=%s", signer_id, exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
-
-# ═══════════════════════════════════════════════════════════════
-# ENDPOINT 7: DOWNLOAD SIGNED DOCUMENT
-# ═══════════════════════════════════════════════════════════════
 
 @router.get("/{contract_id}/download")
 @limiter.limit("20/minute")
 async def download_signed_document(
     request: Request,
     contract_id: str,
-    claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_tenant_supabase),
+    token: Optional[str] = Query(default=None),
+    authorization: Optional[str] = Header(default=None),
 ):
-    """
-    Download the final signed PDF.
-    Returns the file from Supabase Storage if available,
-    or fetches it from the provider as a fallback.
-    """
-    try:
-        tenant_id = claims["verified_tenant_id"]
+    effective_claims = _verify_authorization_header(authorization)
+    if not effective_claims and token:
+        effective_claims = _verify_query_token(token)
+    if not effective_claims:
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
 
-        session_res = admin_supabase.table("signing_sessions").select("*") \
-            .eq("contract_id", contract_id).eq("tenant_id", tenant_id) \
-            .eq("status", "completed").order("created_at", desc=True).limit(1).execute()
+    tenant_id = effective_claims["verified_tenant_id"]
+    raw_jwt = authorization.split(" ", 1)[1] if authorization and authorization.startswith("Bearer ") else token
+    if not raw_jwt:
+        raise HTTPException(status_code=401, detail="Missing or invalid token")
+    supabase = _create_rls_supabase_client(raw_jwt)
+    session_res = supabase.table("signing_sessions").select("signed_document_path, document_filename, provider_document_id, id, status") \
+        .eq("contract_id", contract_id).eq("tenant_id", tenant_id) \
+        .eq("status", "completed").order("created_at", desc=True).limit(1).execute()
+    if not session_res.data:
+        raise HTTPException(status_code=404, detail="Signed document not available")
 
-        if not session_res.data:
-            raise HTTPException(status_code=404, detail="No completed signing session found")
-
-        session = session_res.data[0]
-
-        # Try Supabase Storage first
-        if session.get("signed_document_path"):
-            try:
-                file_data = admin_supabase.storage.from_("matter-files").download(
-                    session["signed_document_path"]
-                )
-                filename = f"signed_{session['document_filename']}"
-                return Response(
-                    content=file_data,
-                    media_type="application/pdf",
-                    headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-                )
-            except Exception as storage_err:
-                logger.warning("storage_download_error | session=%s | err=%s", session["id"], storage_err)
-
-        # Fallback: fetch from provider
-        if session.get("provider_document_id"):
-            signing_provider = get_signing_provider()
-            pdf_bytes = await signing_provider.download_signed_document(session["provider_document_id"])
-            filename = f"signed_{session['document_filename']}"
-
-            _log_audit(session["id"], tenant_id, "signed_document_downloaded",
-                       claims.get("sub", "unknown"), "Signed document downloaded from provider.")
-
+    session = session_res.data[0]
+    if session.get("signed_document_path"):
+        try:
+            # AUDITED: Requires service-role for storage download in signed-document retrieval.
+            file_bytes = admin_supabase.storage.from_("matter-files").download(session["signed_document_path"])
+            filename = f"signed_{session.get('document_filename') or 'contract.pdf'}"
             return Response(
-                content=pdf_bytes,
+                content=file_bytes,
                 media_type="application/pdf",
                 headers={"Content-Disposition": f'attachment; filename="{filename}"'},
             )
+        except Exception as exc:
+            logger.warning("signed_storage_download_failed | session=%s | err=%s", session["id"], exc)
 
-        raise HTTPException(status_code=404, detail="Signed document not available")
+    if session.get("provider_document_id"):
+        provider = get_signing_provider()
+        file_bytes = await provider.download_signed_document(session["provider_document_id"])
+        filename = f"signed_{session.get('document_filename') or 'contract.pdf'}"
+        return Response(
+            content=file_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("download_signed_error | contract=%s | err=%s", contract_id, e)
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(status_code=404, detail="Signed document not available")

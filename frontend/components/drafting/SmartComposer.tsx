@@ -3,6 +3,11 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
+import { useEditor, EditorContent } from '@tiptap/react';
+import StarterKit from '@tiptap/starter-kit';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { Color } from '@tiptap/extension-color';
+import { marked } from 'marked';
 import { LuxuryThinkingStepper } from '@/components/ui/LuxuryThinkingStepper';
 import ClauseLibraryPanel from "../contract-detail/ClauseLibraryPanel";
 import HistoryPanel from "./HistoryPanel";
@@ -71,7 +76,70 @@ export default function SmartComposer({
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState(false);
   const router = useRouter();
-  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+  const parseHtml = async (text: string) => {
+    if (!text) return "";
+    return await marked.parse(text);
+  };
+
+  const editor = useEditor({
+    extensions: [StarterKit, TextStyle, Color],
+    content: draftText,
+    onUpdate: ({ editor }) => {
+      setDraftText(editor.getHTML());
+    },
+    onSelectionUpdate: ({ editor }) => {
+      const { from, to } = editor.state.selection;
+      if (from !== to) {
+        setActiveRange({ start: from, end: to });
+        
+        setTimeout(() => {
+          setRewriteMode(false);
+          setRewriteInput("");
+          const text = editor.state.doc.textBetween(from, to, ' ').trim();
+          
+          if (text && text.length > 5) {
+             const domSelection = window.getSelection();
+             if (domSelection && domSelection.rangeCount > 0) {
+               const range = domSelection.getRangeAt(0);
+               const rect = range.getBoundingClientRect();
+               setTextSelection({
+                 text,
+                 x: rect.left + (rect.width / 2),
+                 y: Math.max(0, rect.top - 15),
+                 start: from,
+                 end: to,
+               });
+             } else {
+                setTextSelection({
+                   text,
+                   x: window.innerWidth / 2,
+                   y: window.innerHeight / 2,
+                   start: from,
+                   end: to
+                });
+             }
+          } else {
+             setTextSelection(null);
+          }
+        }, 50);
+      } else {
+        setTextSelection(null);
+      }
+    },
+    editorProps: {
+      attributes: {
+        class: 'w-full h-full min-h-[700px] bg-transparent border-none text-black font-serif text-[15px] leading-relaxed focus:ring-0 px-0 outline-none prose prose-zinc prose-p:my-2 prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg max-w-none focus:outline-none'
+      }
+    },
+    immediatelyRender: false,
+  });
+
+  useEffect(() => {
+    if (editor && draftText && editor.getHTML() !== draftText) {
+      editor.commands.setContent(draftText, false);
+    }
+  }, [editor, draftText]);
 
   const draftingSteps = [
     "Reading current draft...",
@@ -97,11 +165,11 @@ export default function SmartComposer({
               const vData = await vRes.json();
               const targetVersion = (vData.versions || []).find((v: any) => v.id === draftId);
               if (targetVersion?.raw_text) {
-                setDraftText(targetVersion.raw_text);
+                setDraftText(await parseHtml(targetVersion.raw_text));
               } else {
                 // Fallback: use the latest version's text
                 const latest = (vData.versions || []).slice(-1)[0];
-                if (latest?.raw_text) setDraftText(latest.raw_text);
+                if (latest?.raw_text) setDraftText(await parseHtml(latest.raw_text));
               }
             }
           }
@@ -140,7 +208,7 @@ export default function SmartComposer({
           if (res.ok) {
             const data = await res.json();
             if (data.review) {
-              setDraftText(data.review.raw_document);
+              setDraftText(await parseHtml(data.review.raw_document));
               setCurrentContractId(contractId);
               
               if (focusFindingId) {
@@ -158,9 +226,9 @@ export default function SmartComposer({
                   setTimeout(() => {
                     const start = target.coordinates?.start_char;
                     const end = target.coordinates?.end_char;
-                    if (start >= 0 && end > start && textareaRef.current) {
-                      textareaRef.current.focus();
-                      textareaRef.current.setSelectionRange(start, end);
+                    if (start >= 0 && end > start && editor) {
+                      editor.commands.focus();
+                      editor.commands.setTextSelection({ from: start, to: end });
                       setActiveRange({ start, end });
                       // Simple text selection simulation
                       setTextSelection({
@@ -184,7 +252,7 @@ export default function SmartComposer({
           if (res.ok) {
             const data = await res.json();
             if (data.found) {
-              setDraftText(data.draft_text);
+              setDraftText(await parseHtml(data.draft_text));
               setCurrentContractId(data.contract_id);
 
               // Parse history from the full draft_revisions JSONB if available
@@ -258,7 +326,7 @@ export default function SmartComposer({
 
       if (!res.ok) throw new Error("Failed to generate draft");
       const data = await res.json();
-      setDraftText(data.draft_text);
+      setDraftText(await parseHtml(data.draft_text));
     } catch (error) {
       console.error(error);
       alert("Failed to generate draft. Ensure you are signed in.");
@@ -381,27 +449,22 @@ export default function SmartComposer({
     }
   };
 
-  // Surgical Replace: splice the new text at the exact character indices
+  // Surgical Replace: insert via editor API
   const performSurgicalReplace = useCallback((newText: string) => {
-    if (activeRange) {
-      // Use the stored indices for a precise splice
-      setDraftText(prev => {
-        const before = prev.substring(0, activeRange.start);
-        const after = prev.substring(activeRange.end);
-        return before + newText + after;
-      });
+    if (activeRange && editor) {
+      editor.chain().focus().insertContentAt({ from: activeRange.start, to: activeRange.end }, newText).run();
       toast.success('Clause replaced surgically!');
       setTextSelection(null);
       setActiveRange(null); // Clear the lock after successful replacement
     } else {
       // Fallback: append if no active selection
       toast.error('No active selection. Appending instead.');
-      setDraftText(prev => prev + '\n\n' + newText);
+      editor?.chain().focus().insertContent(`\n\n${newText}`).run();
     }
-  }, [activeRange]);
+  }, [activeRange, editor]);
 
   const handleAppendClause = (suggestionText: string) => {
-    setDraftText((prev) => prev + "\n\n" + suggestionText);
+    editor?.chain().focus().insertContent(`\n\n${suggestionText}`).run();
   };
 
   // Fetch clause count for the empty library guard
@@ -424,36 +487,7 @@ export default function SmartComposer({
     fetchClauseCount();
   }, []);
 
-  // Bulletproof text selection handler for <textarea>
-  const handleTextSelection = useCallback((e: React.MouseEvent<HTMLTextAreaElement>) => {
-    // We MUST capture the target and coordinates immediately before the React event pools
-    const target = e.currentTarget;
-    const clientX = e.clientX;
-    const clientY = e.clientY;
-
-    setTimeout(() => {
-      setRewriteMode(false);
-      setRewriteInput("");
-      const start = target.selectionStart;
-      const end = target.selectionEnd;
-      const selectedText = target.value.substring(start, end).trim();
-
-      if (selectedText && selectedText.length > 5) {
-        setTextSelection({
-          text: selectedText,
-          x: clientX,
-          y: clientY - 15,
-          start,
-          end,
-        });
-        // LOCK the indices into persistent state
-        setActiveRange({ start, end });
-      } else {
-        setTextSelection(null);
-        // Do NOT clear activeRange here, so the user can still replace it from chat!
-      }
-    }, 50);
-  }, []);
+  // handleTextSelection and floating menu logic is now handled in editor.onSelectionUpdate
 
   // The "Analyze Clause" handler with empty library guard
   const handleAnalyzeClause = useCallback(() => {
@@ -741,11 +775,9 @@ export default function SmartComposer({
                   <div className="absolute top-0 left-0 right-0 bg-amber-500/90 text-black text-[10px] font-extrabold uppercase tracking-[0.2em] text-center py-1.5 rounded-t-lg z-10">
                     PREVIEWING OLD VERSION
                   </div>
-                  <textarea
-                    value={previewText}
-                    readOnly
-                    className="w-full h-full min-h-[700px] bg-zinc-100 border-none text-zinc-600 font-serif text-[15px] leading-relaxed resize-none focus:ring-0 px-0 custom-scrollbar outline-none pt-8 cursor-not-allowed"
-                    spellCheck="false"
+                  <div
+                    dangerouslySetInnerHTML={{ __html: previewText }}
+                    className="w-full h-full min-h-[700px] bg-zinc-100 border-none text-zinc-600 font-serif text-[15px] leading-relaxed resize-none focus:ring-0 overflow-y-auto px-8 custom-scrollbar outline-none pt-12 pb-8 cursor-not-allowed prose max-w-none prose-zinc"
                   />
                   <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-3">
                     <button
@@ -757,21 +789,9 @@ export default function SmartComposer({
                   </div>
                 </div>
               ) : draftText ? (
-                <textarea
-                  ref={textareaRef}
-                  value={draftText}
-                  onChange={(e) => setDraftText(e.target.value)}
-                  onMouseUp={handleTextSelection}
-                  onSelect={(e) => {
-                    const start = e.currentTarget.selectionStart;
-                    const end = e.currentTarget.selectionEnd;
-                    if (start !== end) {
-                      setActiveRange({ start, end });
-                    }
-                  }}
-                  className="w-full h-full min-h-[700px] bg-transparent border-none text-black font-serif text-[15px] leading-relaxed resize-none focus:ring-0 px-0 custom-scrollbar outline-none placeholder:text-gray-400"
-                  spellCheck="false"
-                />
+                <div className="w-full h-full custom-scrollbar px-2 max-w-[650px] mx-auto">
+                  <EditorContent editor={editor} />
+                </div>
               ) : (
                 <div className="w-full h-full min-h-[700px] flex items-center justify-center">
                   <p className="text-zinc-600 font-serif italic">Use the Control Room to generate a draft...</p>
