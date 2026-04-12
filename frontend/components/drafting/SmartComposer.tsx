@@ -13,6 +13,7 @@ import ClauseLibraryPanel from "../contract-detail/ClauseLibraryPanel";
 import HistoryPanel from "./HistoryPanel";
 import { toast, Toaster } from 'sonner';
 import type { RevisionSnapshot, DraftRevisionsPayload } from '@/types/history';
+import { getPublicApiBase } from '@/lib/public-api-base';
 
 interface NegotiationIssue {
   id: string;
@@ -137,7 +138,7 @@ export default function SmartComposer({
 
   useEffect(() => {
     if (editor && draftText && editor.getHTML() !== draftText) {
-      editor.commands.setContent(draftText, false);
+      editor.commands.setContent(draftText, { emitUpdate: false });
     }
   }, [editor, draftText]);
 
@@ -152,7 +153,7 @@ export default function SmartComposer({
     const loadExistingDraft = async () => {
       try {
         const token = await getToken();
-        const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
+        const baseUrl = getPublicApiBase();
         
         if (mode === 'warroom' && contractId) {
           // ── War Room → Composer Bridge ──
@@ -274,7 +275,7 @@ export default function SmartComposer({
       console.log("🚀 [SmartComposer] Attempting to fetch Playbooks...");
       try {
         const token = await getToken();
-        const baseUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
+        const baseUrl = getPublicApiBase();
         const url = `${baseUrl}/api/playbook/categories`;
         console.log("🌐 [SmartComposer] Fetching from:", url);
 
@@ -309,7 +310,7 @@ export default function SmartComposer({
     try {
       // Fetch Clerk token from window as requested
       const token = await getToken();
-      const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
+      const baseUrl = getPublicApiBase();
       const res = await fetch(`${baseUrl}/api/v1/drafting/generate`, {
         method: "POST",
         headers: {
@@ -328,8 +329,8 @@ export default function SmartComposer({
       const data = await res.json();
       setDraftText(await parseHtml(data.draft_text));
     } catch (error) {
-      console.error(error);
-      alert("Failed to generate draft. Ensure you are signed in.");
+      console.error("Drafting error:", error);
+      toast.error("Failed to generate draft. Ensure you are signed in.");
     } finally {
       setIsGenerating(false);
     }
@@ -339,7 +340,7 @@ export default function SmartComposer({
     setIsAuditing(true);
     try {
       const token = await getToken();
-      const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
+      const baseUrl = getPublicApiBase();
       const res = await fetch(`${baseUrl}/api/v1/drafting/audit`, {
         method: "POST",
         headers: {
@@ -355,11 +356,10 @@ export default function SmartComposer({
 
       if (!res.ok) throw new Error("Failed to run audit");
 
-      alert("Draft sent to LangGraph for Audit!");
-      onClose();
+      toast.success("Draft sent to LangGraph for Audit!");
     } catch (error) {
       console.error(error);
-      alert("Failed to audit draft.");
+      toast.error("Failed to audit draft.");
     } finally {
       setIsAuditing(false);
     }
@@ -373,7 +373,7 @@ export default function SmartComposer({
     setIsChatting(true);
     try {
       const token = await getToken();
-      const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
+      const baseUrl = getPublicApiBase();
       const res = await fetch(`${baseUrl}/api/v1/drafting/chat`, {
         method: "POST",
         headers: {
@@ -399,7 +399,7 @@ export default function SmartComposer({
   const handleSaveDraft = async (actionType: RevisionSnapshot['action_type'] = 'Manual Save', actor: RevisionSnapshot['actor'] = 'User') => {
     try {
       const token = await getToken();
-      const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, "");
+      const baseUrl = getPublicApiBase();
 
       // Create a new revision snapshot
       const newSnapshot: RevisionSnapshot = {
@@ -472,7 +472,7 @@ export default function SmartComposer({
     const fetchClauseCount = async () => {
       try {
         const token = await getToken();
-        const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+        const baseUrl = getPublicApiBase();
         const res = await fetch(`${baseUrl}/api/v1/clauses`, {
           headers: { Authorization: `Bearer ${token}` }
         });
@@ -521,7 +521,7 @@ export default function SmartComposer({
     setIsChatting(true);
     try {
       const token = await getToken();
-      const baseUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+      const baseUrl = getPublicApiBase();
       const res = await fetch(`${baseUrl}/api/v1/drafting/chat`, {
         method: 'POST',
         headers: {

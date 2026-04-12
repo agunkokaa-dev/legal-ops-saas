@@ -16,9 +16,10 @@ import rehypeRaw from 'rehype-raw';
 import { createNote } from '@/app/actions/noteActions';
 import { useContractSSE } from '@/hooks/useContractSSE';
 import { SSEStatusBadge } from '@/components/status/SSEStatusBadge';
+import { getPublicApiBase } from '@/lib/public-api-base';
 
 export default function ContractDetailClient({
-    pdfUrl,
+    fileUrl,
     contract,
     obligations,
     notes,
@@ -27,7 +28,7 @@ export default function ContractDetailClient({
     graphRels,
     formattedDate
 }: {
-    pdfUrl: string,
+    fileUrl: string,
     contract: any,
     obligations: any[],
     notes: any[],
@@ -40,6 +41,7 @@ export default function ContractDetailClient({
     const router = useRouter();
     const { getToken } = useAuth();
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const missingFileUrlFetchRef = useRef<string | null>(null);
 
     // Lock-for-Review Options
     const [isLockedForReview, setIsLockedForReview] = useState(false);
@@ -297,7 +299,7 @@ export default function ContractDetailClient({
         if (!contract?.id) return;
         try {
             const token = await getToken();
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            const apiUrl = getPublicApiBase();
 
             const res = await fetch(`${apiUrl}/api/v1/drafting/apply-suggestion`, {
                 method: 'POST',
@@ -354,12 +356,13 @@ export default function ContractDetailClient({
 
     useEffect(() => {
         setLiveContract(contract);
+        missingFileUrlFetchRef.current = null;
         if ((contract?.status || '').toLowerCase() !== 'failed') {
             setTaskError(null);
         }
     }, [contract]);
 
-    const pollContractStatus = useCallback(async () => {
+    const fetchLatestContract = useCallback(async () => {
         if (!liveContract?.id) return;
 
         try {
@@ -369,39 +372,60 @@ export default function ContractDetailClient({
 
             const res = await fetch(`${supabaseUrl}/rest/v1/contracts?id=eq.${liveContract.id}&select=*`, { headers });
             const [data] = await res.json();
-            if (!data) return;
+            if (!data) return null;
 
-            setLiveContract(data);
-
-            const newStatus = (data.status || '').toLowerCase();
-            if (newStatus === 'failed') {
-                const dr = data.draft_revisions;
-                const errorLogId = dr?.error_log_id || null;
-                const errorSummary = dr?.error_summary || 'An unknown error occurred during AI analysis.';
-                setTaskError({ error_summary: errorSummary, error_log_id: errorLogId });
-                setPipelineProgress(null);
-                toast.error('AI Analysis Failed. See the error panel for details.', {
-                    style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' }
-                });
-                return;
-            }
-
-            if (newStatus.startsWith('retrying')) {
-                toast.loading(`Retrying analysis... (${data.status})`, {
-                    id: 'retry-toast',
-                    style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
-                });
-                return;
-            }
-
-            if (!newStatus.includes('processing') && !newStatus.includes('ingesting') && !newStatus.includes('in progress')) {
-                setPipelineProgress(null);
-                router.refresh();
-            }
+            setLiveContract((prev: any) => (prev ? { ...prev, ...data } : data));
+            return data;
         } catch (err) {
-            console.error('Polling fallback error:', err);
+            console.error('Contract refresh error:', err);
+            return null;
         }
-    }, [liveContract?.id, router]);
+    }, [liveContract?.id]);
+
+    const pollContractStatus = useCallback(async () => {
+        const data = await fetchLatestContract();
+        if (!data) return;
+
+        const newStatus = (data.status || '').toLowerCase();
+        if (newStatus === 'failed') {
+            const dr = data.draft_revisions;
+            const errorLogId = dr?.error_log_id || null;
+            const errorSummary = dr?.error_summary || 'An unknown error occurred during AI analysis.';
+            setTaskError({ error_summary: errorSummary, error_log_id: errorLogId });
+            setPipelineProgress(null);
+            toast.error('AI Analysis Failed. See the error panel for details.', {
+                style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' }
+            });
+            return;
+        }
+
+        if (newStatus.startsWith('retrying')) {
+            toast.loading(`Retrying analysis... (${data.status})`, {
+                id: 'retry-toast',
+                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+            });
+            return;
+        }
+
+        if (!newStatus.includes('processing') && !newStatus.includes('ingesting') && !newStatus.includes('in progress')) {
+            setPipelineProgress(null);
+            router.refresh();
+        }
+    }, [fetchLatestContract, router]);
+
+    const viewerFileUrl = liveContract?.file_url || fileUrl || '';
+
+    useEffect(() => {
+        if (!liveContract?.id || viewerFileUrl) {
+            return;
+        }
+        if (missingFileUrlFetchRef.current === liveContract.id) {
+            return;
+        }
+
+        missingFileUrlFetchRef.current = liveContract.id;
+        void fetchLatestContract();
+    }, [fetchLatestContract, liveContract?.id, viewerFileUrl]);
 
     const liveStatus = (liveContract?.status || '').toLowerCase();
     const isRealtimeTracked = ['processing', 'ingesting', 'in progress', 'signing in progress', 'partially signed'].some(
@@ -490,7 +514,7 @@ export default function ContractDetailClient({
     const fetchErrorLogDetail = useCallback(async (logId: string) => {
         try {
             const token = await getToken();
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            const apiUrl = getPublicApiBase();
             const res = await fetch(`${apiUrl}/api/task-logs/${logId}`, {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
@@ -855,7 +879,7 @@ export default function ContractDetailClient({
                         </div>
                     ) : (
                         <PDFViewerWrapper
-                            fileUrl={pdfUrl}
+                            fileUrl={viewerFileUrl}
                             contractId={liveContract.id}
                             scrollToId={scrollToId}
                             notes={notes}

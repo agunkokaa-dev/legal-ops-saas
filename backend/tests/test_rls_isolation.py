@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEPENDENCIES_PATH = ROOT / "backend" / "app" / "dependencies.py"
 MIGRATION_PATH = ROOT / "backend" / "migrations" / "015_harden_clerk_rls.sql"
+ZERO_TRUST_MIGRATION_PATH = ROOT / "backend" / "migrations" / "016_zero_trust_rls_lockdown.sql"
 
 
 @dataclass
@@ -212,6 +213,17 @@ class RLSIsolationTests(unittest.TestCase):
         self.assertIn("force row level security", sql.lower())
         self.assertIn("sub_tasks_tenant_isolation", sql)
         self.assertIn("company_playbooks_select", sql)
+
+    def test_zero_trust_migration_locks_rls_to_org_id_and_storage_paths(self):
+        sql = ZERO_TRUST_MIGRATION_PATH.read_text()
+
+        self.assertIn("create or replace function app.current_org_id()", sql)
+        self.assertIn("tenant_id = (auth.jwt()->>'org_id')::text", sql)
+        self.assertNotIn("auth.jwt()->>'sub'", sql)
+        self.assertIn("force row level security", sql.lower())
+        self.assertIn("zero_trust_task_template_items", sql)
+        self.assertIn("zero_trust_sub_tasks", sql)
+        self.assertIn("storage.foldername(name)", sql)
 
     @unittest.skipUnless(
         os.getenv("PARIANA_PG_DSN"),

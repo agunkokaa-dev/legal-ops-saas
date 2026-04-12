@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { getPublicApiBase } from "@/lib/public-api-base";
 
 // =====================================================================
 // TYPES
@@ -72,7 +73,7 @@ export default function ArchivedContracts() {
             setError(null);
             try {
                 const token = await getToken();
-                const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+                const apiUrl = getPublicApiBase();
                 const res = await fetch(
                     `${apiUrl}/api/contracts?tab=${encodeURIComponent(activeTab)}`,
                     {
@@ -117,9 +118,9 @@ export default function ArchivedContracts() {
         setIsArchiving(true);
         try {
             const token = await getToken();
-            const apiUrl = process.env.NEXT_PUBLIC_API_URL || "";
+            const apiUrl = getPublicApiBase();
             const res = await fetch(
-                `${apiUrl}/api/contracts/${selectedContractId}/archive`,
+                `${apiUrl}/api/${selectedContractId}/archive`,
                 {
                     method: "PATCH",
                     headers: {

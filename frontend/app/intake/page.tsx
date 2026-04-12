@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { getPublicApiBase } from "@/lib/public-api-base";
 
 export default function IntakePortal() {
   const { getToken, isLoaded, orgId, userId } = useAuth();
@@ -21,7 +22,7 @@ export default function IntakePortal() {
     try {
       const token = await getToken();
       if (!token) return;
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const apiUrl = getPublicApiBase();
       const res = await fetch(`${apiUrl}/api/v1/intake/requests`, {
         headers: { 
           "Authorization": `Bearer ${token}`,
@@ -42,8 +43,8 @@ export default function IntakePortal() {
     try {
       const token = await getToken();
       if (!token) return;
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-      const res = await fetch(`${apiUrl}/api/matters`, {
+      const apiUrl = getPublicApiBase();
+      const res = await fetch(`${apiUrl}/api/v1/matters`, {
         headers: { 
           "Authorization": `Bearer ${token}`,
           "X-Tenant-Id": orgId || userId || ""
@@ -81,7 +82,7 @@ export default function IntakePortal() {
         matter_id: selectedMatterId || null
       };
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const apiUrl = getPublicApiBase();
       const response = await fetch(`${apiUrl}/api/v1/intake/request`, {
         method: "POST",
         headers: {

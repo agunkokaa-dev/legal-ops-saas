@@ -5,6 +5,8 @@ import { supabaseClient } from '@/lib/supabase'
 import { useAuth } from '@clerk/nextjs'
 import { Sparkles, Plus, Loader2, CheckCircle2, Circle, AlertCircle, FileSearch, AlertTriangle } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { getPublicApiBase } from '@/lib/public-api-base'
+import { toast } from 'sonner'
 
 interface Obligation {
     id: string
@@ -78,7 +80,7 @@ export default function ObligationsTab({ contractId }: { contractId: string }) {
 
             if (!userId) throw new Error("Not authenticated with Clerk")
 
-            const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+            const backendUrl = getPublicApiBase()
             const response = await fetch(`${backendUrl}/api/obligations/extract`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -97,7 +99,7 @@ export default function ObligationsTab({ contractId }: { contractId: string }) {
             await fetchObligations()
         } catch (err: any) {
             console.error("Extraction error:", err)
-            alert(`Failed to auto-extract obligations: ${err.message}`)
+            toast.error(`Failed to auto-extract obligations: ${err.message}`)
         } finally {
             setIsExtracting(false)
         }

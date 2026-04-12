@@ -4,10 +4,12 @@ import { auth } from '@clerk/nextjs/server'
 import { createClient } from '@supabase/supabase-js'
 import { revalidatePath } from 'next/cache'
 import { triggerSmartIngestion } from '@/app/actions/backend'
+import { getServerApiBase } from '@/lib/server-api-base'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY!
 const supabaseAdmin = createClient(supabaseUrl, supabaseKey)
+const INTERNAL_API_URL = getServerApiBase()
 
 // 1. Upload Document
 // Single Writer: the backend (FastAPI) is the sole writer for contract rows and Storage.
@@ -171,21 +173,26 @@ export async function getGraphData(matterId: string) {
 
 // 6. Get Contract By ID
 export async function getContractById(contractId: string) {
-    const { userId, orgId } = await auth()
+    const { userId, getToken } = await auth()
     if (!userId) return { error: "Unauthorized" }
 
-    const tenantId = orgId || userId
-
     try {
-        const { data, error } = await supabaseAdmin
-            .from('contracts')
-            .select('*')
-            .eq('id', contractId)
-            .eq('tenant_id', tenantId)
-            .single()
+        const token = await getToken()
+        const response = await fetch(`${INTERNAL_API_URL}/api/contracts/${contractId}`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            },
+            cache: 'no-store'
+        })
 
-        if (error) throw error
-        return { data }
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}))
+            throw new Error(errorData.detail || `HTTP ${response.status}`)
+        }
+
+        const payload = await response.json()
+        return { data: payload?.data || null }
     } catch (e: any) {
         return { error: e.message || "Failed to fetch contract." }
     }

@@ -1,10 +1,19 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { Suspense, useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
+import { getPublicApiBase } from "@/lib/public-api-base";
 
 export default function DraftingGatekeeper() {
+  return (
+    <Suspense fallback={<div>Loading workspace...</div>}>
+      <DraftingGatekeeperContent />
+    </Suspense>
+  );
+}
+
+function DraftingGatekeeperContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { getToken, isLoaded, orgId, userId } = useAuth();
@@ -20,7 +29,7 @@ export default function DraftingGatekeeper() {
       const resolveMatter = async () => {
         try {
           const token = await getToken();
-          const apiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000").replace(/\/$/, "");
+          const apiUrl = getPublicApiBase();
           const res = await fetch(`${apiUrl}/api/v1/review/${contractId}`, {
             headers: { Authorization: `Bearer ${token}` }
           });
@@ -50,8 +59,8 @@ export default function DraftingGatekeeper() {
         const token = await getToken();
         if (!token) return;
 
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-        const res = await fetch(`${apiUrl}/api/matters`, {
+        const apiUrl = getPublicApiBase();
+        const res = await fetch(`${apiUrl}/api/v1/matters`, {
           headers: {
             "Authorization": `Bearer ${token}`,
             "X-Tenant-Id": orgId || userId || ""
@@ -77,11 +86,11 @@ export default function DraftingGatekeeper() {
 
     try {
       const token = await getToken();
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const apiUrl = getPublicApiBase();
 
       // Step 1: Create new matter if requested
       if (selectedMatterId === "NEW_MATTER") {
-        const matterRes = await fetch(`${apiUrl}/api/matters`, {
+        const matterRes = await fetch(`${apiUrl}/api/v1/matters`, {
           method: "POST",
           headers: {
             "Authorization": `Bearer ${token}`,

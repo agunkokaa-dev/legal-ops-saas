@@ -12,6 +12,7 @@ import FindingCard from './FindingCard'
 import Link from 'next/link'
 import { createTask } from '@/app/actions/taskActions'
 import { useContractSSE } from '@/hooks/useContractSSE'
+import { getPublicApiBase } from '@/lib/public-api-base'
 
 // ── Types ──
 interface TextCoordinate {
@@ -99,7 +100,7 @@ export default function ContractReviewClient({
             setError(null)
             setLoadingPhase('checking')
             const token = await getToken()
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+            const apiUrl = getPublicApiBase()
 
             if (!forceRefresh) {
                 try {
@@ -248,7 +249,7 @@ export default function ContractReviewClient({
         if (!finding.suggested_revision) return
         try {
             const token = await getToken()
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+            const apiUrl = getPublicApiBase()
 
             const res = await fetch(`${apiUrl}/api/v1/review/${contractId}/accept`, {
                 method: 'POST',

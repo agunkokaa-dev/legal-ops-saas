@@ -37,15 +37,19 @@ app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS else ["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "Retry-After"],
 )
 
 # --- Register Routers ---
 # Each router file owns its own set of endpoints and dependencies.
-app.include_router(matters.router,    prefix="/api",           tags=["Matters"])
+# Matters now live under /api/v1; keep /api as a backward-compatible alias.
+app.include_router(matters.router,    prefix="/api/v1",        tags=["Matters"])
+app.include_router(matters.router,    prefix="/api",           include_in_schema=False)
+app.include_router(contracts.router,  prefix="/api/v1",        tags=["Contracts"])
 app.include_router(contracts.router,  prefix="/api",           tags=["Contracts"])
 app.include_router(chat.router,       prefix="/api",           tags=["Chat & RAG"])
 app.include_router(playbook.router,   prefix="/api/playbook",  tags=["Playbook"])

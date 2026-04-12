@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { Plus, Trash, Save, ArrowLeft } from 'lucide-react';
 import Link from 'next/link';
 import { useAuth } from '@clerk/nextjs';
+import { getPublicApiBase } from '@/lib/public-api-base';
 
 export default function TemplateBuilder() {
     const { orgId, userId, getToken } = useAuth();
@@ -63,8 +64,7 @@ export default function TemplateBuilder() {
         try {
             // Adjust the URL/Port to match your FastAPI backend
             // Default 127.0.0.1:8000
-            const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-            const apiUrl = backendUrl.replace(/\/$/, "");
+            const apiUrl = getPublicApiBase();
             const token = await getToken();
             const response = await fetch(`${apiUrl}/api/v1/templates?tenant_id=${tenantId}`, {
                 method: 'POST',

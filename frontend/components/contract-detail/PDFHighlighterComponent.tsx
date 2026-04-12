@@ -11,6 +11,7 @@ import {
 import 'react-pdf-highlighter/dist/style.css'
 import { getNotesByContract, createNote } from '@/app/actions/noteActions'
 import { useRouter } from 'next/navigation'
+import { resolveMatterFileUrl } from '@/lib/matter-file-url'
 // 1. Stable reference to prevent crash
 const EMPTY_HIGHLIGHTS: any[] = [];
 // 2. Worker version MUST match the installed pdfjs-dist (4.4.168) used by react-pdf-highlighter
@@ -31,23 +32,10 @@ export default function PDFHighlighterComponent({ fileUrl, contractId, scrollToI
     const [isMounted, setIsMounted] = useState(false)
     const [highlights, setHighlights] = useState<any[]>([])
     const [isSaving, setIsSaving] = useState(false)
-    const [pdfUrl, setPdfUrl] = useState<string>('')
 
     // Zoom State
     const [scale, setScale] = useState(1.0)
     const [totalPages, setTotalPages] = useState<number>(0)
-
-    // Resolve Supabase Storage URL if needed, or use directly if it's already an absolute URL
-    useEffect(() => {
-        if (!fileUrl) return;
-
-        let url = fileUrl;
-        if (!url.startsWith('http') && !url.startsWith('/') && !url.startsWith('blob:')) {
-            const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-            url = `${supabaseUrl}/storage/v1/object/public/matter-files/${fileUrl}`
-        }
-        setPdfUrl(url)
-    }, [fileUrl])
 
     const parsedHighlights = useMemo(() => {
         if (!notes || !Array.isArray(notes) || notes.length === 0) {
@@ -144,15 +132,20 @@ export default function PDFHighlighterComponent({ fileUrl, contractId, scrollToI
         }
     }, [scrollToId, allHighlights])
 
-    const safeUrl = pdfUrl || fileUrl || "https://raw.githubusercontent.com/mozilla/pdf.js/ba2edeae/web/compressed.tracemonkey-pldi-09.pdf";
+    const safeUrl = resolveMatterFileUrl(fileUrl);
 
     // DO NOT RENDER ANYTHING until mounted to prevent Strict Mode DOM ref crashes
     if (!isMounted) {
         return <div className="h-full w-full flex items-center justify-center bg-[#1e1e24] text-white">Initializing Workspace...</div>;
     }
 
-    console.log("🔥 PARSED HIGHLIGHTS FOR RENDER:", parsedHighlights);
-    console.log("📄 PDF URL trying to load:", safeUrl);
+    if (!safeUrl) {
+        return (
+            <div className="h-full w-full flex items-center justify-center bg-[#1e1e24] text-white px-6 text-center">
+                Document file URL is unavailable. Re-upload the file or verify the stored Supabase path.
+            </div>
+        );
+    }
 
     return (
         <div className="relative flex flex-col w-full h-[80vh] min-h-[600px] bg-[#121212] rounded-xl border border-neutral-800 overflow-hidden">

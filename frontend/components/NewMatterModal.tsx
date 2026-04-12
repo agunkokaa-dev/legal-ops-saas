@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { runComplianceShield, createNewMatter } from '@/app/actions/matterActions'
 import { deleteMatter } from '@/app/actions/matterActions'
+import { toast } from 'sonner'
 
 export default function NewMatterModal() {
     const [isOpen, setIsOpen] = useState(false)
@@ -58,7 +59,7 @@ export default function NewMatterModal() {
             setShieldStatus('idle')
             setConflicts([])
         } else {
-            alert("Failed to save matter: " + res.error)
+            toast.error("Failed to save matter: " + res.error)
         }
         setIsSubmitting(false)
     }

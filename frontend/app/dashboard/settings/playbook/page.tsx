@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { useUser, useAuth } from '@clerk/nextjs'
 import { supabaseClient } from '@/lib/supabase'
 import { Plus, Loader2, BookOpen, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { getPublicApiBase } from '@/lib/public-api-base'
 
 export default function CompanyPlaybookPage() {
     const { user, isLoaded: isUserLoaded } = useUser()
@@ -105,7 +106,7 @@ export default function CompanyPlaybookPage() {
             setRiskSeverity('Medium Risk')
 
             // 2. Send to Backend Vectorizer
-            const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+            const backendUrl = getPublicApiBase()
             const vectorRes = await fetch(`${backendUrl}/api/playbook/vectorize`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },

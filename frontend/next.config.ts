@@ -2,8 +2,8 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: false,
-  // Add the VPS IP to allowed origins so Next.js doesn't block _next/ static files and Clerk scripts
-  allowedDevOrigins: ["173.212.240.143", "localhost"],
+  // Keep dev origins domain-based so production no longer depends on the retired VPS IP.
+  allowedDevOrigins: ["localhost", "127.0.0.1", "clause.id", "www.clause.id"],
 };
 
 export default nextConfig;

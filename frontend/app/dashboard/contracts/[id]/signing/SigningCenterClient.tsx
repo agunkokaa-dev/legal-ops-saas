@@ -14,6 +14,7 @@ import {
 } from '@/app/actions/signingActions'
 import { useContractSSE } from '@/hooks/useContractSSE'
 import { SSEStatusBadge } from '@/components/status/SSEStatusBadge'
+import { getPublicApiBase } from '@/lib/public-api-base'
 
 // ── Types ──────────────────────────────────────────────────────
 
@@ -354,7 +355,7 @@ export default function SigningCenterClient({
             toast.error('Authentication required to download the signed PDF')
             return
         }
-        const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+        const apiUrl = getPublicApiBase()
         window.open(`${apiUrl}/api/v1/signing/${contractId}/download?token=${encodeURIComponent(token)}`, '_blank')
     }
 

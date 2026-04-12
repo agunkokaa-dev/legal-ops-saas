@@ -11,9 +11,38 @@ from openai import OpenAI
 
 load_dotenv(override=False)
 
+ENVIRONMENT = (os.getenv("ENVIRONMENT") or "development").strip().lower() or "development"
+
+
+def _default_public_app_url() -> str:
+    return "https://clause.id" if ENVIRONMENT == "production" else "http://localhost:3000"
+
+
+PUBLIC_APP_URL = (os.getenv("PUBLIC_APP_URL") or _default_public_app_url()).strip().rstrip("/")
+SIGNING_WEBHOOK_BASE_URL = (
+    os.getenv("SIGNING_WEBHOOK_BASE_URL")
+    or f"{PUBLIC_APP_URL}/api/v1/signing/webhook"
+).strip().rstrip("/")
+
+
+def _build_allowed_origins() -> list[str]:
+    configured_origins = os.getenv("ALLOWED_ORIGINS", "").strip()
+    if configured_origins:
+        return [origin.strip().rstrip("/") for origin in configured_origins.split(",") if origin.strip()]
+
+    origins = ["https://clause.id", "https://www.clause.id"]
+    if ENVIRONMENT != "production":
+        origins.extend([
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:3001",
+        ])
+    return origins
+
+
 # --- CORS ---
-raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001,http://127.0.0.1:3000,http://173.212.240.143:3000,http://173.212.240.143:3001,http://173.212.240.143")
-ALLOWED_ORIGINS = [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
+ALLOWED_ORIGINS = _build_allowed_origins()
 
 # --- Auth ---
 import re as _re

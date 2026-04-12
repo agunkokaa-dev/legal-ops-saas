@@ -2,13 +2,12 @@ import { auth } from '@clerk/nextjs/server'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 import { getMatterById, getMatterTasks } from '@/app/actions/matterActions'
-import { getGraphData } from '@/app/actions/documentActions'
 import MatterDetailHeader from '@/components/matter-detail/MatterDetailHeader'
 import MatterTabs from '@/components/matter-detail/MatterTabs'
 import OverviewTab from '@/components/matter-detail/OverviewTab'
 import DocumentsTab from '@/components/matter-detail/DocumentsTab'
 import ObligationMaster from '@/components/genealogy/ObligationMaster'
-import GenealogyGraph from '@/components/genealogy/GenealogyGraph'
+import MatterGenealogyPanel from '@/components/genealogy/MatterGenealogyPanel'
 
 export const dynamic = 'force-dynamic'
 
@@ -46,15 +45,6 @@ export default async function MatterDetailPage(props: { params: Promise<{ id: st
     const { data: tasks, error: tasksError } = await getMatterTasks(matterId);
     const matterTasks = tasks || [];
 
-    // Fetch Genealogy Graph Data if on that tab
-    let graphDocs: any[] = [];
-    let graphRels: any[] = [];
-    if (currentTab === 'genealogy') {
-        const { documents, relationships } = await getGraphData(matterId);
-        graphDocs = documents || [];
-        graphRels = relationships || [];
-    }
-
     // 3. Render Master Layout skeleton
     return (
         <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#0a0a0a] text-gray-300 font-sans min-h-screen">
@@ -74,7 +64,7 @@ export default async function MatterDetailPage(props: { params: Promise<{ id: st
                     <div className="flex flex-col lg:flex-row gap-6 mt-2 items-stretch min-h-[650px] lg:h-[750px] mb-10">
                         {/* Left: Interactive Visual Graph */}
                         <div className="w-full lg:w-[60%] h-full">
-                            <GenealogyGraph documents={graphDocs} relationships={graphRels} />
+                            <MatterGenealogyPanel matterId={matter.id} />
                         </div>
 
                         {/* Right: Obligations Panel */}

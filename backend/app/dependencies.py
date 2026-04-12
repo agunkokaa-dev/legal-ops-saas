@@ -31,13 +31,31 @@ auth_logger = logging.getLogger("pariana.auth")
 logging.basicConfig(level=logging.INFO)
 
 
+def _normalized_claim_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
 def _extract_tenant_id(claims: dict[str, Any]) -> str | None:
-    org_fallback = claims.get("o") if isinstance(claims.get("o"), dict) else {}
+    # Mirror the SQL RLS resolver exactly:
+    # Clerk Production JWT structure places the org identifier in several
+    # possible locations depending on the JWT template version:
+    #   1. "tenant_id"  – custom claim injected by the Clerk JWT template
+    #   2. "o" -> "id"  – nested organization object (Clerk v2 default)
+    #   3. "org_id"     – legacy top-level claim (Clerk v1 / dev instances)
+    #   4. "sub"        – personal workspace fallback (user_xxx)
+    org_from_nested = None
+    o_claim = claims.get("o")
+    if isinstance(o_claim, dict):
+        org_from_nested = _normalized_claim_text(o_claim.get("id"))
+
     return (
-        claims.get("tenant_id")
-        or claims.get("org_id")
-        or org_fallback.get("id")
-        or claims.get("sub")
+        _normalized_claim_text(claims.get("tenant_id"))
+        or org_from_nested
+        or _normalized_claim_text(claims.get("org_id"))
+        or _normalized_claim_text(claims.get("sub"))
     )
 
 

@@ -2,6 +2,7 @@
 
 import { useAuth } from '@clerk/nextjs'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { getPublicApiBase } from '@/lib/public-api-base'
 
 export interface TenantSSEEvent {
     event_id: string
@@ -31,7 +32,7 @@ const TENANT_EVENT_TYPES = [
 ] as const
 
 function getApiUrl() {
-    return (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+    return getPublicApiBase()
 }
 
 export function useTenantSSE({

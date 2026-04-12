@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from pydantic import BaseModel, Field
 from supabase import Client
 
-from app.config import CLERK_PEM_KEY, admin_supabase
+from app.config import CLERK_PEM_KEY, SIGNING_WEBHOOK_BASE_URL, admin_supabase
 from app.dependencies import _create_rls_supabase_client, _extract_tenant_id, get_tenant_supabase, verify_clerk_token
 from app.event_bus import SSEEvent, event_bus
 from app.rate_limiter import limiter
@@ -27,10 +27,6 @@ logger = logging.getLogger("pariana.signing")
 router = APIRouter()
 
 EMETERAI_THRESHOLD_IDR = 5_000_000
-SIGNING_WEBHOOK_BASE_URL = os.getenv(
-    "SIGNING_WEBHOOK_BASE_URL",
-    "http://localhost:8000/api/v1/signing/webhook",
-)
 
 RESOLVED_NEGOTIATION_STATUSES = {"accepted", "rejected", "countered", "resolved", "dismissed"}
 ACTIVE_SIGNING_SESSION_STATUSES = {"pending_signatures", "partially_signed"}
@@ -285,10 +281,13 @@ async def _generate_final_pdf(
 def _store_pdf_to_storage(
     storage_path: str,
     pdf_bytes: bytes,
+    supabase_client: Optional[Client] = None,
 ) -> Optional[str]:
+    if supabase_client is None:
+        # AUDITED: Only background/webhook flows should fall back to service-role storage access.
+        supabase_client = admin_supabase
     try:
-        # AUDITED: Requires service-role for storage upload in provider/background flows.
-        admin_supabase.storage.from_("matter-files").upload(
+        supabase_client.storage.from_("matter-files").upload(
             path=storage_path,
             file=pdf_bytes,
             file_options={"content-type": "application/pdf"},
@@ -781,6 +780,7 @@ async def initiate_signing(
         storage_path = _store_pdf_to_storage(
             f"signing-documents/{tenant_id}/{contract_id}/{storage_filename}",
             pdf_bytes,
+            supabase,
         )
 
         provider_name = os.getenv("SIGNING_PROVIDER", "mock")
@@ -1366,8 +1366,7 @@ async def download_signed_document(
     session = session_res.data[0]
     if session.get("signed_document_path"):
         try:
-            # AUDITED: Requires service-role for storage download in signed-document retrieval.
-            file_bytes = admin_supabase.storage.from_("matter-files").download(session["signed_document_path"])
+            file_bytes = supabase.storage.from_("matter-files").download(session["signed_document_path"])
             filename = f"signed_{session.get('document_filename') or 'contract.pdf'}"
             return Response(
                 content=file_bytes,

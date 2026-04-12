@@ -1,6 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
+import { resolveMatterFileUrl } from '@/lib/matter-file-url';
 
 const PDFHighlighterComponent = dynamic(
     () => import('./PDFHighlighterComponent'),
@@ -11,5 +12,7 @@ const PDFHighlighterComponent = dynamic(
 );
 
 export default function PDFViewerWrapper(props: { fileUrl: string, contractId: string, scrollToId?: string | null, notes?: any[], draftVersion?: string | null }) {
-    return <PDFHighlighterComponent {...props} />;
+    const resolvedFileUrl = resolveMatterFileUrl(props.fileUrl);
+
+    return <PDFHighlighterComponent {...props} fileUrl={resolvedFileUrl} />;
 }

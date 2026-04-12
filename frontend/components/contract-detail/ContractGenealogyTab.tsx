@@ -3,6 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { useRouter } from 'next/navigation';
+import { getPublicApiBase } from '@/lib/public-api-base';
 
 interface ContractVersion {
     id: string;
@@ -27,7 +28,7 @@ export default function ContractGenealogyTab({ contractId }: { contractId: strin
         const fetchVersions = async () => {
             try {
                 const token = await getToken();
-                const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+                const apiUrl = getPublicApiBase();
                 
                 const res = await fetch(`${apiUrl}/api/v1/negotiation/${contractId}/versions`, {
                     headers: {

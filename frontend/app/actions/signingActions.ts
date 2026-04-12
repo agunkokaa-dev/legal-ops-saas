@@ -2,8 +2,11 @@
 
 import { auth } from '@clerk/nextjs/server'
 import { revalidatePath } from 'next/cache'
+import { getPublicApiBase } from '@/lib/public-api-base'
+import { getServerApiBase } from '@/lib/server-api-base'
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const SERVER_API_URL = getServerApiBase()
+const PUBLIC_API_URL = getPublicApiBase()
 
 async function getAuthHeaders() {
     const { getToken } = await auth()
@@ -19,7 +22,7 @@ async function getAuthHeaders() {
 export async function runPresignChecklist(contractId: string) {
     try {
         const headers = await getAuthHeaders()
-        const res = await fetch(`${API_URL}/api/v1/signing/${contractId}/checklist`, {
+        const res = await fetch(`${SERVER_API_URL}/api/v1/signing/${contractId}/checklist`, {
             method: 'POST',
             headers,
         })
@@ -60,7 +63,7 @@ export interface InitiateSigningPayload {
 export async function initiateSigning(contractId: string, payload: InitiateSigningPayload) {
     try {
         const headers = await getAuthHeaders()
-        const res = await fetch(`${API_URL}/api/v1/signing/${contractId}/initiate`, {
+        const res = await fetch(`${SERVER_API_URL}/api/v1/signing/${contractId}/initiate`, {
             method: 'POST',
             headers,
             body: JSON.stringify(payload),
@@ -80,7 +83,7 @@ export async function initiateSigning(contractId: string, payload: InitiateSigni
 export async function getSigningStatus(contractId: string) {
     try {
         const headers = await getAuthHeaders()
-        const res = await fetch(`${API_URL}/api/v1/signing/${contractId}/status`, {
+        const res = await fetch(`${SERVER_API_URL}/api/v1/signing/${contractId}/status`, {
             method: 'GET',
             headers,
             cache: 'no-store',
@@ -98,7 +101,7 @@ export async function getSigningStatus(contractId: string) {
 export async function cancelSigning(contractId: string, reason: string = '') {
     try {
         const headers = await getAuthHeaders()
-        const res = await fetch(`${API_URL}/api/v1/signing/${contractId}/cancel`, {
+        const res = await fetch(`${SERVER_API_URL}/api/v1/signing/${contractId}/cancel`, {
             method: 'POST',
             headers,
             body: JSON.stringify({ reason }),
@@ -118,7 +121,7 @@ export async function cancelSigning(contractId: string, reason: string = '') {
 export async function sendSignerReminder(contractId: string, signerId: string) {
     try {
         const headers = await getAuthHeaders()
-        const res = await fetch(`${API_URL}/api/v1/signing/${contractId}/remind/${signerId}`, {
+        const res = await fetch(`${SERVER_API_URL}/api/v1/signing/${contractId}/remind/${signerId}`, {
             method: 'POST',
             headers,
         })
@@ -135,7 +138,7 @@ export async function sendSignerReminder(contractId: string, signerId: string) {
 export async function finalizeContractForSigning(contractId: string) {
     try {
         const headers = await getAuthHeaders()
-        const res = await fetch(`${API_URL}/api/v1/negotiation/${contractId}/finalize-for-signing`, {
+        const res = await fetch(`${SERVER_API_URL}/api/v1/negotiation/${contractId}/finalize-for-signing`, {
             method: 'POST',
             headers,
         })
@@ -152,9 +155,8 @@ export async function finalizeContractForSigning(contractId: string) {
 // ── Get Signed Document Download URL ──
 
 export async function getSignedDocumentUrl(contractId: string): Promise<string> {
-    const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
     const { getToken } = await auth()
     const token = await getToken()
     // Returns the direct download endpoint — caller uses as <a href>
-    return `${API_URL}/api/v1/signing/${contractId}/download?token=${token}`
+    return `${PUBLIC_API_URL}/api/v1/signing/${contractId}/download?token=${token}`
 }

@@ -14,6 +14,7 @@
  */
 
 import { toast } from 'sonner'
+import { getPublicApiBase } from './public-api-base'
 
 type ApiFetchOptions = RequestInit & {
   /** Clerk JWT from useAuth().getToken() */
@@ -36,16 +37,20 @@ export class ApiError extends Error {
   }
 }
 
-const BASE_URL = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+const BASE_URL = getPublicApiBase()
 
 export async function apiFetch<T = any>(
   path: string,
   { token, baseUrl, silentRateLimit = false, ...init }: ApiFetchOptions
 ): Promise<T> {
-  const url = `${baseUrl ?? BASE_URL}${path}`
+  const normalizedBaseUrl = (baseUrl ?? BASE_URL).replace(/\/+$/, '')
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  const url = `${normalizedBaseUrl}${normalizedPath}`
 
   const headers = new Headers(init.headers)
-  headers.set('Content-Type', headers.get('Content-Type') ?? 'application/json')
+  if (!headers.has('Content-Type') && init.body != null && !(init.body instanceof FormData)) {
+    headers.set('Content-Type', 'application/json')
+  }
   if (token) {
     headers.set('Authorization', `Bearer ${token}`)
   }

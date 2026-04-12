@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '@clerk/nextjs'
 import Link from 'next/link'
+import { getPublicApiBase } from '@/lib/public-api-base'
 
 // Assuming ClauseResponse type matches the backend Pydantic model
 interface Clause {
@@ -28,7 +29,7 @@ export default function ClauseLibraryPanel({ onInsert }: { onInsert: (text: stri
         const fetchClauses = async () => {
             try {
                 const token = await getToken();
-                const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+                const apiUrl = getPublicApiBase();
                 const res = await fetch(`${apiUrl}/api/v1/clauses`, {
                     headers: {
                         Authorization: `Bearer ${token}`,
@@ -198,4 +199,3 @@ export default function ClauseLibraryPanel({ onInsert }: { onInsert: (text: stri
         </section>
     );
 }
-

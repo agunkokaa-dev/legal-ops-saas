@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { Document, Page, pdfjs } from 'react-pdf'
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css'
 import 'react-pdf/dist/esm/Page/TextLayer.css'
+import { resolveMatterFileUrl } from '@/lib/matter-file-url'
 
 // Strict worker version binding
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -23,20 +24,14 @@ export default function PDFViewerReactPdf({ fileUrl, contractId }: PDFViewerReac
 
     // Resolve Supabase Storage URL if needed
     useEffect(() => {
-        if (!fileUrl) return
-        let url = fileUrl
-        if (!url.startsWith('http') && !url.startsWith('/')) {
-            const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-            url = `${supabaseUrl}/storage/v1/object/public/matter-files/${fileUrl}`
-        }
-        setPdfUrl(url)
+        setPdfUrl(resolveMatterFileUrl(fileUrl))
     }, [fileUrl])
 
     function onDocumentLoadSuccess({ numPages }: { numPages: number }) {
         setNumPages(numPages)
     }
 
-    const safeUrl = pdfUrl || fileUrl
+    const safeUrl = pdfUrl || resolveMatterFileUrl(fileUrl)
 
     if (!safeUrl) {
         return <div className="h-full w-full flex items-center justify-center bg-[#0a0a0a] text-neutral-500 text-sm">No document URL provided.</div>

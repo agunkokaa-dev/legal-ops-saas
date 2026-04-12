@@ -32,6 +32,8 @@ import {
 import Link from "next/link";
 import { LuxuryThinkingStepper } from '@/components/ui/LuxuryThinkingStepper';
 import SmartComposer from "@/components/drafting/SmartComposer";
+import { getPublicApiBase } from "@/lib/public-api-base";
+import ConfirmDialog from "@/components/ui/ConfirmDialog";
 
 export default function TasksDashboardPage() {
     const [isTaskDetailOpen, setIsTaskDetailOpen] = useState(false);
@@ -85,11 +87,7 @@ export default function TasksDashboardPage() {
         }
     }, [isSopModalOpen]);
 
-    const handleDeleteTemplate = async (templateId: string, e: React.MouseEvent) => {
-        e.stopPropagation(); // VERY IMPORTANT: Prevent clicking the card and selecting the template
-
-        if (!confirm("Delete this SOP Template? This action cannot be undone.")) return;
-
+    const handleDeleteTemplate = async (templateId: string) => {
         try {
             const supabase = await getAuthenticatedSupabase();
             if (!supabase) return;
@@ -123,10 +121,10 @@ export default function TasksDashboardPage() {
 
         try {
             // Change this URL if your FastAPI is running on a different port/address
-            const API_URL = process.env.NEXT_PUBLIC_API_URL ? `${process.env.NEXT_PUBLIC_API_URL}/api/v1/ai/task-assistant` : 'http://173.212.240.143:8000/api/v1/ai/task-assistant';
+            const apiUrl = `${getPublicApiBase()}/api/v1/ai/task-assistant`;
             const token = await getToken();
 
-            const response = await fetch(API_URL, {
+            const response = await fetch(apiUrl, {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json',
@@ -371,9 +369,9 @@ export default function TasksDashboardPage() {
     const handleApplySOPTemplate = async (templateId: string, matterId: string) => {
         if (!tenantId) return;
         try {
-            const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+            const apiUrl = getPublicApiBase();
             const token = await getToken();
-            const response = await fetch(`${backendUrl}/api/v1/tasks/from-template?tenant_id=${tenantId}`, {
+            const response = await fetch(`${apiUrl}/api/v1/tasks/from-template?tenant_id=${tenantId}`, {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json',
@@ -396,7 +394,7 @@ export default function TasksDashboardPage() {
 
     const handleCreateBlankTask = (matterId: string) => {
         if (!matterId) {
-            alert("Please select a Matter for the New Task.");
+            toast.error("Please select a Matter for the New Task.");
             return;
         }
         setInlineDraftMatterId(matterId);
@@ -423,7 +421,7 @@ export default function TasksDashboardPage() {
             await fetchTasks();
         } catch (err) {
             console.error("Error creating blank task:", err);
-            alert("Failed to create blank task.");
+            toast.error("Failed to create blank task.");
         }
     };
 
@@ -440,7 +438,6 @@ export default function TasksDashboardPage() {
     // Delete a task
     const handleDeleteTask = async () => {
         if (!selectedTask) return;
-        if (!window.confirm('Delete this task permanently?')) return;
         const supabase = await getAuthenticatedSupabase();
         if (!supabase) return;
         await supabase.from('tasks').delete().eq('id', selectedTask.id);
@@ -488,7 +485,7 @@ export default function TasksDashboardPage() {
             // The useEffect for selectedTask will handle the refresh
         } catch (err) {
             console.error("Upload error:", err);
-            alert("Failed to upload file.");
+            toast.error("Failed to upload file.");
         }
     };
 
@@ -520,9 +517,9 @@ export default function TasksDashboardPage() {
         setIsAiTyping(true);
 
         try {
-            const backendUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+            const apiUrl = getPublicApiBase();
             const token = await getToken();
-            const res = await fetch(`${backendUrl}/api/v1/ai/task-assistant`, {
+            const res = await fetch(`${apiUrl}/api/v1/ai/task-assistant`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -1037,13 +1034,19 @@ export default function TasksDashboardPage() {
                                 {selectedTask?.id?.substring(0, 8).toUpperCase() || 'T-0000'}
                             </span>
                             <div className="flex items-center gap-2">
-                                <button
-                                    className="opacity-40 hover:text-red-500 hover:opacity-100 cursor-pointer transition-colors"
-                                    onClick={handleDeleteTask}
-                                    title="Delete task"
-                                >
-                                    <Trash2 className="w-4 h-4" />
-                                </button>
+                                <ConfirmDialog
+                                    title="Delete Task"
+                                    description="Delete this task permanently? This action cannot be undone."
+                                    onConfirm={handleDeleteTask}
+                                    trigger={
+                                        <button
+                                            className="opacity-40 hover:text-red-500 hover:opacity-100 cursor-pointer transition-colors"
+                                            title="Delete task"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    }
+                                />
                                 <button
                                     className="opacity-40 hover:opacity-100 cursor-pointer"
                                     onClick={() => setIsTaskDetailOpen(false)}
@@ -1488,13 +1491,19 @@ export default function TasksDashboardPage() {
                                                     <span className="text-[10px] font-bold tracking-wider uppercase px-2 py-1 bg-clause-gold/10 text-clause-gold rounded border border-clause-gold/20">Premium SOP</span>
                                                 </div>
 
-                                                <button
-                                                    onClick={(e) => handleDeleteTemplate(template.id, e)}
-                                                    className="text-gray-500 hover:text-red-400 hover:bg-red-400/10 p-1.5 rounded transition-colors"
+                                                <ConfirmDialog
                                                     title="Delete Template"
-                                                >
-                                                    <Trash2 size={16} />
-                                                </button>
+                                                    description="Delete this SOP Template? This action cannot be undone."
+                                                    onConfirm={() => handleDeleteTemplate(template.id)}
+                                                    trigger={
+                                                        <button
+                                                            className="text-gray-500 hover:text-red-400 hover:bg-red-400/10 p-1.5 rounded transition-colors"
+                                                            title="Delete Template"
+                                                        >
+                                                            <Trash2 size={16} />
+                                                        </button>
+                                                    }
+                                                />
                                             </div>
                                             <h3 className="text-lg font-bold text-white mb-2">{template.name}</h3>
                                             <p className="text-xs text-gray-400 leading-relaxed flex-grow">

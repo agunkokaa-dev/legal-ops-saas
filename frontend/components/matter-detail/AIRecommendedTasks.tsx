@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { toggleMatterTask } from '@/app/actions/matterActions'
+import { toast } from 'sonner'
 
 export default function AIRecommendedTasks({ matterId, initialTasks }: { matterId: string, initialTasks: any[] }) {
     const [tasks, setTasks] = useState(initialTasks || []);
@@ -19,7 +20,7 @@ export default function AIRecommendedTasks({ matterId, initialTasks }: { matterI
         if (!res.success) {
             // Revert on failure
             setTasks(initialTasks);
-            alert("Failed to update task: " + res.error);
+            toast.error("Failed to update task: " + res.error);
         }
     };
 

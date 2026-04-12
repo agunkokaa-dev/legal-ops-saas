@@ -9,6 +9,7 @@ import ReactMarkdown from 'react-markdown';
 import WordDiff from './WordDiff';
 import { useContractSSE } from '@/hooks/useContractSSE';
 import { SSEStatusBadge } from '@/components/status/SSEStatusBadge';
+import { getPublicApiBase } from '@/lib/public-api-base';
 
 interface DiffDeviation {
     deviation_id: string;
@@ -119,7 +120,7 @@ export default function WarRoomClient({
             setIsLoading(true);
             setRealtimeError(null);
             const token = await getToken();
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            const apiUrl = getPublicApiBase();
 
             // 1. Fetch versions
             setLoadingStage('Fetching version history...');
@@ -277,7 +278,7 @@ export default function WarRoomClient({
         setIsEscalating(true);
         try {
             const token = await getToken();
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            const apiUrl = getPublicApiBase();
 
             // Find the matching negotiation issue
             const issuesRes = await fetch(`${apiUrl}/api/v1/negotiation/${contractId}/issues`, {
@@ -372,7 +373,7 @@ export default function WarRoomClient({
         setIsStatusUpdating(true);
         try {
             const token = await getToken();
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            const apiUrl = getPublicApiBase();
 
             // Find the matching negotiation issue (we'll search by deviation title)
             const issuesRes = await fetch(`${apiUrl}/api/v1/negotiation/${contractId}/issues`, {
@@ -427,7 +428,7 @@ export default function WarRoomClient({
     const handleEditInComposer = async () => {
         try {
             const token = await getToken();
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            const apiUrl = getPublicApiBase();
 
             // 1. Check if V3 working draft already exists (derive from versions state)
             const existingV3 = versions?.length > 2 ? versions[versions.length - 1] : null;
@@ -508,7 +509,7 @@ export default function WarRoomClient({
         setIsFinalizing(true);
         try {
             const token = await getToken();
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            const apiUrl = getPublicApiBase();
             const res = await fetch(`${apiUrl}/api/v1/negotiation/${contractId}/finalize-for-signing`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${token}` },

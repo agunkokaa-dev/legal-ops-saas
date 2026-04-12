@@ -1,29 +1,38 @@
 'use client'
 
-import { useState } from 'react'
 import { deleteDocument } from '@/app/actions/documentActions'
+import ConfirmDialog from '../ui/ConfirmDialog'
+import { toast } from 'sonner'
 
 export default function DeleteDocButton({ documentId, fileUrl, matterId }: { documentId: string, fileUrl: string, matterId: string }) {
-    const [isDeleting, setIsDeleting] = useState(false)
-
+    
     const handleDelete = async () => {
-        if (!confirm('Are you sure you want to delete this document?')) return
-
-        setIsDeleting(true)
-        await deleteDocument(documentId, fileUrl, matterId)
-        setIsDeleting(false)
+        const res = await deleteDocument(documentId, fileUrl, matterId)
+        if (res?.error) {
+            toast.error(res.error)
+            throw new Error(res.error) // This throws to ConfirmDialog so it handles the loading state reset correctly natively
+        } else {
+            toast.success("Document deleted")
+        }
     }
 
     return (
-        <button
-            onClick={handleDelete}
-            disabled={isDeleting}
-            className="p-1 text-text-muted hover:text-red-500 transition-colors disabled:opacity-50"
+        <ConfirmDialog
             title="Delete Document"
-        >
-            <span className={`material-symbols-outlined text-[16px] ${isDeleting ? 'animate-spin' : ''}`}>
-                {isDeleting ? 'sync' : 'delete'}
-            </span>
-        </button>
+            description="Are you sure you want to permanently delete this document?"
+            confirmText="Delete"
+            variant="destructive"
+            onConfirm={handleDelete}
+            trigger={
+                <button
+                    className="p-1 text-text-muted hover:text-red-500 transition-colors disabled:opacity-50"
+                    title="Delete Document"
+                >
+                    <span className="material-symbols-outlined text-[16px]">
+                        delete
+                    </span>
+                </button>
+            }
+        />
     )
 }

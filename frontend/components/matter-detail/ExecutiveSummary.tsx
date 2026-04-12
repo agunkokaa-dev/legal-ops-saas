@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { updateMatterSummary } from '@/app/actions/matterActions'
+import { toast } from 'sonner'
 
 export default function ExecutiveSummary({ matterId, initialDescription }: { matterId: string, initialDescription: string }) {
     const [isEditing, setIsEditing] = useState(false);
@@ -14,7 +15,7 @@ export default function ExecutiveSummary({ matterId, initialDescription }: { mat
         if (res.success) {
             setIsEditing(false);
         } else {
-            alert("Failed to save summary: " + res.error);
+            toast.error("Failed to save summary: " + res.error);
         }
         setIsSaving(false);
     };

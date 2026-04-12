@@ -12,6 +12,7 @@ import ClauseAssistant from './ClauseAssistant'
 import ObligationsTab from './ObligationsTab'
 import ReactMarkdown from 'react-markdown'
 import Link from 'next/link'
+import ConfirmDialog from '../ui/ConfirmDialog'
 
 export default function IntelligenceSidebar({
     contract,
@@ -235,19 +236,22 @@ export default function IntelligenceSidebar({
                                                     </div>
                                                 )}
 
-                                                <button
-                                                    onClick={async (e) => {
-                                                        e.stopPropagation();
-                                                        if (confirm('Delete this note?')) {
-                                                            const res = await deleteNote(note.id);
-                                                            if (res.error) alert(res.error);
-                                                            else onNoteDeleted?.();
-                                                        }
+                                                <ConfirmDialog
+                                                    title="Delete Note"
+                                                    description="Delete this note? This action cannot be undone."
+                                                    onConfirm={async () => {
+                                                        const res = await deleteNote(note.id);
+                                                        if (res.error) toast.error(res.error);
+                                                        else onNoteDeleted?.();
                                                     }}
-                                                    className="absolute top-2 right-2 text-text-muted hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                                                >
-                                                    <span className="material-symbols-outlined text-[14px]">delete</span>
-                                                </button>
+                                                    variant="destructive"
+                                                    confirmText="Delete"
+                                                    trigger={
+                                                        <button className="absolute top-2 right-2 text-text-muted hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                            <span className="material-symbols-outlined text-[14px]">delete</span>
+                                                        </button>
+                                                    }
+                                                />
 
                                                 <div className="text-[11px] text-gray-300 leading-relaxed mb-2 px-2 border-l-2 border-[#d4af37]/50 pr-6 prose-invert prose-xs max-w-none prose-p:leading-relaxed prose-blockquote:border-l-lux-gold prose-blockquote:bg-white/5 prose-blockquote:py-1 prose-blockquote:px-3">
                                                     <ReactMarkdown>

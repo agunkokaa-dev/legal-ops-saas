@@ -2,8 +2,9 @@
 
 import { auth } from '@clerk/nextjs/server'
 import { revalidatePath } from 'next/cache'
+import { getServerApiBase } from '@/lib/server-api-base'
 
-const FASTAPI_URL = process.env.FASTAPI_URL || 'http://localhost:8000'
+const INTERNAL_API_URL = getServerApiBase()
 
 // 1. Chat Action
 export async function chatWithClause(question: string) {
@@ -17,7 +18,7 @@ export async function chatWithClause(question: string) {
     try {
         const token = await getToken()
         
-        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://173.212.240.143:8000'}/api/v1/ai/task-assistant`, {
+        const response = await fetch(`${INTERNAL_API_URL}/api/v1/ai/task-assistant`, {
             method: 'POST',
             headers: { 
                 'Content-Type': 'application/json',
@@ -75,8 +76,7 @@ export async function chatWithClauseRAG({
             throw new Error("Authentication failed: Could not retrieve Supabase JWT");
         }
         
-        const backendUrl = process.env.NEXT_PUBLIC_API_URL || process.env.FASTAPI_URL || 'http://173.212.240.143:8000';
-        const targetEndpoint = `${backendUrl}/api/chat/clause-assistant`;
+        const targetEndpoint = `${INTERNAL_API_URL}/api/chat/clause-assistant`;
         
         console.log(`📡 [SERVER ACTION] Sending RAG request to: ${targetEndpoint}`);
 
@@ -132,7 +132,7 @@ export async function uploadDocument(formData: FormData) {
         backendFormData.append('file', file)
         backendFormData.append('tenant_id', tenantId)
 
-        const response = await fetch(`${FASTAPI_URL}/api/upload`, {
+        const response = await fetch(`${INTERNAL_API_URL}/api/upload`, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${token}`
@@ -186,7 +186,7 @@ export async function triggerSmartIngestion(formData: FormData, matterId: string
         if (parentId) backendFormData.append('parent_id', parentId as string)
         if (relationshipType) backendFormData.append('relationship_type', relationshipType as string)
 
-        const response = await fetch(`${FASTAPI_URL}/api/upload`, {
+        const response = await fetch(`${INTERNAL_API_URL}/api/upload`, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${token}`
@@ -243,7 +243,7 @@ export async function confirmVersionLink(
             formData.append('action', payload.action)
             if (payload.matterId) formData.append('matter_id', payload.matterId)
 
-            response = await fetch(`${FASTAPI_URL}/api/upload/confirm-version`, {
+            response = await fetch(`${INTERNAL_API_URL}/api/upload/confirm-version`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${token}`,
@@ -251,7 +251,7 @@ export async function confirmVersionLink(
                 body: formData,
             })
         } else {
-            response = await fetch(`${FASTAPI_URL}/api/upload/confirm-version`, {
+            response = await fetch(`${INTERNAL_API_URL}/api/upload/confirm-version`, {
                 method: 'POST',
                 headers: {
                     'Authorization': `Bearer ${token}`,

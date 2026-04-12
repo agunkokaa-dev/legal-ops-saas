@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { useAuth, useSession } from "@clerk/nextjs";
-import { createClient } from "@supabase/supabase-js";
+import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
 import ArchivedContracts from "@/components/ArchivedContracts";
+import { getPublicApiBase } from "@/lib/public-api-base";
 import {
     Search,
     Upload,
@@ -123,9 +123,7 @@ function formatCurrency(value: number | null | undefined, currency: string | nul
 // MAIN PAGE COMPONENT
 // =====================================================================
 export default function DocumentsPage() {
-    const { userId, orgId } = useAuth();
-    const { session } = useSession();
-    const tenantId = orgId || userId;
+    const { userId, getToken } = useAuth();
 
     // State
     const [documents, setDocuments] = useState<Contract[]>([]);
@@ -139,65 +137,82 @@ export default function DocumentsPage() {
     const ITEMS_PER_PAGE = 15;
 
     // =====================================================================
-    // DATA FETCHING (WITH AGGRESSIVE CTO LOGGING)
+    // DATA FETCHING
     // =====================================================================
     useEffect(() => {
-        console.log("📋 [VAULT] useEffect triggered. tenantId:", tenantId, "| session:", !!session);
-        if (!tenantId || !session) {
-            console.warn("⚠️ [VAULT] SKIPPING FETCH — tenantId or session is falsy. tenantId:", tenantId, "session:", !!session);
+        if (!userId) {
+            setDocuments([]);
+            setIsLoading(false);
             return;
         }
+
+        if (activeTab !== "active") {
+            setIsLoading(false);
+            return;
+        }
+
+        let cancelled = false;
 
         const fetchDocuments = async () => {
             try {
                 setIsLoading(true);
-                console.log("1️⃣ [VAULT] Starting fetch... Tenant ID:", tenantId);
+                const token = await getToken();
+                const apiUrl = getPublicApiBase();
+                const response = await fetch(
+                    `${apiUrl}/api/contracts?tab=${encodeURIComponent(activeTab)}`,
+                    {
+                        method: "GET",
+                        headers: {
+                            "Content-Type": "application/json",
+                            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                        },
+                        cache: "no-store",
+                    }
+                );
 
-                const supabaseAccessToken = await session.getToken({ template: "supabase" });
-                console.log("2️⃣ [VAULT] Clerk Token Retrieved:", !!supabaseAccessToken, "| Token preview:", supabaseAccessToken?.substring(0, 30) + "...");
-
-                const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-                const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-                console.log("3️⃣ [VAULT] Supabase URL:", supabaseUrl, "| Anon Key exists:", !!supabaseAnonKey);
-
-                if (!supabaseUrl || !supabaseAnonKey) {
-                    console.error("🚨 [VAULT] CRITICAL: Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY!");
-                    setDocuments([]);
+                if (!response.ok) {
+                    let backendError = `HTTP ${response.status}`;
+                    try {
+                        const errorJson = await response.json();
+                        backendError = errorJson.detail || backendError;
+                    } catch {
+                        // Ignore JSON parse failures and surface the HTTP status.
+                    }
+                    console.error("[VAULT] Documents fetch failed:", backendError);
+                    if (!cancelled) {
+                        setDocuments([]);
+                    }
                     return;
                 }
 
-                const supabase = createClient(
-                    supabaseUrl,
-                    supabaseAnonKey,
-                    { global: { headers: { Authorization: `Bearer ${supabaseAccessToken}` } } }
-                );
-
-                // Using select('*') temporarily to rule out column mismatch errors
-                const { data, error } = await supabase
-                    .from("contracts")
-                    .select("*")
-                    .eq("tenant_id", tenantId)
-                    .neq("status", "ARCHIVED")
-                    .order("created_at", { ascending: false });
-
-                if (error) {
-                    console.error("4️⃣ [VAULT] ❌ Supabase Fetch Error:", JSON.stringify(error, null, 2));
-                    setDocuments([]);
-                } else {
-                    console.log("4️⃣ [VAULT] ✅ Supabase Data Retrieved! Count:", data?.length, "| First record:", data?.[0]);
-                    setDocuments(data || []);
+                const payload = await response.json();
+                const data = Array.isArray(payload)
+                    ? payload
+                    : Array.isArray(payload?.data)
+                        ? payload.data
+                        : [];
+                console.log("Contracts fetched:", data);
+                if (!cancelled) {
+                    setDocuments(data);
                 }
             } catch (err: any) {
-                console.error("🔥 [VAULT] Exception fetching documents:", err?.message || JSON.stringify(err, null, 2));
-                setDocuments([]);
+                console.error("[VAULT] Exception fetching documents:", err?.message || String(err));
+                if (!cancelled) {
+                    setDocuments([]);
+                }
             } finally {
-                setIsLoading(false);
-                console.log("5️⃣ [VAULT] Fetch complete. isLoading set to false.");
+                if (!cancelled) {
+                    setIsLoading(false);
+                }
             }
         };
 
         fetchDocuments();
-    }, [tenantId, session]);
+
+        return () => {
+            cancelled = true;
+        };
+    }, [activeTab, getToken, userId]);
 
     // =====================================================================
     // FILTERING & SEARCH (Client-Side)

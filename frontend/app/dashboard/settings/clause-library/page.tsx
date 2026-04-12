@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { Plus, BookOpenText, X, Save, ShieldAlert, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { getPublicApiBase } from '@/lib/public-api-base';
 
 interface Clause {
     id: string;
@@ -34,7 +35,7 @@ export default function ClauseLibrarySettings() {
         try {
             setIsLoading(true);
             const token = await getToken();
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            const apiUrl = getPublicApiBase();
             const res = await fetch(`${apiUrl}/api/v1/clauses`, {
                 headers: {
                     Authorization: `Bearer ${token}`
@@ -73,7 +74,7 @@ export default function ClauseLibrarySettings() {
         setIsSubmitting(true);
         try {
             const token = await getToken();
-            const apiUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/\/$/, '');
+            const apiUrl = getPublicApiBase();
             
             const res = await fetch(`${apiUrl}/api/v1/clauses`, {
                 method: 'POST',

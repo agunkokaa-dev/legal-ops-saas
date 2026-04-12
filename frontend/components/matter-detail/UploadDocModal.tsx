@@ -23,6 +23,7 @@ export default function UploadDocModal({ matterId, existingDocs = [] }: { matter
         setIsUploading(true)
 
         const formData = new FormData(e.currentTarget)
+        formData.append('matter_id', matterId)
         formData.append('document_category', category)
         if (parentId) {
             formData.append('parent_id', parentId)
@@ -120,7 +121,7 @@ export default function UploadDocModal({ matterId, existingDocs = [] }: { matter
                                                 })
                                                 if (res?.error) throw new Error(res.error)
                                                 resetModal()
-                                                const targetId = res?.data?.contract_id
+                                                const targetId = res && 'data' in res ? res.data?.contract_id : undefined
                                                 if (targetId) {
                                                     router.push(`/dashboard/contracts/${targetId}`)
                                                     router.refresh()
@@ -152,7 +153,7 @@ export default function UploadDocModal({ matterId, existingDocs = [] }: { matter
                                                 })
                                                 if (res?.error) throw new Error(res.error)
                                                 resetModal()
-                                                const targetId = res?.data?.contract_id
+                                                const targetId = res && 'data' in res ? res.data?.contract_id : undefined
                                                 if (targetId) {
                                                     router.push(`/dashboard/contracts/${targetId}`)
                                                     router.refresh()

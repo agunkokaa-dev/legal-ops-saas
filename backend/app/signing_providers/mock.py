@@ -13,11 +13,23 @@ Features:
 
 import uuid
 import json
+import os
 from datetime import datetime, timezone
 from app.signing_providers.base import (
     SigningProvider, SignerConfig, UploadResult, DocumentStatus,
     SignerStatus, EmeteraiResult, SignatureType
 )
+
+
+def _get_public_app_url() -> str:
+    explicit_url = (os.getenv("PUBLIC_APP_URL") or "").strip().rstrip("/")
+    if explicit_url:
+        return explicit_url
+    environment = (os.getenv("ENVIRONMENT") or "development").strip().lower()
+    return "https://clause.id" if environment == "production" else "http://localhost:3000"
+
+
+PUBLIC_APP_URL = _get_public_app_url()
 
 
 class MockSigningProvider(SigningProvider):
@@ -41,7 +53,7 @@ class MockSigningProvider(SigningProvider):
         doc_id = f"mock-{uuid.uuid4().hex[:12]}"
 
         signer_urls = {
-            s.email: f"http://localhost:3000/mock-sign/{doc_id}/{s.email}"
+            s.email: f"{PUBLIC_APP_URL}/mock-sign/{doc_id}/{s.email}"
             for s in signers
         }
         signer_ids = {
@@ -61,7 +73,7 @@ class MockSigningProvider(SigningProvider):
 
         return UploadResult(
             provider_document_id=doc_id,
-            provider_document_url=f"http://localhost:3000/mock-doc/{doc_id}",
+            provider_document_url=f"{PUBLIC_APP_URL}/mock-doc/{doc_id}",
             signer_urls=signer_urls,
             signer_ids=signer_ids,
             metadata={"mock": True, "doc_id": doc_id},
@@ -85,7 +97,7 @@ class MockSigningProvider(SigningProvider):
             provider_document_id=provider_document_id,
             status=doc.get("status", "unknown"),
             signers=signers,
-            signed_document_url=f"http://localhost:3000/mock-signed/{provider_document_id}.pdf"
+            signed_document_url=f"{PUBLIC_APP_URL}/mock-signed/{provider_document_id}.pdf"
                 if doc.get("status") == "completed" else None,
         )
 
@@ -108,7 +120,7 @@ class MockSigningProvider(SigningProvider):
             serial_number=serial,
             affixed_at=datetime.now(timezone.utc).isoformat(),
             page_number=page_number,
-            verification_url=f"http://localhost:3000/mock-emeterai/verify/{serial}",
+            verification_url=f"{PUBLIC_APP_URL}/mock-emeterai/verify/{serial}",
         )
 
     def parse_webhook(self, headers: dict, body: bytes) -> dict:

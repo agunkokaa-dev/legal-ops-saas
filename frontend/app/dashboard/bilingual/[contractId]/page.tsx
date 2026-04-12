@@ -2,12 +2,13 @@ import React from "react";
 import { auth } from "@clerk/nextjs/server";
 import { BilingualClause } from "@/types/bilingual";
 import BilingualEditorLayout from "@/components/bilingual/BilingualEditorLayout";
+import { getServerApiBase } from "@/lib/server-api-base";
 
 export default async function BilingualEditorPage({ params }: { params: Promise<{ contractId: string }> }) {
   const { contractId } = await params;
   const { getToken } = await auth();
   const token = await getToken();
-  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  const apiUrl = getServerApiBase();
   
   let initialClauses: BilingualClause[] = [];
   let fetchError = null;

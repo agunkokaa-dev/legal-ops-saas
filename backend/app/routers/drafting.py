@@ -110,7 +110,7 @@ async def audit_draft(
                 "draft_revisions": {"latest_text": payload.draft_text},
                 "status": "Review",
                 "version_count": 1,
-                "latest_version_id": version_id,
+                "latest_version_id": None,
             }).execute()
 
             if not insert_res.data:
@@ -136,6 +136,14 @@ async def audit_draft(
             }).execute()
         except Exception as e:
             print(f"🚨 SUPABASE INSERT ERROR (contract_versions table - drafting audit): {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+        try:
+            supabase.table("contracts").update({
+                "latest_version_id": version_id,
+            }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+        except Exception as e:
+            print(f"🚨 SUPABASE UPDATE ERROR (contracts.latest_version_id - drafting audit): {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
         # --- Step 2: Trigger LangGraph background pipeline ---

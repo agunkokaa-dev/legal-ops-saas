@@ -6,6 +6,7 @@ import { BilingualClause, ClauseSyncResponse } from "@/types/bilingual";
 import ClauseSyncIndicator from "./ClauseSyncIndicator";
 import BilingualFindingsPanel from "./BilingualFindingsPanel";
 import { toast } from "sonner";
+import { getPublicApiBase } from "@/lib/public-api-base";
 
 interface ConsistencyReport {
   findings: Array<{
@@ -79,7 +80,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
       const token = await getToken();
       if (!token) return;
 
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const apiUrl = getPublicApiBase();
       const payload = lang === 'id' ? { id_text: text } : { en_text: text };
 
       const res = await fetch(`${apiUrl}/api/v1/bilingual/${contractId}/clause/${clauseId}`, {
@@ -109,7 +110,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
 
     try {
       const token = await getToken();
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const apiUrl = getPublicApiBase();
       
       const sourceLanguage = clause.edited_language || 'id';
       const sourceText = sourceLanguage === 'id' ? clause.id_text : (clause.en_text || '');
@@ -168,7 +169,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
     // Persist changes
     try {
       const token = await getToken();
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const apiUrl = getPublicApiBase();
       const payload = targetLang === 'id' ? { id_text: suggestion.suggested_translation } : { en_text: suggestion.suggested_translation };
       
       // Send both text payload to automatically upgrade state to synced on backend:
@@ -208,7 +209,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
     setIsFinalizing(true);
     try {
       const token = await getToken();
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const apiUrl = getPublicApiBase();
       const res = await fetch(`${apiUrl}/api/v1/bilingual/${contractId}/finalize`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` }
@@ -233,7 +234,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
     setConsistencyReport(null);
     try {
       const token = await getToken();
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const apiUrl = getPublicApiBase();
       const res = await fetch(`${apiUrl}/api/v1/bilingual/${contractId}/validate-consistency`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` }
@@ -258,7 +259,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
     setIsExporting(true);
     try {
       const token = await getToken();
-      const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+      const apiUrl = getPublicApiBase();
       const res = await fetch(`${apiUrl}/api/v1/bilingual/${contractId}/export-pdf`, {
         method: "GET",
         headers: { "Authorization": `Bearer ${token}` }
@@ -363,7 +364,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
             onClick={async () => {
               try {
                 const token = await getToken();
-                const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+                const apiUrl = getPublicApiBase();
                 const clauseNumber = `${clauses.length + 1}.0`;
                 
                 const res = await fetch(`${apiUrl}/api/v1/bilingual/${contractId}/clauses`, {

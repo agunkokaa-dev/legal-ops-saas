@@ -157,6 +157,23 @@ def _extract_pending_file_metadata(version_row: dict) -> dict:
     }
 
 
+def _get_contract_file_metadata(
+    supabase_client: Client,
+    *,
+    contract_id: str,
+    tenant_id: str,
+) -> dict:
+    result = supabase_client.table("contracts") \
+        .select("file_url, file_type, file_size") \
+        .eq("id", contract_id) \
+        .eq("tenant_id", tenant_id) \
+        .limit(1) \
+        .execute()
+    if not result.data:
+        return {}
+    return result.data[0] or {}
+
+
 def _schedule_contract_processing(
     *,
     contract_id: str,
@@ -179,6 +196,79 @@ def _schedule_contract_processing(
     task.add_done_callback(functools.partial(handle_task_result, contract_id=contract_id, tenant_id=tenant_id))
 
 
+def _create_contract_with_linked_version(
+    supabase_client: Client,
+    *,
+    tenant_id: str,
+    matter_id: str | None = None,
+    contract_insert_data: dict,
+    version_id: str,
+    version_insert_data: dict | None = None,
+    version_update_data: dict | None = None,
+) -> None:
+    """
+    Avoid circular FK violations by always creating the contract first with
+    latest_version_id = NULL, then creating/linking the version row, then
+    updating the contract to point at that version.
+    """
+    if (version_insert_data is None) == (version_update_data is None):
+        raise ValueError("Provide exactly one of version_insert_data or version_update_data")
+    if not tenant_id:
+        raise ValueError("tenant_id is required for tenant-scoped contract writes")
+
+    contract_id = contract_insert_data["id"]
+    contract_payload = {
+        **contract_insert_data,
+        "tenant_id": tenant_id,
+        "matter_id": matter_id if matter_id is not None else contract_insert_data.get("matter_id"),
+        "latest_version_id": None,
+    }
+    print(f"DEBUG RLS: Trying to insert contract with tenant_id={tenant_id}")
+    print(f"DEBUG MATTER LINK: Trying to insert contract {contract_id} with matter_id={contract_payload.get('matter_id')}")
+    supabase_client.table("contracts").insert(contract_payload).execute()
+
+    if version_insert_data is not None:
+        version_payload = {
+            **version_insert_data,
+            "id": version_id,
+            "tenant_id": tenant_id,
+            "contract_id": contract_id,
+        }
+        supabase_client.table("contract_versions").insert(version_payload).execute()
+    else:
+        version_payload = {
+            **version_update_data,
+            "contract_id": contract_id,
+        }
+        supabase_client.table("contract_versions").update(version_payload) \
+            .eq("id", version_id) \
+            .eq("tenant_id", tenant_id) \
+            .execute()
+
+    supabase_client.table("contracts").update({
+        "latest_version_id": version_id,
+    }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+
+
+def _upload_to_storage(
+    supabase_client: Client,
+    *,
+    path: str,
+    file_bytes: bytes,
+    content_type: str,
+) -> str | None:
+    try:
+        supabase_client.storage.from_("matter-files").upload(
+            path=path,
+            file=file_bytes,
+            file_options={"content-type": content_type},
+        )
+        return path
+    except Exception as storage_err:
+        logger.error("🚨 [Storage] Upload FAILED for path=%s: %s: %s", path, type(storage_err).__name__, storage_err)
+        return None
+
+
 # =====================================================================
 # ENDPOINTS
 # =====================================================================
@@ -189,37 +279,37 @@ async def list_contracts(
     request: Request,
     tab: str = "Archived",
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_tenant_supabase)
 ):
     """
     GET /api/contracts?tab=Archived|active|Active Contracts|templates
     Returns contracts filtered by status category for the authenticated tenant.
     """
     tenant_id = claims["verified_tenant_id"]
-
-    # Map tab names to status filters
     tab_lower = tab.lower().strip()
-    if tab_lower in ("archived", "expired", "terminated"):
-        status_filters = ["EXPIRED", "TERMINATED", "ARCHIVED", "Superseded"]
-    elif tab_lower in ("active", "active contracts"):
-        status_filters = [
-            "ACTIVE", "DRAFT", "IN_REVIEW", "Active", "In Review",
-            "Reviewed", "Negotiating", "Pending Approval", "Ready to Sign",
-            "Signing in Progress", "Partially Signed", "Executed",
-        ]
-    elif tab_lower in ("templates", "templates & playbooks"):
-        status_filters = ["TEMPLATE"]
-    else:
-        status_filters = []
 
     try:
-        query = supabase.table("contracts").select("*").eq("tenant_id", tenant_id)
+        query = admin_supabase.table("contracts").select("*").eq("tenant_id", tenant_id)
 
-        if status_filters:
-            query = query.in_("status", status_filters)
+        if tab_lower in ("archived", "expired", "terminated"):
+            query = query.in_("status", ["EXPIRED", "TERMINATED", "ARCHIVED", "Superseded"])
+        elif tab_lower in ("active", "active contracts"):
+            # Use an exclusion-based filter so newly introduced in-flight statuses
+            # like "Processing" still appear in the primary documents view.
+            query = query \
+                .neq("status", "ARCHIVED") \
+                .neq("status", "EXPIRED") \
+                .neq("status", "TERMINATED") \
+                .neq("status", "Superseded") \
+                .neq("status", "TEMPLATE")
+        elif tab_lower in ("templates", "templates & playbooks"):
+            query = query.eq("status", "TEMPLATE")
         else:
             # Default: exclude ARCHIVED (and other terminal statuses) from global queries
-            query = query.neq("status", "ARCHIVED").neq("status", "EXPIRED").neq("status", "TERMINATED")
+            query = query \
+                .neq("status", "ARCHIVED") \
+                .neq("status", "EXPIRED") \
+                .neq("status", "TERMINATED") \
+                .neq("status", "Superseded")
 
         query = query.order("created_at", desc=True)
         result = query.execute()
@@ -227,6 +317,42 @@ async def list_contracts(
         return {"data": result.data or []}
     except Exception as e:
         print(f"[GET /contracts] Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/contracts/{contract_id}")
+@limiter.limit("60/minute")
+async def get_contract(
+    request: Request,
+    contract_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase)
+):
+    """
+    GET /api/contracts/{contract_id}
+    Returns a single contract for the authenticated tenant.
+    Related AI extraction tables are intentionally not joined here so a
+    partially processed contract can still load its detail page cleanly.
+    """
+    tenant_id = claims["verified_tenant_id"]
+
+    try:
+        result = supabase.table("contracts") \
+            .select("*") \
+            .eq("id", contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .limit(1) \
+            .execute()
+
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Contract not found")
+
+        return {"data": result.data[0]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[GET /contracts/{contract_id}] Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -358,11 +484,44 @@ async def process_contract_background(
             "is_truncated": is_truncated,
             "draft_revisions": draft_revisions_payload,
         }
+        # Never let the AI completion update clobber the storage path saved during upload.
+        update_payload.pop("file_url", None)
+        update_payload.pop("file_path", None)
+        dropped_none_keys = [key for key, value in update_payload.items() if value is None]
+        update_payload = {key: value for key, value in update_payload.items() if value is not None}
 
         print(f"[SUPABASE UPDATE] Updating contract_id: {contract_id} with pipeline results.")
+        print(f"[DEBUG] Update payload keys: {list(update_payload.keys())}")
+        print(f"[DEBUG] file_url in payload: {'file_url' in update_payload}")
+        if 'file_url' in update_payload:
+            print(f"[DEBUG] file_url value: {update_payload['file_url']}")
+        print(f"[DEBUG] file_path in payload: {'file_path' in update_payload}")
+        if dropped_none_keys:
+            print(f"[DEBUG] Dropped None-valued keys from update payload: {dropped_none_keys}")
         print(json.dumps(update_payload, indent=2, default=str))
         try:
+            existing_file_meta = _get_contract_file_metadata(
+                admin_supabase,
+                contract_id=contract_id,
+                tenant_id=tenant_id,
+            )
             res = admin_supabase.table("contracts").update(update_payload).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+            updated_contract = (res.data or [{}])[0]
+            existing_file_url = existing_file_meta.get("file_url")
+            if existing_file_url and not updated_contract.get("file_url"):
+                print(
+                    f"⚠️ [SUPABASE UPDATE] file_url unexpectedly missing after pipeline update for {contract_id}. "
+                    "Restoring previously saved storage path."
+                )
+                restore_payload = {
+                    "file_url": existing_file_url,
+                }
+                if existing_file_meta.get("file_type") is not None:
+                    restore_payload["file_type"] = existing_file_meta.get("file_type")
+                if existing_file_meta.get("file_size") is not None:
+                    restore_payload["file_size"] = existing_file_meta.get("file_size")
+                restore_res = admin_supabase.table("contracts").update(restore_payload).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+                print(f"[SUPABASE UPDATE] Restored file metadata: {restore_res.data}")
             print(f"[SUPABASE UPDATE] Success! Response: {res.data}")
         except Exception as e:
             print(f"!!! [SUPABASE UPDATE ERROR] {e}")
@@ -460,7 +619,7 @@ async def process_contract_background(
                 await async_qdrant_upsert(COLLECTION_NAME, batch)
                 
         # 7. Mark success
-        admin_supabase.table("contracts").update({"status": "Reviewed"}).eq("id", contract_id).execute()
+        # Status "Reviewed" is already set in the update_payload on line 476.
 
         findings_count = len(final_state.get("compliance_findings_v2", [])) + len(final_state.get("risk_flags_v2", []))
         await publish_contract_event(
@@ -608,6 +767,9 @@ async def upload_contract(
     supabase: Client = Depends(get_tenant_supabase)
 ):
     tenant_id = claims["verified_tenant_id"]
+    matter_id = matter_id.strip() if isinstance(matter_id, str) else matter_id
+    if matter_id == "":
+        matter_id = None
 
     if matter_id:
         matter_check = supabase.table("matters").select("tenant_id").eq("id", matter_id).execute()
@@ -639,16 +801,14 @@ async def upload_contract(
         file_content_type = file.content_type or "application/pdf"
         file_size = len(contents)
 
-        try:
-            admin_supabase.storage.from_("matter-files").upload(
-                path=file_path,
-                file=contents,
-                file_options={"content-type": file_content_type}
-            )
+        file_path = _upload_to_storage(
+            admin_supabase,
+            path=file_path,
+            file_bytes=contents,
+            content_type=file_content_type,
+        )
+        if file_path:
             print(f"✅ [Storage] Uploaded {file_path} ({file_size} bytes)")
-        except Exception as storage_err:
-            print(f"⚠️ [Storage] Upload failed (non-fatal): {storage_err}")
-            file_path = None
 
         if parent_contract_id:
             existing_contract = supabase.table("contracts") \
@@ -781,21 +941,24 @@ async def upload_contract(
             "document_category": document_category or "Uncategorized",
             "status": "Processing",
             "version_count": 1,
-            "latest_version_id": version_id,
         }
         if file_path:
             insert_data["file_url"] = file_path
-        supabase.table("contracts").insert(insert_data).execute()
 
-        supabase.table("contract_versions").insert({
-            "id": version_id,
+        _create_contract_with_linked_version(
+            supabase,
+            tenant_id=tenant_id,
+            matter_id=matter_id,
+            contract_insert_data=insert_data,
+            version_id=version_id,
+            version_insert_data={
             "tenant_id": tenant_id,
-            "contract_id": contract_id,
             "version_number": 1,
             "raw_text": text_content[:500000],
             "uploaded_filename": file.filename,
             "pipeline_output": {},
-        }).execute()
+            },
+        )
 
         if parent_id:
             try:
@@ -860,6 +1023,7 @@ async def upload_contract(
 async def confirm_version_link(
     request: Request,
     claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
 ):
     try:
         base_tenant_id = claims["verified_tenant_id"]
@@ -947,19 +1111,23 @@ async def confirm_version_link(
                     "title": filename,
                     "status": "Processing",
                     "version_count": 1,
-                    "latest_version_id": pending_version_id,
                 }
                 if file_meta.get("file_url"):
                     contract_insert["file_url"] = file_meta["file_url"]
                     contract_insert["file_type"] = file_meta.get("file_type")
                     contract_insert["file_size"] = file_meta.get("file_size")
-                supabase.table("contracts").insert(contract_insert).execute()
 
-                supabase.table("contract_versions").update({
-                    "contract_id": target_contract_id,
-                    "version_number": 1,
-                    "pipeline_output": {},
-                }).eq("id", pending_version_id).eq("tenant_id", tenant_id).execute()
+                _create_contract_with_linked_version(
+                    supabase,
+                    tenant_id=tenant_id,
+                    matter_id=resolved_matter_id,
+                    contract_insert_data=contract_insert,
+                    version_id=pending_version_id,
+                    version_update_data={
+                        "version_number": 1,
+                        "pipeline_output": {},
+                    },
+                )
 
                 await publish_contract_event(
                     "contract.created",
