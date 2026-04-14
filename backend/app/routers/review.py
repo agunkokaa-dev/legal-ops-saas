@@ -55,7 +55,8 @@ class CreateTaskFromFindingRequest(BaseModel):
 # ──────────────────────────────────────────────
 
 @router.post("/analyze")
-@limiter.limit("20/minute")
+@limiter.limit("5/minute")
+@limiter.limit("30/hour")
 async def analyze_contract(
     request: Request,
     payload: ReviewAnalyzeRequest,
@@ -162,7 +163,7 @@ async def analyze_contract(
 
             if not raw_text:
                 # Return a retryable 202 if the pipeline is still running
-                if contract_status in ("Processing", "Retrying (1/3)", "Retrying (2/3)"):
+                if contract_status in ("Queued", "Processing", "Retrying (1/3)", "Retrying (2/3)"):
                     return JSONResponse(
                         status_code=202,
                         content={
@@ -283,7 +284,7 @@ async def analyze_contract(
 # ──────────────────────────────────────────────
 
 @router.post("/from-finding")
-@limiter.limit("20/minute")
+@limiter.limit("10/minute")
 async def create_task_from_finding(
     request: Request,
     payload: CreateTaskFromFindingRequest,

@@ -76,7 +76,9 @@ export default function DashboardLayout({
             router.refresh();
             const newStatus = String(event.data.new_status || '');
             const title = String(event.data.contract_title || 'Contract');
-            if (newStatus === 'Reviewed') {
+            if (newStatus === 'Queued') {
+                toast.info(`"${title}" queued for AI processing`)
+            } else if (newStatus === 'Reviewed') {
                 toast.info(`"${title}" analysis complete`)
             } else if (newStatus === 'Executed') {
                 toast.success(`"${title}" has been fully executed`)

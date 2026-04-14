@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react'
 import { useUser, useAuth } from '@clerk/nextjs'
-import { supabaseClient } from '@/lib/supabase'
 import { Plus, Loader2, BookOpen, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { getPublicApiBase } from '@/lib/public-api-base'
 
@@ -26,7 +25,7 @@ export default function CompanyPlaybookPage() {
 
     useEffect(() => {
         if (isUserLoaded && user) {
-            fetchRules()
+            void fetchRules()
         }
     }, [isUserLoaded, user])
 
@@ -39,23 +38,21 @@ export default function CompanyPlaybookPage() {
                 throw new Error("User session not found. Please log in again.");
             }
 
-            const token = await getToken({ template: 'supabase' })
-            const supabase = await supabaseClient(token || '')
-
-            // 2. Fetch the rules for this specific user
-            const { data, error } = await supabase
-                .from('company_playbooks')
-                .select('*')
-                .eq('user_id', user.id) // Explicitly filter
-                .order('created_at', { ascending: false })
-
-            if (error) {
-                // Stringify the error to expose the hidden Supabase details
-                console.error('Supabase Error Details:', JSON.stringify(error, null, 2));
-                throw new Error(error.message || 'Failed to fetch rules from database.');
+            const token = await getToken()
+            if (!token) {
+                throw new Error('Missing authentication token.')
             }
 
-            setRules(data || [])
+            const backendUrl = getPublicApiBase()
+            const response = await fetch(`${backendUrl}/api/playbook/rules`, {
+                headers: { Authorization: `Bearer ${token}` },
+            })
+            const payload = await response.json().catch(() => ({}))
+            if (!response.ok) {
+                throw new Error(payload.detail || 'Failed to fetch rules from API.')
+            }
+
+            setRules(payload.rules || [])
         } catch (err: any) {
             console.error('Detailed fetch error:', err)
             setError(err.message || 'An unexpected error occurred.')
@@ -73,29 +70,32 @@ export default function CompanyPlaybookPage() {
         setSuccessMsg(null)
 
         try {
-            const token = await getToken({ template: 'supabase' })
-            const supabase = await supabaseClient(token || '')
+            const token = await getToken()
+            if (!token) {
+                throw new Error('Missing authentication token.')
+            }
 
-            // 1. Insert into Supabase
-            const fallbackStr = fallbackPosition.trim() || null
-            const redlineStr = redline.trim() || null
-            const ruleTextFallback = `[${category}] ${standardPosition.trim()}`
-
-            const { data: newRule, error: supaError } = await supabase
-                .from('company_playbooks')
-                .insert([{ 
-                    user_id: user.id, 
+            const backendUrl = getPublicApiBase()
+            const response = await fetch(`${backendUrl}/api/playbook/rules`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`,
+                },
+                body: JSON.stringify({
                     category,
                     standard_position: standardPosition.trim(),
-                    fallback_position: fallbackStr,
-                    redline: redlineStr,
+                    fallback_position: fallbackPosition.trim() || null,
+                    redline: redline.trim() || null,
                     risk_severity: riskSeverity,
-                    rule_text: ruleTextFallback
-                }])
-                .select()
-                .single()
+                }),
+            })
+            const payload = await response.json().catch(() => ({}))
+            if (!response.ok) {
+                throw new Error(payload.detail || 'Failed to submit rule.')
+            }
 
-            if (supaError) throw supaError
+            const newRule = payload.rule
 
             // Update UI optimistically
             setRules([{ ...newRule }, ...rules])
@@ -104,32 +104,8 @@ export default function CompanyPlaybookPage() {
             setFallbackPosition('')
             setRedline('')
             setRiskSeverity('Medium Risk')
-
-            // 2. Send to Backend Vectorizer
-            const backendUrl = getPublicApiBase()
-            const vectorRes = await fetch(`${backendUrl}/api/playbook/vectorize`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    id: newRule.id,
-                    user_id: newRule.user_id,
-                    rule_text: newRule.rule_text,
-                    category: newRule.category || null,
-                    standard_position: newRule.standard_position || null,
-                    fallback_position: newRule.fallback_position || null,
-                    redline: newRule.redline || null,
-                    risk_severity: newRule.risk_severity || null
-                })
-            })
-
-            if (!vectorRes.ok) {
-                const errData = await vectorRes.json()
-                console.error("Vectorization Failed:", errData)
-                setError(`Rule saved to database, but vectorization failed: ${errData.detail || 'Unknown error'}`)
-            } else {
-                setSuccessMsg('Rule successfully saved and vectorized!')
-                setTimeout(() => setSuccessMsg(null), 3000)
-            }
+            setSuccessMsg('Rule successfully saved and vectorized!')
+            setTimeout(() => setSuccessMsg(null), 3000)
 
         } catch (err: any) {
             console.error('Error adding rule:', err)

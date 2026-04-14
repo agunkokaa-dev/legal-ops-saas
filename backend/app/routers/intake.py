@@ -26,7 +26,7 @@ URGENCY_TO_PRIORITY = {
 
 
 @router.post("/intake/request")
-@limiter.limit("20/minute")
+@limiter.limit("10/minute")
 async def submit_intake_request(
     request: Request,
     payload: IntakeRequestCreate,

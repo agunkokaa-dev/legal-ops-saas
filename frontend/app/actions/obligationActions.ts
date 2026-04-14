@@ -169,3 +169,70 @@ export async function getClauseEvolution(matterId: string, clauseType: string = 
         return { error: e.message || "Failed to fetch clause evolution." }
     }
 }
+
+export async function getObligations(contractId: string) {
+    const { userId, orgId } = await auth()
+    if (!userId) return { error: "Unauthorized" }
+    const tenantId = orgId || userId
+
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('contract_obligations')
+            .select('*')
+            .eq('contract_id', contractId)
+            .eq('tenant_id', tenantId) // Tenant isolation check implicitly applied, though contract_id is also checked.
+            .order('created_at', { ascending: false })
+
+        if (error) throw error
+        return { data }
+    } catch (e: any) {
+        return { error: e.message || "Failed to fetch obligations." }
+    }
+}
+
+export async function toggleObligation(id: string, newStatus: string) {
+    const { userId, orgId } = await auth()
+    if (!userId) return { error: "Unauthorized" }
+    const tenantId = orgId || userId
+
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('contract_obligations')
+            .update({ status: newStatus })
+            .eq('id', id)
+            .eq('tenant_id', tenantId)
+            .select()
+            .single()
+
+        if (error) throw error
+        return { data }
+    } catch (e: any) {
+        return { error: e.message || "Failed to update obligation." }
+    }
+}
+
+export async function addObligation(contractId: string, description: string) {
+    const { userId, orgId } = await auth()
+    if (!userId) return { error: "Unauthorized" }
+    const tenantId = orgId || userId
+
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('contract_obligations')
+            .insert([{
+                contract_id: contractId,
+                tenant_id: tenantId,
+                description: description,
+                source: 'MANUAL',
+                compliance_flag: 'SAFE',
+                status: 'pending'
+            }])
+            .select()
+            .single()
+
+        if (error) throw error
+        return { data }
+    } catch (e: any) {
+        return { error: e.message || "Failed to insert obligation." }
+    }
+}

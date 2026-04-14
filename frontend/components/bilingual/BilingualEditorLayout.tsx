@@ -102,6 +102,41 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
     }
   };
 
+  const pollTaskLog = useCallback(async (logId: string, timeoutMs = 90000) => {
+    const startedAt = Date.now();
+    const apiUrl = getPublicApiBase();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const token = await getToken();
+      if (!token) throw new Error("Authentication expired");
+
+      const res = await fetch(`${apiUrl}/api/v1/task-logs/${logId}`, {
+        headers: {
+          "Authorization": `Bearer ${token}`,
+        },
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to poll task status");
+      }
+
+      const data = await res.json();
+      const log = data.log;
+
+      if (log?.status === "completed") {
+        return log;
+      }
+
+      if (log?.status === "failed") {
+        throw new Error(log?.error_message || "Background task failed");
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    }
+
+    throw new Error("Background task timed out");
+  }, [getToken]);
+
   const handleSyncRequest = async (clause: BilingualClause) => {
     if (clause.id.startsWith('temp-')) return;
     
@@ -128,7 +163,19 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
         })
       });
 
-      if (res.ok) {
+      if (res.status === 202) {
+        const queued = await res.json();
+        if (!queued.log_id) {
+          throw new Error("Missing task log id");
+        }
+        const log = await pollTaskLog(String(queued.log_id));
+        const data = log.result_summary as ClauseSyncResponse;
+        setSyncSuggestion({
+          clauseId: clause.id,
+          suggestion: data,
+          targetLang: sourceLanguage === 'id' ? 'en' : 'id'
+        });
+      } else if (res.ok) {
         const data: ClauseSyncResponse = await res.json();
         setSyncSuggestion({
           clauseId: clause.id,
@@ -239,7 +286,14 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
         method: "POST",
         headers: { "Authorization": `Bearer ${token}` }
       });
-      if (res.ok) {
+      if (res.status === 202) {
+        const queued = await res.json();
+        if (!queued.log_id) {
+          throw new Error("Missing task log id");
+        }
+        const log = await pollTaskLog(String(queued.log_id));
+        setConsistencyReport((log.result_summary?.report || log.result_summary) as ConsistencyReport);
+      } else if (res.ok) {
         const data = await res.json();
         setConsistencyReport(data.data);
       } else {

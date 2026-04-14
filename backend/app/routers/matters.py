@@ -24,7 +24,7 @@ router = APIRouter()
 
 
 @router.post("/matters")
-@limiter.limit("20/minute")
+@limiter.limit("30/minute")
 async def create_matter(
     request: Request,
     matter: MatterCreate,

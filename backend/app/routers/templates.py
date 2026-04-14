@@ -15,6 +15,29 @@ from app.schemas import TemplateCreateRequest
 router = APIRouter()
 
 
+@router.get("/templates")
+@limiter.limit("60/minute")
+async def list_templates(
+    request: Request,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    try:
+        tenant_id = claims["verified_tenant_id"]
+        result = (
+            supabase.table("task_templates")
+            .select("*, task_template_items(count)")
+            .eq("tenant_id", tenant_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return {"templates": result.data or []}
+    except Exception as e:
+        print(f"API List Templates Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/templates")
 @limiter.limit("20/minute")
 async def create_template(
@@ -65,5 +88,23 @@ async def create_template(
 
     except Exception as e:
         print(f"API Create Template Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/templates/{template_id}")
+@limiter.limit("60/minute")
+async def delete_template(
+    request: Request,
+    template_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    try:
+        tenant_id = claims["verified_tenant_id"]
+        supabase.table("task_templates").delete().eq("id", template_id).eq("tenant_id", tenant_id).execute()
+        return {"deleted": True}
+    except Exception as e:
+        print(f"API Delete Template Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))

@@ -17,7 +17,13 @@ import json
 
 from app.config import openai_client, qdrant, COLLECTION_NAME
 from app.rate_limiter import limiter
-from app.dependencies import TenantQdrantClient, get_tenant_qdrant, verify_clerk_token, get_tenant_supabase
+from app.dependencies import (
+    TenantQdrantClient,
+    get_admin_supabase,
+    get_tenant_qdrant,
+    get_tenant_supabase,
+    verify_clerk_token,
+)
 from app.schemas import ApplyTemplateRequest, TaskAssistantRequest
 
 router = APIRouter()
@@ -27,30 +33,30 @@ router = APIRouter()
 # AGENTIC TOOL & ASYNC WRAPPERS
 # =====================================================================
 
-def get_user_tasks_tool_logic(tenant_id: str, supabase: Client) -> str:
+def get_user_tasks_tool_logic(tenant_ids: list[str], supabase: Client) -> str:
     """
     Fetch the list of active tasks/to-dos for the user from Supabase.
     Use this tool ONLY when the user asks about their tasks, schedule,
     deadlines, or to-do list.
     """
-    print(f"🔍 DEBUG TOOL: Executing get_user_tasks for tenant_id: '{tenant_id}'")
+    print(f"🔍 DEBUG TOOL: Executing get_user_tasks for tenant_ids: {tenant_ids}")
     try:
-        response = (
+        query = (
             supabase.table("tasks")
             .select("title, status, priority, due_date, source_document_name")
-            .eq("tenant_id", tenant_id)
+            .in_("tenant_id", tenant_ids)
             .neq("status", "done")
             .neq("status", "archived")
             .neq("status", "ARCHIVED")
             .order("created_at", desc=True)
-            .execute()
         )
+        response = query.execute()
 
         print(f"🔍 DEBUG TOOL: Supabase Raw Response Data: {response.data}")
 
         tasks = response.data
         if not tasks:
-            return f"Saat ini tidak ada tugas aktif untuk tenant '{tenant_id}'."
+            return f"Saat ini tidak ada tugas aktif untuk tenant(s) {tenant_ids}."
 
         formatted_tasks = []
         for t in tasks:
@@ -279,24 +285,32 @@ async def create_tasks_from_template(request: Request, req: ApplyTemplateRequest
 
 
 @router.post("/ai/task-assistant")
-@limiter.limit("20/minute")
+@limiter.limit("15/minute")
 async def ask_task_assistant(
     request: Request,
     req: TaskAssistantRequest,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_tenant_supabase),
+    supabase: Client = Depends(get_admin_supabase),
     qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
 ):
     try:
         # SECURITY: tenant_id MUST come exclusively from the verified JWT — never from the request body.
         tenant_id = claims["verified_tenant_id"]
+        allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
         
         source = req.source_page or "dashboard"
         document_id = getattr(req, "document_id", None)
         
         task_context_str = "Unknown Task"
         try:
-            task_resp = supabase.table("tasks").select("title, description").eq("id", req.task_id).eq("tenant_id", tenant_id).execute()
+            task_resp = (
+                supabase.table("tasks")
+                .select("title, description")
+                .eq("id", req.task_id)
+                .in_("tenant_id", allowed_tenant_ids)
+                .limit(1)
+                .execute()
+            )
             if task_resp.data:
                 t_title = task_resp.data[0].get('title', '')
                 t_desc = task_resp.data[0].get('description', '')
@@ -425,7 +439,7 @@ Context:
                 for tool_call in response_message.tool_calls:
                     fn_name = tool_call.function.name
                     if fn_name == "get_user_tasks":
-                        fn_res = get_user_tasks_tool_logic(tenant_id=tenant_id, supabase=supabase)
+                        fn_res = get_user_tasks_tool_logic(tenant_ids=allowed_tenant_ids, supabase=supabase)
                     elif fn_name == "get_high_risk_contracts":
                         fn_res = get_high_risk_contracts_tool_logic(tenant_id=tenant_id, supabase=supabase)
                     else:
@@ -448,3 +462,330 @@ Context:
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error during AI execution.")
+from pydantic import BaseModel
+from typing import Optional
+
+class TaskCreate(BaseModel):
+    matter_id: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    status: Optional[str] = "backlog"
+    priority: Optional[str] = None
+    due_date: Optional[str] = None
+    position: Optional[int] = None
+    assigned_to: Optional[str] = None
+
+class TaskUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
+    due_date: Optional[str] = None
+    position: Optional[int] = None
+    assigned_to: Optional[str] = None
+
+class SubTaskCreate(BaseModel):
+    title: str
+    is_completed: Optional[bool] = False
+
+class SubTaskUpdate(BaseModel):
+    title: Optional[str] = None
+    is_completed: Optional[bool] = None
+
+
+def _normalized_task_claim(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
+def _get_allowed_task_tenant_ids(claims: dict[str, Any]) -> list[str]:
+    """
+    Temporary legacy bridge for tasks created before Clerk org workspaces.
+
+    Historical rows may still be stored under the user's personal workspace
+    (`sub` / `user_xxx`) while the active verified workspace is now an org
+    (`org_xxx`). Task routes are allowed to read and mutate both identities
+    for the same authenticated session until the legacy rows are backfilled.
+    These routes intentionally use the admin Supabase client because request-
+    scoped RLS can only see the active verified tenant, not the legacy alias.
+    """
+    nested_org_id = None
+    o_claim = claims.get("o")
+    if isinstance(o_claim, dict):
+        nested_org_id = _normalized_task_claim(o_claim.get("id"))
+
+    candidates = [
+        _normalized_task_claim(claims.get("verified_tenant_id")),
+        _normalized_task_claim(claims.get("sub")),
+        nested_org_id,
+        _normalized_task_claim(claims.get("org_id")),
+    ]
+
+    allowed_tenant_ids: list[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in allowed_tenant_ids:
+            allowed_tenant_ids.append(candidate)
+    return allowed_tenant_ids
+
+
+def _assert_task_belongs_to_allowed_tenants(
+    supabase: Client,
+    task_id: str,
+    allowed_tenant_ids: list[str],
+) -> dict[str, Any]:
+    task_res = (
+        supabase.table("tasks")
+        .select("id, tenant_id")
+        .eq("id", task_id)
+        .in_("tenant_id", allowed_tenant_ids)
+        .limit(1)
+        .execute()
+    )
+    if not task_res.data:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task_res.data[0]
+
+
+def _assert_sub_task_belongs_to_allowed_tenants(
+    supabase: Client,
+    sub_task_id: str,
+    allowed_tenant_ids: list[str],
+) -> dict[str, Any]:
+    sub_task_res = (
+        supabase.table("sub_tasks")
+        .select("id, task_id")
+        .eq("id", sub_task_id)
+        .limit(1)
+        .execute()
+    )
+    if not sub_task_res.data:
+        raise HTTPException(status_code=404, detail="Sub-task not found")
+
+    sub_task = sub_task_res.data[0]
+    _assert_task_belongs_to_allowed_tenants(supabase, sub_task["task_id"], allowed_tenant_ids)
+    return sub_task
+
+
+def _assert_attachment_belongs_to_allowed_tenants(
+    supabase: Client,
+    attachment_id: str,
+    allowed_tenant_ids: list[str],
+) -> dict[str, Any]:
+    attachment_res = (
+        supabase.table("task_attachments")
+        .select("id, task_id")
+        .eq("id", attachment_id)
+        .limit(1)
+        .execute()
+    )
+    if not attachment_res.data:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    attachment = attachment_res.data[0]
+    _assert_task_belongs_to_allowed_tenants(supabase, attachment["task_id"], allowed_tenant_ids)
+    return attachment
+
+
+@router.get("/tasks")
+@limiter.limit("60/minute")
+async def get_tasks(
+    request: Request,
+    include_matter: bool = False,
+    status: Optional[str] = None,
+    matter_id: Optional[str] = None,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_admin_supabase),
+):
+    allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
+    query = (
+        supabase.table("tasks")
+        .select("*, matters(title)" if include_matter else "*")
+        .in_("tenant_id", allowed_tenant_ids)
+        .order("position")
+    )
+    if status:
+        query = query.eq("status", status)
+    if matter_id:
+        query = query.eq("matter_id", matter_id)
+    res = query.execute()
+    return {"tasks": res.data}
+
+@router.post("/tasks")
+@limiter.limit("60/minute")
+async def create_task(
+    request: Request,
+    req: TaskCreate,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_admin_supabase),
+):
+    tenant_id = claims["verified_tenant_id"]
+    payload = req.dict(exclude_unset=True)
+    payload["tenant_id"] = tenant_id
+    res = supabase.table("tasks").insert(payload).select().single().execute()
+    return {"task": res.data}
+
+@router.get("/tasks/{task_id}")
+@limiter.limit("60/minute")
+async def get_task_details(
+    request: Request,
+    task_id: str,
+    include_details: bool = False,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_admin_supabase),
+):
+    allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
+    t_res = (
+        supabase.table("tasks")
+        .select("*, matters(title)")
+        .eq("id", task_id)
+        .in_("tenant_id", allowed_tenant_ids)
+        .single()
+        .execute()
+    )
+    if not t_res.data:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    response = {"task": t_res.data}
+    if include_details:
+        task_tenant_id = t_res.data["tenant_id"]
+        st_res = supabase.table("sub_tasks").select("*").eq("task_id", task_id).order("created_at").execute()
+        att_res = supabase.table("task_attachments").select("*").eq("task_id", task_id).order("created_at", desc=True).execute()
+        log_res = (
+            supabase.table("activity_logs")
+            .select("*")
+            .eq("task_id", task_id)
+            .eq("tenant_id", task_tenant_id)
+            .order("created_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        response["sub_tasks"] = st_res.data or []
+        response["attachments"] = att_res.data or []
+        response["activity_logs"] = log_res.data or []
+    return response
+
+@router.patch("/tasks/{task_id}")
+@limiter.limit("60/minute")
+async def update_task(
+    request: Request,
+    task_id: str,
+    req: TaskUpdate,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_admin_supabase),
+):
+    allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
+    task = _assert_task_belongs_to_allowed_tenants(supabase, task_id, allowed_tenant_ids)
+    payload = req.dict(exclude_unset=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    res = (
+        supabase.table("tasks")
+        .update(payload)
+        .eq("id", task_id)
+        .eq("tenant_id", task["tenant_id"])
+        .select()
+        .single()
+        .execute()
+    )
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"task": res.data}
+
+@router.delete("/tasks/{task_id}")
+@limiter.limit("60/minute")
+async def delete_task(
+    request: Request,
+    task_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_admin_supabase),
+):
+    allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
+    task = _assert_task_belongs_to_allowed_tenants(supabase, task_id, allowed_tenant_ids)
+    supabase.table("tasks").delete().eq("id", task_id).eq("tenant_id", task["tenant_id"]).execute()
+    return {"deleted": True}
+
+@router.post("/tasks/{task_id}/sub-tasks")
+@limiter.limit("60/minute")
+async def create_sub_task(
+    request: Request,
+    task_id: str,
+    req: SubTaskCreate,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_admin_supabase),
+):
+    allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
+    _assert_task_belongs_to_allowed_tenants(supabase, task_id, allowed_tenant_ids)
+    payload = {
+        "task_id": task_id,
+        "title": req.title,
+        "is_completed": bool(req.is_completed),
+    }
+    res = supabase.table("sub_tasks").insert(payload).select().single().execute()
+    return {"sub_task": res.data}
+
+@router.patch("/tasks/sub-tasks/{sub_task_id}")
+@limiter.limit("60/minute")
+async def update_sub_task(
+    request: Request,
+    sub_task_id: str,
+    req: SubTaskUpdate,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_admin_supabase),
+):
+    allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
+    _assert_sub_task_belongs_to_allowed_tenants(supabase, sub_task_id, allowed_tenant_ids)
+    payload = req.dict(exclude_unset=True)
+    if not payload:
+        raise HTTPException(status_code=400, detail="No valid fields to update")
+    res = supabase.table("sub_tasks").update(payload).eq("id", sub_task_id).select().single().execute()
+    return {"sub_task": res.data}
+
+@router.delete("/tasks/sub-tasks/{sub_task_id}")
+@limiter.limit("60/minute")
+async def delete_sub_task(
+    request: Request,
+    sub_task_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_admin_supabase),
+):
+    allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
+    _assert_sub_task_belongs_to_allowed_tenants(supabase, sub_task_id, allowed_tenant_ids)
+    supabase.table("sub_tasks").delete().eq("id", sub_task_id).execute()
+    return {"deleted": True}
+
+@router.delete("/tasks/attachments/{attachment_id}")
+@limiter.limit("60/minute")
+async def delete_attachment(
+    request: Request,
+    attachment_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_admin_supabase),
+):
+    allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
+    _assert_attachment_belongs_to_allowed_tenants(supabase, attachment_id, allowed_tenant_ids)
+    supabase.table("task_attachments").delete().eq("id", attachment_id).execute()
+    return {"deleted": True}
+
+class AttachmentCreate(BaseModel):
+    file_name: str
+    file_path: str
+    file_size_bytes: Optional[int] = 0
+    source: Optional[str] = "upload"
+
+@router.post("/tasks/{task_id}/attachments")
+@limiter.limit("60/minute")
+async def create_attachment(
+    request: Request,
+    task_id: str,
+    req: AttachmentCreate,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_admin_supabase),
+):
+    allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
+    _assert_task_belongs_to_allowed_tenants(supabase, task_id, allowed_tenant_ids)
+    payload = req.dict(exclude_unset=True)
+    payload["task_id"] = task_id
+    res = supabase.table("task_attachments").insert(payload).select().single().execute()
+    return {"attachment": res.data}

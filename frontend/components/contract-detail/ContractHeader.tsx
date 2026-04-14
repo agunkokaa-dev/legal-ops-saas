@@ -2,12 +2,8 @@
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { createClient } from '@supabase/supabase-js'
-
-// Initialize Supabase (Client-side usage with public key)
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-const supabase = createClient(supabaseUrl, supabaseAnonKey)
+import { getPublicApiBase } from '@/lib/public-api-base'
+import { useAuth } from '@clerk/nextjs'
 
 export default function ContractHeader({
     initialContract,
@@ -20,14 +16,13 @@ export default function ContractHeader({
     actionMenu?: React.ReactNode,
     children?: React.ReactNode
 }) {
+    const { getToken, isLoaded, isSignedIn } = useAuth()
     const [contract, setContract] = useState(initialContract)
     const [isEditModalOpen, setIsEditModalOpen] = useState(false)
     const [isSaving, setIsSaving] = useState(false)
     const [editForm, setEditForm] = useState({
         title: initialContract?.title || '',
-        status: initialContract?.status || 'DRAFT',
         contract_value: initialContract?.contract_value || '',
-        risk_level: initialContract?.risk_level || 'LOW',
         end_date: initialContract?.end_date || ''
     })
 
@@ -35,9 +30,7 @@ export default function ContractHeader({
         setContract(initialContract)
         setEditForm({
             title: initialContract?.title || '',
-            status: initialContract?.status || 'DRAFT',
             contract_value: initialContract?.contract_value || '',
-            risk_level: initialContract?.risk_level || 'LOW',
             end_date: initialContract?.end_date || ''
         })
     }, [initialContract])
@@ -47,20 +40,33 @@ export default function ContractHeader({
         setIsSaving(true)
 
         try {
-            const { data, error } = await supabase
-                .from('contracts')
-                .update({
-                    title: editForm.title,
-                    status: editForm.status,
-                    contract_value: editForm.contract_value ? parseFloat(editForm.contract_value.toString()) : null,
-                    risk_level: editForm.risk_level,
-                    end_date: editForm.end_date || null
-                })
-                .eq('id', contract.id)
-                .select()
-                .single()
+            if (!isLoaded || !isSignedIn) {
+                throw new Error("User unauthorized.")
+            }
+            
+            const token = await getToken()
+            const payload = {
+                title: editForm.title,
+                contract_value: editForm.contract_value ? parseFloat(editForm.contract_value.toString()) : null,
+                end_date: editForm.end_date || null
+            }
 
-            if (error) throw error
+            const apiUrl = getPublicApiBase()
+            const response = await fetch(`${apiUrl}/api/v1/contracts/${contract.id}`, {
+                method: 'PATCH',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify(payload)
+            })
+
+            if (!response.ok) {
+                const err = await response.json()
+                throw new Error(err.detail || "Failed to update contract")
+            }
+
+            const { contract: data } = await response.json()
 
             // Update local state to reflect changes instantly
             setContract(data)
@@ -140,44 +146,6 @@ export default function ContractHeader({
                                     placeholder="Enter contract title"
                                 />
                             </div>
-
-                            {/* Two Column Grid */}
-                            <div className="grid grid-cols-2 gap-4">
-                                {/* Status */}
-                                <div>
-                                    <label className={labelStyling}>Status</label>
-                                    <select
-                                        value={editForm.status}
-                                        onChange={(e) => setEditForm({ ...editForm, status: e.target.value })}
-                                        className={modalInputStyling}
-                                    >
-                                        <option value="DRAFT">DRAFT</option>
-                                        <option value="ACTIVE">ACTIVE</option>
-                                        <option value="Pending Approval">Pending Approval</option>
-                                        <option value="Ready to Sign">Ready to Sign</option>
-                                        <option value="Signing in Progress">Signing in Progress</option>
-                                        <option value="Partially Signed">Partially Signed</option>
-                                        <option value="Executed">Executed</option>
-                                        <option value="EXPIRED">EXPIRED</option>
-                                        <option value="TERMINATED">TERMINATED</option>
-                                    </select>
-                                </div>
-
-                                {/* Risk Level */}
-                                <div>
-                                    <label className={labelStyling}>Risk Level</label>
-                                    <select
-                                        value={editForm.risk_level}
-                                        onChange={(e) => setEditForm({ ...editForm, risk_level: e.target.value })}
-                                        className={modalInputStyling}
-                                    >
-                                        <option value="LOW">LOW</option>
-                                        <option value="MEDIUM">MEDIUM</option>
-                                        <option value="HIGH">HIGH</option>
-                                    </select>
-                                </div>
-                            </div>
-
                             {/* Contract Value */}
                             <div>
                                 <label className={labelStyling}>Contract Value (Rp / IDR)</label>

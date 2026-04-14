@@ -18,7 +18,7 @@ services:
     volumes:
       - redis_data:/data
     restart: unless-stopped
-    command: redis-server --maxmemory 100mb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --appendonly yes
 
   # 2. Logic Backend (FastAPI)
   api:
@@ -36,6 +36,22 @@ services:
     depends_on:
       - qdrant
       - redis
+
+  worker:
+    build: .
+    command: arq worker.WorkerSettings
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - CLERK_PEM_KEY=${CLERK_PEM_KEY}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - qdrant
+      - redis
+    restart: unless-stopped
 
 volumes:
   qdrant_data:

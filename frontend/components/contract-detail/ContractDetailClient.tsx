@@ -366,12 +366,21 @@ export default function ContractDetailClient({
         if (!liveContract?.id) return;
 
         try {
-            const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-            const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-            const headers = { 'apikey': supabaseKey, 'Authorization': `Bearer ${supabaseKey}` };
+            const token = await getToken();
+            if (!token) {
+                return null;
+            }
 
-            const res = await fetch(`${supabaseUrl}/rest/v1/contracts?id=eq.${liveContract.id}&select=*`, { headers });
-            const [data] = await res.json();
+            const apiUrl = getPublicApiBase();
+            const res = await fetch(`${apiUrl}/api/contracts/${liveContract.id}`, {
+                headers: { 'Authorization': `Bearer ${token}` },
+            });
+            if (!res.ok) {
+                return null;
+            }
+
+            const payload = await res.json();
+            const data = payload?.data || payload?.contract || null;
             if (!data) return null;
 
             setLiveContract((prev: any) => (prev ? { ...prev, ...data } : data));
@@ -380,7 +389,7 @@ export default function ContractDetailClient({
             console.error('Contract refresh error:', err);
             return null;
         }
-    }, [liveContract?.id]);
+    }, [getToken, liveContract?.id]);
 
     const pollContractStatus = useCallback(async () => {
         const data = await fetchLatestContract();
@@ -407,7 +416,7 @@ export default function ContractDetailClient({
             return;
         }
 
-        if (!newStatus.includes('processing') && !newStatus.includes('ingesting') && !newStatus.includes('in progress')) {
+        if (!newStatus.includes('queued') && !newStatus.includes('processing') && !newStatus.includes('ingesting') && !newStatus.includes('in progress')) {
             setPipelineProgress(null);
             router.refresh();
         }
@@ -428,7 +437,7 @@ export default function ContractDetailClient({
     }, [fetchLatestContract, liveContract?.id, viewerFileUrl]);
 
     const liveStatus = (liveContract?.status || '').toLowerCase();
-    const isRealtimeTracked = ['processing', 'ingesting', 'in progress', 'signing in progress', 'partially signed'].some(
+    const isRealtimeTracked = ['queued', 'processing', 'ingesting', 'in progress', 'signing in progress', 'partially signed'].some(
         status => liveStatus.includes(status)
     ) || liveStatus.startsWith('retrying');
 
@@ -437,10 +446,11 @@ export default function ContractDetailClient({
         enabled: Boolean(liveContract?.id) && isRealtimeTracked,
         pollFallback: pollContractStatus,
         onPipelineProgress: (event) => {
+            const totalAgents = Math.max(1, Number(event.data.total_agents || 8));
             setPipelineProgress({
                 currentAgent: String(event.data.agent_name || ''),
                 agentIndex: Number(event.data.agent_index || 0),
-                totalAgents: Number(event.data.total_agents || 0),
+                totalAgents,
                 message: String(event.data.message || 'Pipeline update received'),
             });
         },
@@ -492,7 +502,7 @@ export default function ContractDetailClient({
         },
     });
 
-    const shouldShowPipelineProgress = Boolean(pipelineProgress) || liveStatus.includes('processing') || liveStatus.startsWith('retrying');
+    const shouldShowPipelineProgress = Boolean(pipelineProgress) || liveStatus.includes('queued') || liveStatus.includes('processing') || liveStatus.startsWith('retrying');
     const truncationWarning = useMemo(() => {
         const draftRevisions = liveContract?.draft_revisions
         if (!draftRevisions) return null
@@ -543,7 +553,7 @@ export default function ContractDetailClient({
                 return;
             }
 
-            toast.success("V2 Uploaded! Processing in background...", { id: "upload-v2" });
+            toast.success("V2 uploaded and queued for AI processing.", { id: "upload-v2" });
             router.refresh();
         } catch (err: any) {
             toast.error(err.message || "Failed to upload V2.", { id: "upload-v2" });
@@ -729,7 +739,7 @@ export default function ContractDetailClient({
                         onChange={(e) => {
                             if (e.target.files && e.target.files[0]) {
                                 handleUploadV2(e.target.files[0]);
-                                setLiveContract({ ...liveContract, status: 'Processing' }); // Opt UI update
+                                setLiveContract({ ...liveContract, status: 'Queued' }); // Opt UI update
                             }
                         }}
                     />
@@ -789,7 +799,7 @@ export default function ContractDetailClient({
                                     className="h-full bg-[#d4af37] transition-all duration-500"
                                     style={{
                                         width: `${pipelineProgress
-                                            ? Math.max(8, (pipelineProgress.agentIndex / pipelineProgress.totalAgents) * 100)
+                                            ? Math.max(8, (pipelineProgress.agentIndex / Math.max(1, pipelineProgress.totalAgents)) * 100)
                                             : 12
                                         }%`
                                     }}

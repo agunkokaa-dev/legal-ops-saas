@@ -1,14 +1,17 @@
 import asyncio
+import json
 
 import jwt
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from app.config import CLERK_PEM_KEY
-from app.dependencies import _create_rls_supabase_client, _extract_tenant_id
+from app.dependencies import _create_rls_supabase_client, _extract_tenant_id, verify_clerk_token
 from app.event_bus import SSEEvent, event_bus
+from app.rate_limiter import limiter
 
 router = APIRouter()
+admin_router = APIRouter()
 
 
 def verify_sse_token(token: str) -> dict:
@@ -39,7 +42,9 @@ def _streaming_headers() -> dict[str, str]:
 
 
 @router.get("/contracts/{contract_id}/stream")
+@limiter.limit("60/minute")
 async def stream_contract_events(
+    request: Request,
     contract_id: str,
     token: str = Query(..., description="Clerk JWT used for SSE authentication"),
 ):
@@ -90,7 +95,9 @@ async def stream_contract_events(
 
 
 @router.get("/tenant/stream")
+@limiter.limit("60/minute")
 async def stream_tenant_events(
+    request: Request,
     token: str = Query(..., description="Clerk JWT used for SSE authentication"),
 ):
     claims = verify_sse_token(token)
@@ -125,5 +132,49 @@ async def stream_tenant_events(
 
 
 @router.get("/stats")
-async def get_sse_stats():
+@limiter.limit("60/minute")
+async def get_sse_stats(request: Request):
     return event_bus.get_stats()
+
+
+@admin_router.get("/worker-health")
+@limiter.limit("60/minute")
+async def get_worker_health(
+    request: Request,
+    claims: dict = Depends(verify_clerk_token),
+):
+    from app.config import admin_supabase
+    from app.job_queue import get_pool, get_worker_heartbeat
+
+    try:
+        pool = await get_pool()
+        redis_info = await pool.info()
+        heartbeat_raw = await get_worker_heartbeat()
+        heartbeat = json.loads(heartbeat_raw) if heartbeat_raw else None
+
+        queued = admin_supabase.table("task_execution_logs") \
+            .select("id", count="exact") \
+            .eq("status", "queued") \
+            .execute()
+        running = admin_supabase.table("task_execution_logs") \
+            .select("id", count="exact") \
+            .eq("status", "running") \
+            .execute()
+
+        return {
+            "worker_status": "healthy" if heartbeat else "unhealthy",
+            "redis_connected": True,
+            "jobs_queued": queued.count or 0,
+            "jobs_running": running.count or 0,
+            "worker_heartbeat": heartbeat,
+            "redis_info": {
+                "used_memory": redis_info.get("used_memory_human", "unknown"),
+                "connected_clients": redis_info.get("connected_clients", 0),
+            },
+        }
+    except Exception as exc:
+        return {
+            "worker_status": "unhealthy",
+            "redis_connected": False,
+            "error": str(exc),
+        }

@@ -26,6 +26,11 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
+        try:
+            from app.job_queue import close_pool
+            await close_pool()
+        except Exception:
+            pass
         await event_bus.close()
 
 # --- App Initialization ---
@@ -62,6 +67,7 @@ app.include_router(review.router,     prefix="/api/v1/review",       tags=["Cont
 app.include_router(negotiation.router, prefix="/api/v1/negotiation",  tags=["Negotiation War Room"])
 app.include_router(bilingual.router,  prefix="/api/v1/bilingual",    tags=["Bilingual Editor"])
 app.include_router(national_laws.router, prefix="/api/v1/admin",       tags=["National Law Admin"])
+app.include_router(sse.admin_router,      prefix="/api/v1/admin",       tags=["Worker Admin"])
 app.include_router(signing.router,       prefix="/api/v1/signing",       tags=["E-Signature & E-Meterai"])
 app.include_router(sse.router,           prefix="/api/v1/events",        tags=["Real-Time Events"])
 

@@ -10,6 +10,7 @@ Used by:
   - graph.py (Agent 02-07 structured outputs)
   - routers/review.py (API response envelope)
 """
+from enum import Enum
 from typing import Literal, Optional
 from pydantic import BaseModel, Field
 import uuid
@@ -185,7 +186,8 @@ class ReviewFinding(BaseModel):
     description: str = Field(
         description="Full explanation for the tooltip and detail panel."
     )
-    coordinates: TextCoordinate = Field(
+    coordinates: Optional[TextCoordinate] = Field(
+        default=None,
         description="Exact location of the relevant text in the raw document."
     )
     suggested_revision: Optional[str] = Field(
@@ -199,6 +201,14 @@ class ReviewFinding(BaseModel):
     status: Literal["open", "accepted", "dismissed"] = Field(
         default="open",
         description="Lifecycle status of this finding."
+    )
+    source_agent: Optional[str] = Field(
+        default=None,
+        description="Source agent label for system-generated or aggregated findings."
+    )
+    is_sentinel: bool = Field(
+        default=False,
+        description="True when the finding is a system-generated warning about incomplete analysis."
     )
 
 
@@ -232,6 +242,137 @@ class ReviewResponse(BaseModel):
     raw_document: str = Field(
         description="The original clean document text. NEVER modified by AI."
     )
+
+
+class PipelineOutputQuality(str, Enum):
+    COMPLETE = "complete"
+    PARTIAL = "partial"
+    EMPTY = "empty"
+
+
+def create_sentinel_finding(
+    agent_name: str,
+    message: str,
+    severity: Literal["critical", "warning", "info"] = "warning",
+) -> dict:
+    """
+    Creates a banner-level warning for empty or incomplete agent output.
+    """
+    return ReviewFinding(
+        finding_id=f"sentinel_{agent_name.lower().replace(' ', '_')}_{uuid.uuid4().hex[:8]}",
+        severity=severity,
+        category="system_warning",
+        title=f"Incomplete Analysis: {agent_name}",
+        description=message,
+        coordinates=None,
+        source_agent=agent_name,
+        is_sentinel=True,
+    ).model_dump()
+
+
+def validate_agent_output(agent_name: str, state: dict) -> list[dict]:
+    """
+    Checks whether a specific pipeline agent produced meaningful output.
+    Returns sentinel findings for empty or suspiciously empty outputs.
+    """
+    sentinels: list[dict] = []
+
+    if agent_name == "compliance":
+        findings_v2 = state.get("compliance_findings_v2") or []
+        findings_v1 = state.get("compliance_issues") or []
+        if not findings_v2 and not findings_v1:
+            sentinels.append(create_sentinel_finding(
+                "Compliance Agent",
+                (
+                    "Analisis kepatuhan tidak menghasilkan temuan. Kontrak mungkin sudah sangat patuh, "
+                    "atau analisis tidak dapat diselesaikan dengan baik. Disarankan review manual untuk "
+                    "memastikan kepatuhan terhadap UU PDP, UU Cipta Kerja, dan regulasi terkait."
+                ),
+            ))
+
+    elif agent_name == "risk":
+        risk_score = state.get("risk_score", 0)
+        risk_flags_v2 = state.get("risk_flags_v2") or []
+        risk_flags_v1 = state.get("risk_flags") or []
+        if risk_score == 0 and not risk_flags_v2 and not risk_flags_v1:
+            sentinels.append(create_sentinel_finding(
+                "Risk Assessment Agent",
+                (
+                    "Penilaian risiko menghasilkan skor 0 tanpa risk flags. Ini mungkin mengindikasikan "
+                    "kontrak berisiko sangat rendah, atau agent tidak dapat menyelesaikan analisis. "
+                    "Disarankan review manual aspek risiko."
+                ),
+            ))
+
+    elif agent_name == "drafting":
+        revisions_v2 = state.get("draft_revisions_v2") or []
+        revisions_v1 = state.get("draft_revisions") or []
+        if not revisions_v2 and not revisions_v1:
+            sentinels.append(create_sentinel_finding(
+                "Drafting Agent",
+                (
+                    "Agent drafting tidak menghasilkan rekomendasi revisi. "
+                    "Kontrak mungkin sudah dalam kondisi netral, atau analisis tidak lengkap."
+                ),
+                severity="info",
+            ))
+
+    elif agent_name == "obligation_miner":
+        obligations_v2 = state.get("obligations_v2") or []
+        obligations_v1 = state.get("extracted_obligations") or []
+        if not obligations_v2 and not obligations_v1:
+            sentinels.append(create_sentinel_finding(
+                "Obligation Miner Agent",
+                (
+                    "Tidak ditemukan kewajiban kontraktual. Setiap kontrak umumnya memiliki kewajiban — "
+                    "kemungkinan besar analisis tidak dapat menyelesaikan ekstraksi. Review manual disarankan."
+                ),
+            ))
+
+    elif agent_name == "clause_classifier":
+        classified_v2 = state.get("classified_clauses_v2") or []
+        classified_v1 = state.get("classified_clauses") or []
+        if not classified_v2 and not classified_v1:
+            sentinels.append(create_sentinel_finding(
+                "Clause Classifier Agent",
+                (
+                    "Tidak ada klausul yang berhasil diklasifikasikan. "
+                    "Kemungkinan format dokumen tidak dapat diproses dengan baik."
+                ),
+            ))
+
+    return sentinels
+
+
+def assess_pipeline_output_quality(
+    state: dict,
+    agents_to_validate: Optional[list[str]] = None,
+) -> tuple[PipelineOutputQuality, list[dict]]:
+    agents = agents_to_validate or [
+        "compliance",
+        "risk",
+        "drafting",
+        "obligation_miner",
+        "clause_classifier",
+    ]
+
+    sentinel_findings: list[dict] = []
+    empty_agent_count = 0
+    for agent_name in agents:
+        agent_sentinels = validate_agent_output(agent_name, state)
+        if agent_sentinels:
+            empty_agent_count += 1
+            sentinel_findings.extend(agent_sentinels)
+
+    if empty_agent_count == len(agents):
+        return PipelineOutputQuality.EMPTY, sentinel_findings
+    if empty_agent_count > 0:
+        return PipelineOutputQuality.PARTIAL, sentinel_findings
+    return PipelineOutputQuality.COMPLETE, sentinel_findings
+
+
+def resolve_contract_status(pipeline_quality: str) -> str:
+    return "Review_Incomplete" if pipeline_quality == PipelineOutputQuality.EMPTY.value else "Reviewed"
 
 
 # ─────────────────────────────────────────────

@@ -18,7 +18,7 @@ from app.config import openai_client
 from app.rate_limiter import limiter
 from app.dependencies import TenantQdrantClient, get_tenant_qdrant, get_tenant_supabase, verify_clerk_token
 from app.schemas import DraftGenerateRequest, DraftAuditRequest, DraftChatRequest, DraftSaveRequest
-from app.routers.contracts import process_contract_background
+from app.routers.contracts import _schedule_contract_processing, publish_contract_event
 
 router = APIRouter()
 
@@ -28,7 +28,7 @@ router = APIRouter()
 # =====================================================================
 
 @router.post("/generate")
-@limiter.limit("20/minute")
+@limiter.limit("5/minute")
 async def generate_draft(
     request: Request,
     payload: DraftGenerateRequest,
@@ -81,7 +81,8 @@ async def generate_draft(
 # =====================================================================
 
 @router.post("/audit")
-@limiter.limit("20/minute")
+@limiter.limit("3/minute")
+@limiter.limit("15/hour")
 async def audit_draft(
     request: Request,
     payload: DraftAuditRequest,
@@ -108,7 +109,7 @@ async def audit_draft(
                 "matter_id": payload.matter_id,
                 "title": payload.title,
                 "draft_revisions": {"latest_text": payload.draft_text},
-                "status": "Review",
+                "status": "Queued",
                 "version_count": 1,
                 "latest_version_id": None,
             }).execute()
@@ -146,16 +147,39 @@ async def audit_draft(
             print(f"🚨 SUPABASE UPDATE ERROR (contracts.latest_version_id - drafting audit): {e}")
             raise HTTPException(status_code=500, detail=str(e))
 
-        # --- Step 2: Trigger LangGraph background pipeline ---
-        asyncio.create_task(
-            process_contract_background(
-                contract_id=contract_id,
-                version_id=version_id,
-                tenant_id=tenant_id,
-                matter_id=payload.matter_id,
-                filename=payload.title,
-                text_content=payload.draft_text,
-            )
+        await publish_contract_event(
+            "contract.created",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "contract_id": contract_id,
+                "contract_title": payload.title,
+                "status": "Queued",
+                "matter_id": payload.matter_id,
+                "message": f"{payload.title} queued for audit",
+            },
+        )
+        await publish_contract_event(
+            "contract.status_changed",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "contract_id": contract_id,
+                "contract_title": payload.title,
+                "old_status": None,
+                "new_status": "Queued",
+                "message": f"{payload.title} is queued for audit",
+            },
+        )
+
+        # --- Step 2: Trigger durable background pipeline ---
+        await _schedule_contract_processing(
+            contract_id=contract_id,
+            version_id=version_id,
+            tenant_id=tenant_id,
+            matter_id=payload.matter_id,
+            filename=payload.title,
+            text_content=payload.draft_text,
         )
 
         return {
@@ -307,7 +331,7 @@ async def draft_chat(
 # =====================================================================
 
 @router.post("/save")
-@limiter.limit("20/minute")
+@limiter.limit("30/minute")
 async def save_draft(
     request: Request,
     payload: DraftSaveRequest,
@@ -455,7 +479,7 @@ async def load_draft(
 from app.schemas import ApplySuggestionRequest
 
 @router.post("/apply-suggestion")
-@limiter.limit("20/minute")
+@limiter.limit("10/minute")
 async def apply_suggestion(
     request: Request,
     payload: ApplySuggestionRequest,

@@ -36,12 +36,14 @@ interface UseContractSSEOptions {
 
 const CONTRACT_EVENT_TYPES = [
     'connected',
+    'pipeline.queued',
     'pipeline.started',
     'pipeline.agent_started',
     'pipeline.agent_completed',
     'pipeline.agent_failed',
     'pipeline.completed',
     'pipeline.failed',
+    'diff.queued',
     'diff.started',
     'diff.completed',
     'diff.failed',
@@ -145,6 +147,8 @@ export function useContractSSE({
         handlers.onEvent?.(event)
 
         switch (event.event_type) {
+            case 'pipeline.queued':
+            case 'pipeline.started':
             case 'pipeline.agent_started':
             case 'pipeline.agent_completed':
                 handlers.onPipelineProgress?.(event)
@@ -155,6 +159,7 @@ export function useContractSSE({
             case 'pipeline.failed':
                 handlers.onPipelineFailed?.(event)
                 break
+            case 'diff.queued':
             case 'diff.started':
                 handlers.onDiffStarted?.(event)
                 break

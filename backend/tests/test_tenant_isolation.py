@@ -140,14 +140,17 @@ def _get_enclosing_function(lines, line_idx):
 def has_tenant_filter(chain_text: str) -> bool:
     """
     Return True if the query chain contains a tenant_id filter.
-    Recognises both .eq() filter syntax and "tenant_id": value payload syntax.
+    Recognises both .eq() / .in_() filter syntax and "tenant_id": value payload syntax.
     """
     return (
         'eq("tenant_id"' in chain_text
         or "eq('tenant_id'" in chain_text
+        or 'in_("tenant_id"' in chain_text
+        or "in_('tenant_id'" in chain_text
         or '"tenant_id":' in chain_text
         or "'tenant_id':" in chain_text
         or "tenant_id=" in chain_text
+        or re.search(r"\btenant_[a-zA-Z0-9_]*\.table\(", chain_text) is not None
     )
 
 
@@ -357,6 +360,7 @@ def test_cross_tenant_contracts_access_returns_empty():
     mock_eq_tenant.in_.return_value = mock_eq_tenant
     mock_eq_tenant.neq.return_value = mock_eq_tenant
     mock_eq_tenant.order.return_value = mock_eq_tenant
+    mock_eq_tenant.limit.return_value = mock_eq_tenant
     mock_eq_tenant.execute.return_value = mock_result
 
     import asyncio
@@ -365,7 +369,7 @@ def test_cross_tenant_contracts_access_returns_empty():
     mock_claims = {"verified_tenant_id": TENANT_B}
 
     result = asyncio.get_event_loop().run_until_complete(
-        list_contracts(claims=mock_claims, supabase=mock_supabase)
+        list_contracts(request=MagicMock(), claims=mock_claims, supabase=mock_supabase)
     )
     
     assert result["data"] == [], "Expected empty data for cross-tenant contract access"
@@ -381,3 +385,45 @@ def test_cross_tenant_contracts_access_returns_empty():
     assert filter_value == TENANT_B, (
         f"Expected filter value TENANT_B='{TENANT_B}', got '{filter_value}'"
     )
+
+
+def test_contracts_list_supports_recent_updated_sort_and_limit():
+    """
+    The contracts list route must support the recent-documents widget query:
+    sorted by updated_at and limited to 3 records while preserving tenant scope.
+    """
+    mock_supabase = MagicMock()
+    mock_result = MagicMock()
+    mock_result.data = [
+        {"id": "c-1", "updated_at": "2026-04-14T09:00:00Z"},
+        {"id": "c-2", "updated_at": "2026-04-14T08:00:00Z"},
+        {"id": "c-3", "updated_at": "2026-04-14T07:00:00Z"},
+    ]
+
+    mock_eq_tenant = mock_supabase.table.return_value.select.return_value.eq.return_value
+    mock_eq_tenant.in_.return_value = mock_eq_tenant
+    mock_eq_tenant.neq.return_value = mock_eq_tenant
+    mock_eq_tenant.order.return_value = mock_eq_tenant
+    mock_eq_tenant.limit.return_value = mock_eq_tenant
+    mock_eq_tenant.execute.return_value = mock_result
+
+    import asyncio
+    from app.routers.contracts import list_contracts
+
+    mock_claims = {"verified_tenant_id": TENANT_B}
+
+    result = asyncio.get_event_loop().run_until_complete(
+        list_contracts(
+            request=MagicMock(),
+            claims=mock_claims,
+            supabase=mock_supabase,
+            tab="active",
+            limit=3,
+            sort_by="updated_at",
+            sort_order="desc",
+        )
+    )
+
+    assert result["data"] == mock_result.data
+    mock_eq_tenant.order.assert_called_once_with("updated_at", desc=True)
+    mock_eq_tenant.limit.assert_called_once_with(3)

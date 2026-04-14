@@ -163,6 +163,14 @@ export default function WarRoomClient({
                     body: JSON.stringify({})
                 });
 
+                if (diffRes.status === 202) {
+                    const queued = await diffRes.json();
+                    setWaitingForRealtime(true);
+                    setDiffResult(null);
+                    setLoadingStage(String(queued.message || 'Smart Diff queued. Waiting for worker...'));
+                    return;
+                }
+
                 if (!diffRes.ok) {
                     const err = await diffRes.json().catch(() => ({}));
                     const detail = err.detail || 'Smart Diff execution failed';

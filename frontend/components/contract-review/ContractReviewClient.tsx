@@ -162,7 +162,7 @@ export default function ContractReviewClient({
         loadReview()
     }, [loadReview])
 
-    const isRealtimeTracked = awaitingPipeline || ['processing', 'retrying'].some(status =>
+    const isRealtimeTracked = awaitingPipeline || ['queued', 'processing', 'retrying'].some(status =>
         (contractStatus || '').toLowerCase().includes(status)
     )
 

@@ -1,5 +1,7 @@
 from datetime import datetime
 from typing import Optional
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from supabase import Client
@@ -19,6 +21,15 @@ from app.task_logger import TaskLogger
 import io
 
 router = APIRouter()
+
+
+def handle_bilingual_task_result(task: asyncio.Task, contract_id: str):
+    try:
+        exc = task.exception()
+        if exc:
+            print(f"🚨 [BILINGUAL TASK FAILED] Contract {contract_id}: {exc}")
+    except asyncio.CancelledError:
+        print(f"⚠️ [BILINGUAL TASK CANCELLED] Contract {contract_id}")
 
 
 def assemble_bilingual_contract_texts(
@@ -124,6 +135,129 @@ def generate_bilingual_pdf_bytes(
     return buffer.getvalue()
 
 
+def _get_active_bilingual_task(
+    *,
+    supabase_client: Client,
+    tenant_id: str,
+    contract_id: str,
+    task_type: str,
+    clause_id: str | None = None,
+) -> dict | None:
+    result = supabase_client.table("task_execution_logs") \
+        .select("id, arq_job_id, status, input_metadata") \
+        .eq("tenant_id", tenant_id) \
+        .eq("contract_id", contract_id) \
+        .eq("task_type", task_type) \
+        .in_("status", ["queued", "running", "retrying"]) \
+        .order("created_at", desc=True) \
+        .limit(10) \
+        .execute()
+
+    for row in result.data or []:
+        metadata = row.get("input_metadata") or {}
+        if clause_id is None or metadata.get("clause_id") == clause_id:
+            return row
+    return None
+
+
+async def process_bilingual_sync_background(
+    *,
+    contract_id: str,
+    clause_id: str,
+    tenant_id: str,
+    source_language: str,
+    source_text: str,
+    existing_log_id: str | None = None,
+    task_input_metadata: dict | None = None,
+) -> dict:
+    logger = TaskLogger(
+        tenant_id=tenant_id,
+        task_type="bilingual_sync",
+        contract_id=contract_id,
+        input_metadata={
+            "clause_id": clause_id,
+            "source_language": source_language,
+            "text_length": len(source_text),
+            **(task_input_metadata or {}),
+        },
+        existing_log_id=existing_log_id,
+    )
+    logger.log_agent_start("bilingual_sync")
+
+    try:
+        if source_language == "id":
+            target_language = "English"
+            origin = "Indonesian"
+        else:
+            target_language = "Indonesian (Bahasa Indonesia)"
+            origin = "English"
+
+        system_prompt = (
+            f"You are a bilingual legal translator expert in Indonesian Law No. 24/2009. "
+            f"Translate the {origin} clause to {target_language}. "
+            f"Ensure semantic consistency and legal equivalence. "
+            f"Return your output strictly complying to the JSON schema."
+        )
+
+        response = await asyncio.to_thread(
+            openai_client.beta.chat.completions.parse,
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": source_text},
+            ],
+            response_format=ClauseSyncResponse,
+        )
+        result = response.choices[0].message.parsed
+        result_dict = result.model_dump()
+        logger.log_agent_complete("bilingual_sync", {"translated_to": target_language})
+        logger.complete(result_summary=result_dict)
+        return result_dict
+    except Exception as exc:
+        logger.log_agent_failed("bilingual_sync", exc, used_fallback=False)
+        logger.fail(exc)
+        raise
+
+
+async def process_bilingual_validate_background(
+    *,
+    contract_id: str,
+    tenant_id: str,
+    existing_log_id: str | None = None,
+    task_input_metadata: dict | None = None,
+) -> dict:
+    logger = TaskLogger(
+        tenant_id=tenant_id,
+        task_type="bilingual_validate",
+        contract_id=contract_id,
+        input_metadata=task_input_metadata or {},
+        existing_log_id=existing_log_id,
+    )
+    logger.log_agent_start("bilingual_validate")
+
+    clauses_res = admin_supabase.table("bilingual_clauses").select("*") \
+        .eq("contract_id", contract_id).eq("tenant_id", tenant_id).eq("status", "active").execute()
+    clauses = clauses_res.data or []
+    clauses.sort(key=lambda c: float(c.get("clause_number", "0") or "0"))
+
+    if not clauses:
+        error = ValueError("No active clauses to validate")
+        logger.log_agent_failed("bilingual_validate", error, used_fallback=False)
+        logger.fail(error)
+        raise error
+
+    try:
+        report = await asyncio.to_thread(run_bilingual_consistency_agent, clauses)
+        report_dict = report.model_dump()
+        logger.log_agent_complete("bilingual_validate", {"clauses_checked": len(clauses)})
+        logger.complete(result_summary={"clauses_checked": len(clauses), "report": report_dict})
+        return report_dict
+    except Exception as exc:
+        logger.log_agent_failed("bilingual_validate", exc, used_fallback=False)
+        logger.fail(exc)
+        raise
+
+
 @router.get("/{contract_id}/clauses")
 @limiter.limit("60/minute")
 async def get_clauses(
@@ -152,7 +286,7 @@ async def get_clauses(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/{contract_id}/clauses")
-@limiter.limit("60/minute")
+@limiter.limit("20/minute")
 async def create_clause(
     request: Request,
     contract_id: str,
@@ -201,37 +335,87 @@ async def sync_clause(
     if not contract.data:
         raise HTTPException(status_code=404, detail="Contract not found")
 
-    
     try:
-        _logger = TaskLogger(tenant_id=tenant_id, task_type="bilingual_sync", contract_id=contract_id)
-        if payload.source_language == "id":
-             target_language = "English"
-             origin = "Indonesian"
-        else:
-             target_language = "Indonesian (Bahasa Indonesia)"
-             origin = "English"
-             
-        system_prompt = (
-            f"You are a bilingual legal translator expert in Indonesian Law No. 24/2009. "
-            f"Translate the {origin} clause to {target_language}. "
-            f"Ensure semantic consistency and legal equivalence. "
-            f"Return your output strictly complying to the JSON schema."
+        active_task = _get_active_bilingual_task(
+            supabase_client=supabase,
+            tenant_id=tenant_id,
+            contract_id=contract_id,
+            task_type="bilingual_sync",
+            clause_id=payload.clause_id,
         )
-        
-        response = openai_client.beta.chat.completions.parse(
-             model="gpt-4o",
-             messages=[
-                  {"role": "system", "content": system_prompt},
-                  {"role": "user", "content": payload.source_text}
-             ],
-             response_format=ClauseSyncResponse
-        )
-        result = response.choices[0].message.parsed
-        _logger.complete(result_summary={"translated_to": target_language})
-        return result
-        
+        if active_task:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "message": "Clause sync is already queued or running.",
+                    "job_id": active_task.get("arq_job_id"),
+                    "log_id": active_task.get("id"),
+                },
+            )
+
+        try:
+            from app.job_queue import enqueue_bilingual_sync
+
+            enqueue_result = await enqueue_bilingual_sync(
+                contract_id=contract_id,
+                clause_id=payload.clause_id,
+                tenant_id=tenant_id,
+                source_language=payload.source_language,
+                source_text=payload.source_text,
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "message": "Clause sync queued.",
+                    "job_id": enqueue_result["job_id"],
+                    "log_id": enqueue_result["log_id"],
+                },
+            )
+        except Exception as exc:
+            log_id = getattr(exc, "log_id", None)
+            if log_id is None:
+                fallback_logger = TaskLogger(
+                    tenant_id=tenant_id,
+                    task_type="bilingual_sync",
+                    contract_id=contract_id,
+                    input_metadata={
+                        "clause_id": payload.clause_id,
+                        "source_language": payload.source_language,
+                        "text_length": len(payload.source_text),
+                        "queue_fallback": True,
+                        "queue_error": str(exc),
+                    },
+                )
+                log_id = fallback_logger.log_id
+            task = asyncio.create_task(
+                process_bilingual_sync_background(
+                    contract_id=contract_id,
+                    clause_id=payload.clause_id,
+                    tenant_id=tenant_id,
+                    source_language=payload.source_language,
+                    source_text=payload.source_text,
+                    existing_log_id=log_id,
+                    task_input_metadata={
+                        "queue_fallback": True,
+                        "queue_error": str(exc),
+                    },
+                )
+            )
+            task.add_done_callback(lambda current_task: handle_bilingual_task_result(current_task, contract_id))
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "message": "Clause sync queued via in-process fallback.",
+                    "job_id": None,
+                    "log_id": log_id,
+                    "fallback": True,
+                },
+            )
+
     except Exception as e:
-        if '_logger' in locals(): _logger.fail(e)
         print(f"Error in sync-clause: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -257,12 +441,75 @@ async def validate_consistency(
         raise HTTPException(status_code=400, detail="No active clauses to validate")
         
     try:
-        _logger = TaskLogger(tenant_id=tenant_id, task_type="bilingual_validate", contract_id=contract_id)
-        report = run_bilingual_consistency_agent(clauses)
-        _logger.complete(result_summary={"clauses_checked": len(clauses)})
-        return {"status": "success", "data": report.model_dump()}
+        active_task = _get_active_bilingual_task(
+            supabase_client=supabase,
+            tenant_id=tenant_id,
+            contract_id=contract_id,
+            task_type="bilingual_validate",
+        )
+        if active_task:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "message": "Consistency validation is already queued or running.",
+                    "job_id": active_task.get("arq_job_id"),
+                    "log_id": active_task.get("id"),
+                },
+            )
+
+        try:
+            from app.job_queue import enqueue_bilingual_validate
+
+            enqueue_result = await enqueue_bilingual_validate(
+                contract_id=contract_id,
+                tenant_id=tenant_id,
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "message": "Consistency validation queued.",
+                    "job_id": enqueue_result["job_id"],
+                    "log_id": enqueue_result["log_id"],
+                },
+            )
+        except Exception as exc:
+            log_id = getattr(exc, "log_id", None)
+            if log_id is None:
+                fallback_logger = TaskLogger(
+                    tenant_id=tenant_id,
+                    task_type="bilingual_validate",
+                    contract_id=contract_id,
+                    input_metadata={
+                        "queue_fallback": True,
+                        "queue_error": str(exc),
+                    },
+                )
+                log_id = fallback_logger.log_id
+            task = asyncio.create_task(
+                process_bilingual_validate_background(
+                    contract_id=contract_id,
+                    tenant_id=tenant_id,
+                    existing_log_id=log_id,
+                    task_input_metadata={
+                        "queue_fallback": True,
+                        "queue_error": str(exc),
+                    },
+                )
+            )
+            task.add_done_callback(lambda current_task: handle_bilingual_task_result(current_task, contract_id))
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "message": "Consistency validation queued via in-process fallback.",
+                    "job_id": None,
+                    "log_id": log_id,
+                    "fallback": True,
+                },
+            )
     except Exception as e:
-        if '_logger' in locals(): _logger.fail(e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.patch("/{contract_id}/clause/{clause_id}")
@@ -322,7 +569,7 @@ async def patch_clause(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/{contract_id}/finalize")
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
 async def finalize_contract(
     request: Request,
     contract_id: str,
@@ -356,7 +603,7 @@ async def finalize_contract(
     return {"status": "success", "message": "Contract finalized"}
 
 @router.get("/{contract_id}/export-pdf")
-@limiter.limit("10/minute")
+@limiter.limit("5/minute")
 async def export_pdf(
     request: Request,
     contract_id: str,

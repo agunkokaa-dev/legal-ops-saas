@@ -28,6 +28,7 @@ from app.config import (
 )
 
 auth_logger = logging.getLogger("pariana.auth")
+dependency_logger = logging.getLogger("pariana.dependencies")
 logging.basicConfig(level=logging.INFO)
 
 
@@ -178,6 +179,108 @@ class TenantQdrantClient:
         return getattr(self._raw, item)
 
 
+class TenantTableQuery:
+    """
+    Table-level wrapper for privileged Supabase access in tenant-scoped background flows.
+
+    Entry-point methods auto-apply the authenticated tenant constraint so callers cannot
+    accidentally forget `.eq("tenant_id", ...)` when using the service-role client.
+    """
+
+    def __init__(self, raw_client: Any, table_name: str, tenant_id: str):
+        self._raw_client = raw_client
+        self._table_name = table_name
+        self.tenant_id = tenant_id
+
+    def _table(self) -> Any:
+        return self._raw_client.table(self._table_name)
+
+    def _normalize_write_payload(self, data: Any, *, inject_missing: bool) -> Any:
+        is_list = isinstance(data, list)
+        rows = data if is_list else [data]
+        normalized_rows: list[Any] = []
+
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError(
+                    "TenantSupabaseClient payload must be a dict or list of dicts"
+                )
+
+            cloned = dict(row)
+            row_tenant_id = cloned.get("tenant_id")
+            if row_tenant_id is None:
+                if inject_missing:
+                    cloned["tenant_id"] = self.tenant_id
+            elif row_tenant_id != self.tenant_id:
+                raise ValueError(
+                    f"Tenant ID mismatch: expected '{self.tenant_id}', got '{row_tenant_id}'"
+                )
+
+            normalized_rows.append(cloned)
+
+        return normalized_rows if is_list else normalized_rows[0]
+
+    def select(self, *args, **kwargs) -> Any:
+        return self._table().select(*args, **kwargs).eq("tenant_id", self.tenant_id)
+
+    def insert(self, data: Any, *args, **kwargs) -> Any:
+        normalized = self._normalize_write_payload(data, inject_missing=True)
+        return self._table().insert(normalized, *args, **kwargs)
+
+    def update(self, data: Any, *args, **kwargs) -> Any:
+        normalized = self._normalize_write_payload(data, inject_missing=False)
+        return self._table().update(normalized, *args, **kwargs).eq("tenant_id", self.tenant_id)
+
+    def upsert(self, data: Any, *args, **kwargs) -> Any:
+        normalized = self._normalize_write_payload(data, inject_missing=True)
+        return self._table().upsert(normalized, *args, **kwargs).eq("tenant_id", self.tenant_id)
+
+    def delete(self, *args, **kwargs) -> Any:
+        return self._table().delete(*args, **kwargs).eq("tenant_id", self.tenant_id)
+
+
+class TenantSupabaseClient:
+    """
+    Tenant-aware facade for the privileged Supabase service-role client.
+
+    Use this in background tasks and webhook handlers where tenant_id is already known
+    but a request-bound Clerk JWT is not available. It protects tenant-scoped tables by
+    auto-applying tenant filters and validating tenant_id on writes.
+
+    Prefer:
+      - `get_tenant_supabase()` for request-path handlers where Postgres RLS can enforce isolation.
+      - `get_admin_supabase()` only for audited cross-tenant/system operations.
+      - `TenantSupabaseClient` for privileged background flows that must stay tenant-scoped.
+    """
+
+    def __init__(self, raw_client: Any, tenant_id: str):
+        self._raw = raw_client
+        self.tenant_id = tenant_id
+
+    def table(self, table_name: str) -> TenantTableQuery:
+        return TenantTableQuery(self._raw, table_name, self.tenant_id)
+
+    def rpc(self, function_name: str, params: dict[str, Any] | None = None, *args, **kwargs) -> Any:
+        rpc_params = dict(params or {})
+        current_tenant = rpc_params.get("tenant_id")
+        if current_tenant is None:
+            rpc_params["tenant_id"] = self.tenant_id
+        elif current_tenant != self.tenant_id:
+            raise ValueError(
+                f"Tenant ID mismatch: expected '{self.tenant_id}', got '{current_tenant}'"
+            )
+        return self._raw.rpc(function_name, rpc_params, *args, **kwargs)
+
+    @property
+    def raw(self) -> Any:
+        dependency_logger.warning(
+            "TenantSupabaseClient.raw accessed for tenant_id=%s. "
+            "Document every raw usage with # CROSS-TENANT: <reason>.",
+            self.tenant_id,
+        )
+        return self._raw
+
+
 async def verify_clerk_token(
     request: Request,
     authorization: str = Header(None),
@@ -314,6 +417,13 @@ async def get_admin_supabase() -> Client:
     Explicit privileged dependency for audited background/admin flows only.
     """
     return admin_supabase
+
+
+def get_tenant_admin_supabase(tenant_id: str) -> TenantSupabaseClient:
+    """
+    Creates a tenant-scoped privileged Supabase client for background tasks.
+    """
+    return TenantSupabaseClient(admin_supabase, tenant_id)
 
 
 async def get_tenant_qdrant(

@@ -356,7 +356,7 @@ export default function SmartComposer({
 
       if (!res.ok) throw new Error("Failed to run audit");
 
-      toast.success("Draft sent to LangGraph for Audit!");
+      toast.success("Draft queued for AI audit!");
     } catch (error) {
       console.error(error);
       toast.error("Failed to audit draft.");

@@ -1,5 +1,6 @@
 fastapi>=0.104.1
 uvicorn>=0.24.0
+arq>=0.26.0
 pydantic
 pydantic-settings
 qdrant-client>=1.6.4

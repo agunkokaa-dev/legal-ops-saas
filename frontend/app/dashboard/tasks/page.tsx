@@ -1,8 +1,12 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { useAuth, useSession } from "@clerk/nextjs";
-import { createClient } from '@supabase/supabase-js';
+import { useAuth } from "@clerk/nextjs";
+import {
+    getTasksAPI, getTaskDetailsAPI, updateTaskAPI, deleteTaskAPI,
+    createSubTaskAPI, updateSubTaskAPI, deleteSubTaskAPI, deleteAttachmentAPI,
+    createTaskAPI, getMattersAPI, createAttachmentAPI, getTemplatesAPI, deleteTemplateAPI
+} from './tasksApi';
 import { supabaseClient } from "@/lib/supabase";
 import ReactMarkdown from 'react-markdown';
 import { toast, Toaster } from 'sonner';
@@ -41,7 +45,6 @@ export default function TasksDashboardPage() {
     const [isDailyBriefOpen, setIsDailyBriefOpen] = useState(true);
 
     const { userId, orgId, getToken } = useAuth();
-    const { session } = useSession();
     const tenantId = orgId || userId;
 
     const [tasks, setTasks] = useState<any[]>([]);
@@ -63,19 +66,24 @@ export default function TasksDashboardPage() {
     const [customTemplates, setCustomTemplates] = useState<any[]>([]);
     const [draftingTask, setDraftingTask] = useState<{matterId: string, title: string, counterparty?: string} | null>(null);
 
+    const getApiToken = async () => {
+        const token = await getToken();
+        if (!token) {
+            throw new Error("Missing authentication token.");
+        }
+        return token;
+    };
+
+    const getStorageClient = async () => {
+        const token = await getApiToken();
+        return supabaseClient(token);
+    };
+
     const fetchCustomTemplates = async () => {
         try {
-            const supabase = await getAuthenticatedSupabase();
-            if (!supabase) return;
-
-            // Fetch templates and count the related items in one query
-            const { data, error } = await supabase
-                .from('task_templates')
-                .select('*, task_template_items(count)')
-                .order('created_at', { ascending: false });
-
-            if (error) throw error;
-            setCustomTemplates(data || []);
+            const token = await getApiToken();
+            const templates = await getTemplatesAPI(token);
+            setCustomTemplates(templates);
         } catch (error) {
             console.error("Error fetching custom templates:", error);
         }
@@ -89,10 +97,8 @@ export default function TasksDashboardPage() {
 
     const handleDeleteTemplate = async (templateId: string) => {
         try {
-            const supabase = await getAuthenticatedSupabase();
-            if (!supabase) return;
-            const { error } = await supabase.from('task_templates').delete().eq('id', templateId);
-            if (error) throw error;
+            const token = await getApiToken();
+            await deleteTemplateAPI(token, templateId);
 
             toast.success("Template Deleted", {
                 style: { background: '#1a1a1a', border: '1px solid #ef4444', color: '#fff' }
@@ -181,31 +187,13 @@ export default function TasksDashboardPage() {
 
         // Clean up the string (remove the "+ Add Task:" prefix and markdown bolding if present)
         const cleanTitle = title.replace(/\+ Add Task:/g, '').replace(/\*\*/g, '').trim();
-        console.log("⚡ [DEBUG] Data siap dikirim ke Supabase:", { task_id: taskId, title: cleanTitle });
+        console.log("⚡ [DEBUG] Data siap dikirim ke API:", { task_id: taskId, title: cleanTitle });
 
         try {
-            const supabase = await getAuthenticatedSupabase();
-            if (!supabase) {
-                console.error("❌ [DEBUG] Supabase client not authenticated.");
-                return;
-            }
+            const token = await getApiToken();
+            const data = await createSubTaskAPI(token, taskId, cleanTitle);
 
-            const { data, error } = await supabase
-                .from('sub_tasks')
-                .insert({
-                    task_id: taskId,
-                    title: cleanTitle,
-                    is_completed: false
-                })
-                .select()
-                .single();
-
-            if (error) {
-                console.error("❌ [DEBUG] Supabase Insert Error:", error);
-                throw error;
-            }
-
-            console.log("✅ [DEBUG] Berhasil insert ke Supabase:", data);
+            console.log("✅ [DEBUG] Berhasil insert via API:", data);
             toast.success('Sub-task Created', {
                 description: `⚡ ${cleanTitle} has been added to Procedural Steps.`,
                 style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' },
@@ -233,91 +221,52 @@ export default function TasksDashboardPage() {
 
     const fetchTasks = async () => {
         if (!tenantId) return;
-        if (!session) return;
         try {
             setIsLoading(true);
-            const supabaseAccessToken = await session.getToken({ template: 'supabase' });
-
-            const dynamicSupabaseClient = createClient(
-                process.env.NEXT_PUBLIC_SUPABASE_URL!,
-                process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-                {
-                    global: { headers: { Authorization: `Bearer ${supabaseAccessToken}` } }
-                }
-            );
+            const token = await getApiToken();
 
             console.log("🔑 JWT TOKEN OBTAINED!");
 
-            const { data, error } = await dynamicSupabaseClient
-                .from('tasks')
-                .select('*, matters(title)')
-                .eq('tenant_id', tenantId)
-                .order('position');
-
-            if (error) throw error;
-            setTasks(data || []);
+            const tasks = await getTasksAPI(token);
+            setTasks(tasks);
 
             // Fetch matters for Matter Progress and New Task selector
-            const { data: mattersData, error: mattersError } = await dynamicSupabaseClient
-                .from('matters')
-                .select('id, title, status, claim_value, created_at')
-                .eq('tenant_id', tenantId);
+            const mattersData = await getMattersAPI(token);
 
             console.log("🔍 FETCHING WITH TENANT ID:", tenantId);
             console.log("📦 MATTERS DATA RECEIVED:", mattersData);
-            console.log("❌ SUPABASE ERROR (IF ANY):", mattersError);
 
             setMatters(mattersData || []);
         } catch (error: any) {
-            console.error("Error fetching tasks:", JSON.stringify(error, null, 2));
+            console.error("Error fetching tasks:", error);
             setTasks([]);
         } finally {
             setIsLoading(false);
         }
     };
 
-    // Helper to get an authenticated Supabase client
-    const getAuthenticatedSupabase = async () => {
-        if (!session) return null;
-        const token = await session.getToken({ template: 'supabase' });
-        return createClient(
-            process.env.NEXT_PUBLIC_SUPABASE_URL!,
-            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-            { global: { headers: { Authorization: `Bearer ${token}` } } }
-        );
-    };
-
     useEffect(() => {
         if (!tenantId) return; // Wait for Clerk to load
-        fetchTasks();
+        void fetchTasks();
     }, [tenantId]);
 
     const fetchTaskDetails = async () => {
         if (!selectedTask?.id) return;
-        const supabase = await getAuthenticatedSupabase();
-        if (!supabase) return;
+        const token = await getApiToken();
 
-        // Fetch task to get matters joined and source details
-        const { data: taskData } = await supabase
-            .from('tasks')
-            .select('*, matters(title)')
-            .eq('id', selectedTask.id)
-            .single();
+        const data = await getTaskDetailsAPI(token, selectedTask.id);
 
-        if (taskData) {
-            setSelectedTask((prev: any) => ({ ...prev, ...taskData }));
+        if (data.task) {
+            setSelectedTask((prev: any) => ({ ...prev, ...data.task }));
         }
 
-        // Fetch traditional details (checklists, att, logs)
-        const [chk, att, log, subTasksRes] = await Promise.all([
-            supabase.from('sub_tasks').select('*').eq('task_id', selectedTask.id).order('created_at'),
-            supabase.from('task_attachments').select('*').eq('task_id', selectedTask.id).order('created_at'),
-            supabase.from('activity_logs').select('*').eq('task_id', selectedTask.id).order('created_at', { ascending: false }),
-            supabase.from('sub_tasks').select('*').eq('task_id', selectedTask.id).order('created_at', { ascending: true })
-        ]);
-
-        setTaskDetails({ checklists: chk.data || [], attachments: att.data || [], logs: log.data || [], dependencies: [] });
-        setProceduralSteps(subTasksRes.data || []);
+        setTaskDetails({ 
+            checklists: data.sub_tasks || [], 
+            attachments: data.attachments || [], 
+            logs: data.activity_logs || [],
+            dependencies: [] 
+        });
+        setProceduralSteps(data.sub_tasks || []);
     };
 
     // Fetch task details when a task is selected
@@ -332,30 +281,20 @@ export default function TasksDashboardPage() {
     }, [selectedTask?.id]);
 
     const handleToggleStep = async (stepId: string, newState: boolean) => {
-        const supabase = await getAuthenticatedSupabase();
-        if (!supabase) return;
-        const { error } = await supabase
-            .from('sub_tasks')
-            .update({ is_completed: newState })
-            .eq('id', stepId);
-
-        if (!error) {
+        try {
+            const token = await getApiToken();
+            await updateSubTaskAPI(token, stepId, { is_completed: newState });
             // Optimistic update
             setProceduralSteps(prev => prev.map(s => s.id === stepId ? { ...s, is_completed: newState } : s));
+        } catch (e) {
+            console.error("Failed to toggle statement", e);
         }
     };
 
     const handleDeleteSubTask = async (subTaskId: string) => {
-        const supabase = await getAuthenticatedSupabase();
-        if (!supabase) return;
-
         try {
-            const { error } = await supabase
-                .from('sub_tasks')
-                .delete()
-                .eq('id', subTaskId);
-
-            if (error) throw error;
+            const token = await getApiToken();
+            await deleteSubTaskAPI(token, subTaskId);
 
             // Optimistic UI Update: Remove from local state immediately
             setProceduralSteps(prev => prev.filter(s => s.id !== subTaskId));
@@ -370,8 +309,8 @@ export default function TasksDashboardPage() {
         if (!tenantId) return;
         try {
             const apiUrl = getPublicApiBase();
-            const token = await getToken();
-            const response = await fetch(`${apiUrl}/api/v1/tasks/from-template?tenant_id=${tenantId}`, {
+            const token = await getApiToken();
+            const response = await fetch(`${apiUrl}/api/v1/tasks/from-template`, {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json',
@@ -403,19 +342,14 @@ export default function TasksDashboardPage() {
     };
 
     const submitInlineTask = async () => {
-        if (!inlineTitle.trim() || !inlineDraftMatterId || !session || !tenantId) return;
+        if (!inlineTitle.trim() || !inlineDraftMatterId || !tenantId) return;
         try {
-            const supabase = await getAuthenticatedSupabase();
-            if (!supabase) return;
-            const { error } = await supabase
-                .from('tasks')
-                .insert({
-                    tenant_id: tenantId,
-                    matter_id: inlineDraftMatterId,
-                    title: inlineTitle.trim(),
-                    status: 'backlog'
-                });
-            if (error) throw error;
+            const token = await getApiToken();
+            await createTaskAPI(token, {
+                matter_id: inlineDraftMatterId,
+                title: inlineTitle.trim(),
+                status: 'backlog'
+            });
             setInlineDraftMatterId(null);
             setInlineTitle("");
             await fetchTasks();
@@ -429,18 +363,16 @@ export default function TasksDashboardPage() {
 
     // DnD: Update task status when dropped in a new column
     const handleUpdateTaskStatus = async (id: string, newStatus: string) => {
-        const supabase = await getAuthenticatedSupabase();
-        if (!supabase) return;
-        await supabase.from('tasks').update({ status: newStatus }).eq('id', id);
+        const token = await getApiToken();
+        await updateTaskAPI(token, id, { status: newStatus });
         await fetchTasks();
     };
 
     // Delete a task
     const handleDeleteTask = async () => {
         if (!selectedTask) return;
-        const supabase = await getAuthenticatedSupabase();
-        if (!supabase) return;
-        await supabase.from('tasks').delete().eq('id', selectedTask.id);
+        const token = await getApiToken();
+        await deleteTaskAPI(token, selectedTask.id);
         setIsTaskDetailOpen(false);
         setSelectedTask(null);
         await fetchTasks();
@@ -449,17 +381,15 @@ export default function TasksDashboardPage() {
     // Update priority
     const handleUpdatePriority = async (newPriority: string) => {
         if (!selectedTask) return;
-        const supabase = await getAuthenticatedSupabase();
-        if (!supabase) return;
-        await supabase.from('tasks').update({ priority: newPriority }).eq('id', selectedTask.id);
+        const token = await getApiToken();
+        await updateTaskAPI(token, selectedTask.id, { priority: newPriority });
         setSelectedTask({ ...selectedTask, priority: newPriority });
     };
 
     // Toggle checklist item
     const handleToggleChecklist = async (chkId: string, currentState: boolean) => {
-        const supabase = await getAuthenticatedSupabase();
-        if (!supabase) return;
-        await supabase.from('sub_tasks').update({ is_completed: !currentState }).eq('id', chkId);
+        const token = await getApiToken();
+        await updateSubTaskAPI(token, chkId, { is_completed: !currentState });
         // The useEffect for selectedTask will handle the refresh
     };
 
@@ -468,21 +398,18 @@ export default function TasksDashboardPage() {
         const file = e.target.files[0];
         if (!file || !selectedTask) return;
         try {
-            const supabase = await getAuthenticatedSupabase();
-            if (!supabase) return;
+            const token = await getApiToken();
+            const supabase = await getStorageClient();
             const { data: uploadData, error: uploadError } = await supabase.storage.from('task_files').upload(`${selectedTask.id}/${Date.now()}_${file.name}`, file);
             if (uploadError) throw uploadError;
 
-            const { error: dbError } = await supabase.from('task_attachments').insert({
-                tenant_id: tenantId,
-                task_id: selectedTask.id,
+            await createAttachmentAPI(token, selectedTask.id, {
                 file_name: file.name,
-                file_url: uploadData.path,
+                file_path: uploadData.path,
                 source: 'uploaded'
             });
-            if (dbError) throw dbError;
 
-            // The useEffect for selectedTask will handle the refresh
+            await fetchTaskDetails();
         } catch (err) {
             console.error("Upload error:", err);
             toast.error("Failed to upload file.");
@@ -1282,21 +1209,14 @@ export default function TasksDashboardPage() {
                                                 className="w-full bg-black/50 border border-white/10 rounded-lg p-2.5 text-xs text-white outline-none focus:border-clause-gold transition-colors placeholder:text-gray-600 placeholder:italic"
                                                 onKeyDown={async (e) => {
                                                     if (e.key === 'Enter' && newSubTask.trim() !== '') {
-                                                        const supabase = await getAuthenticatedSupabase();
-                                                        if (!supabase) return;
-                                                        const { error } = await supabase
-                                                            .from('sub_tasks')
-                                                            .insert({
-                                                                task_id: selectedTask.id,
-                                                                title: newSubTask.trim(),
-                                                                is_completed: false
-                                                            });
-
-                                                        if (error) {
+                                                        try {
+                                                            const token = await getApiToken();
+                                                            await createSubTaskAPI(token, selectedTask.id, newSubTask.trim());
+                                                            setNewSubTask(''); // Clear input
+                                                            await fetchTaskDetails();
+                                                        } catch (error) {
                                                             console.error("❌ ERROR INSERTING SUB-TASK:", error);
                                                             toast.error("Failed to add ad-hoc checklist");
-                                                        } else {
-                                                            setNewSubTask(''); // Clear input
                                                         }
                                                     }
                                                 }}
@@ -1326,10 +1246,13 @@ export default function TasksDashboardPage() {
                                                     {/* Delete Button for files */}
                                                     <button
                                                         onClick={async () => {
-                                                            const supabase = await getAuthenticatedSupabase();
-                                                            if (!supabase) return;
-                                                            await supabase.from('task_attachments').delete().eq('id', file.id);
-                                                            await fetchTaskDetails();
+                                                            try {
+                                                                const token = await getApiToken();
+                                                                await deleteAttachmentAPI(token, file.id);
+                                                                await fetchTaskDetails();
+                                                            } catch (err) {
+                                                                toast.error("Failed to delete attachment");
+                                                            }
                                                         }}
                                                         className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 text-red-500 hover:text-red-400 text-xs cursor-pointer z-10"
                                                     >

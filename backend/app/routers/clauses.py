@@ -123,7 +123,7 @@ async def create_clause(
 
 
 @router.post("/clauses/match")
-@limiter.limit("20/minute")
+@limiter.limit("30/minute")
 async def match_clause(
     request: Request,
     body: ClauseMatchRequest,
@@ -203,7 +203,7 @@ async def match_clause(
 # DELETE THIS ENDPOINT after use.
 # =====================================================================
 @router.post("/clauses/repair-vectors")
-@limiter.limit("20/minute")
+@limiter.limit("1/hour")
 async def repair_clause_vectors(
     request: Request,
     claims: dict = Depends(verify_clerk_token),

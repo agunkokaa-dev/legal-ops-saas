@@ -11,10 +11,18 @@ import traceback
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
 from supabase import Client
 
-from app.config import openai_client, COLLECTION_NAME
-from app.dependencies import TenantQdrantClient, get_tenant_qdrant, verify_clerk_token, get_tenant_supabase
+from app.config import openai_client, COLLECTION_NAME, qdrant
+from app.dependencies import (
+    TenantQdrantClient,
+    TenantSupabaseClient,
+    get_tenant_admin_supabase,  # TenantSupabaseClient factory
+    get_tenant_qdrant,
+    verify_clerk_token,
+    get_tenant_supabase,
+)
 from app.schemas import EscalateIssueRequest, DiffRequest
 from app.review_schemas import SmartDiffResult
 from app.task_logger import TaskLogger
@@ -43,6 +51,15 @@ async def publish_negotiation_event(
         contract_id=contract_id,
         data=data or {},
     ))
+
+
+def handle_diff_task_result(task: asyncio.Task, contract_id: str):
+    try:
+        exc = task.exception()
+        if exc:
+            print(f"🚨 [SMART DIFF TASK FAILED] Contract {contract_id}: {exc}")
+    except asyncio.CancelledError:
+        print(f"⚠️ [SMART DIFF TASK CANCELLED] Contract {contract_id}")
 
 
 class UpdateIssueStatusRequest(BaseModel):
@@ -177,7 +194,7 @@ async def list_negotiation_issues(
 # =====================================================================
 
 @router.post("/{contract_id}/escalate")
-@limiter.limit("20/minute")
+@limiter.limit("10/minute")
 async def escalate_issue(
     request: Request,
     contract_id: str,
@@ -288,7 +305,7 @@ async def escalate_issue(
 # GET /diff — Fetch Cached Smart Diff Result
 # =====================================================================
 @router.get("/{contract_id}/diff", response_model=SmartDiffResult)
-@limiter.limit("30/minute")
+@limiter.limit("60/minute")
 async def get_smart_diff(
     request: Request,
     contract_id: str,
@@ -330,12 +347,320 @@ async def get_smart_diff(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+def _get_active_diff_task(
+    *,
+    supabase_client: Client,
+    tenant_id: str,
+    contract_id: str,
+) -> dict | None:
+    result = supabase_client.table("task_execution_logs") \
+        .select("id, arq_job_id, status") \
+        .eq("tenant_id", tenant_id) \
+        .eq("contract_id", contract_id) \
+        .eq("task_type", "smart_diff") \
+        .in_("status", ["queued", "running", "retrying"]) \
+        .order("created_at", desc=True) \
+        .limit(1) \
+        .execute()
+    return (result.data or [None])[0]
+
+
+async def _execute_diff_and_persist(
+    *,
+    contract_id: str,
+    tenant_id: str,
+    v1_version_id: str | None = None,
+    v2_version_id: str | None = None,
+    supabase_client: TenantSupabaseClient | None = None,
+) -> dict:
+    tenant_sb = supabase_client or get_tenant_admin_supabase(tenant_id)  # TenantSupabaseClient
+
+    if v1_version_id and v2_version_id:
+        v2_res = tenant_sb.table("contract_versions").select("*") \
+            .eq("id", v2_version_id) \
+            .eq("contract_id", contract_id) \
+            .limit(1) \
+            .execute()
+        v1_res = tenant_sb.table("contract_versions").select("*") \
+            .eq("id", v1_version_id) \
+            .eq("contract_id", contract_id) \
+            .limit(1) \
+            .execute()
+        versions = [item for item in [*(v2_res.data or []), *(v1_res.data or [])] if item]
+        versions.sort(key=lambda version: version.get("version_number", 0), reverse=True)
+    else:
+        res = tenant_sb.table("contract_versions") \
+            .select("*") \
+            .eq("contract_id", contract_id) \
+            .gt("version_number", 0) \
+            .order("version_number", desc=True) \
+            .limit(2) \
+            .execute()
+        versions = res.data or []
+
+    if len(versions) < 2:
+        raise ValueError("Not enough versions to perform a diff. Requires at least V1 and V2.")
+
+    v2 = versions[0]
+    v1 = versions[1]
+    v1_text = v1.get("raw_text", "")
+    v2_text = v2.get("raw_text", "")
+    v1_score = v1.get("risk_score", 0.0) or 0.0
+
+    def fetch_rules():
+        hits, _ = qdrant.scroll(
+            collection_name="company_rules",
+            scroll_filter=Filter(must=[
+                FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id)),
+            ]),
+            limit=50,
+        )
+        return hits
+
+    try:
+        hits = await asyncio.to_thread(fetch_rules)
+        playbook_rules_text = ""
+        for hit in hits:
+            playbook_rules_text += f"- {hit.payload.get('rule_text', '')}\n"
+    except Exception as q_err:
+        print(f"Warning: Failed to fetch playbook rules: {q_err}")
+        playbook_rules_text = ""
+
+    if not playbook_rules_text.strip():
+        playbook_rules_text = "No custom playbook rules defined."
+
+    prior_rounds_context = None
+    try:
+        rounds_res = tenant_sb.table("negotiation_rounds") \
+            .select("round_number, diff_snapshot, concession_analysis") \
+            .eq("contract_id", contract_id) \
+            .order("round_number") \
+            .execute()
+        prior_rounds = rounds_res.data or []
+        if prior_rounds:
+            context_parts = []
+            for round_row in prior_rounds:
+                snap = round_row.get("diff_snapshot", {}) or {}
+                summary = snap.get("summary", "No summary available.")
+                context_parts.append(f"Round {round_row['round_number']}: {summary}")
+            prior_rounds_context = "\n".join(context_parts)
+    except Exception as rounds_err:
+        print(f"Warning: Failed to fetch prior rounds: {rounds_err}")
+
+    budget_allocation = allocate_budget(
+        inputs={
+            "v1_text": v1_text,
+            "v2_text": v2_text,
+            "playbook_rules": playbook_rules_text,
+            "prior_rounds": prior_rounds_context or "",
+        },
+        priorities={
+            "v1_text": 3,
+            "v2_text": 3,
+            "playbook_rules": 2,
+            "prior_rounds": 1,
+        },
+        total_budget=102_400,
+        model="gpt-4o",
+        system_prompt_tokens=3_000,
+    )
+    safe_v1, v1_tokens = budget_allocation["v1_text"]
+    safe_v2, v2_tokens = budget_allocation["v2_text"]
+    safe_playbook, playbook_tokens = budget_allocation["playbook_rules"]
+    safe_rounds, rounds_tokens = budget_allocation["prior_rounds"]
+
+    print(
+        f"[SMART DIFF] Token allocation: V1={v1_tokens:,} V2={v2_tokens:,} "
+        f"Playbook={playbook_tokens:,} Rounds={rounds_tokens:,} "
+        f"Total={v1_tokens + v2_tokens + playbook_tokens + rounds_tokens:,}"
+    )
+
+    diff_result_dict = await asyncio.to_thread(
+        run_smart_diff_agent,
+        v1_raw_text=safe_v1,
+        v2_raw_text=safe_v2,
+        v1_risk_score=v1_score,
+        playbook_rules_text=safe_playbook,
+        prior_rounds_context=safe_rounds,
+    )
+
+    try:
+        issues_payload = []
+        deviations = diff_result_dict.get("deviations", [])
+        for dev in deviations:
+            issues_payload.append({
+                "tenant_id": tenant_id,
+                "contract_id": contract_id,
+                "version_id": v2.get("id"),
+                "finding_id": dev.get("deviation_id"),
+                "title": dev.get("title", "Untitled Deviation"),
+                "description": dev.get("impact_analysis", ""),
+                "severity": dev.get("severity", "warning"),
+                "category": dev.get("category", "Negotiation"),
+                "status": "open",
+                "playbook_reference": dev.get("playbook_violation", ""),
+            })
+
+        if issues_payload:
+            issues_res = tenant_sb.table("negotiation_issues").insert(issues_payload).execute()
+            inserted_issues = issues_res.data or []
+            if len(inserted_issues) == len(deviations):
+                for idx, dev in enumerate(deviations):
+                    dev["deviation_id"] = inserted_issues[idx]["id"]
+    except Exception as sync_err:
+        print(f"Warning: Failed to sync deviations to DB: {sync_err}")
+
+    pipeline_output = v2.get("pipeline_output") or {}
+    pipeline_output["diff_result"] = diff_result_dict
+
+    tenant_sb.table("contract_versions") \
+        .update({
+            "pipeline_output": pipeline_output,
+            "is_truncated": safe_v2 != v2_text,
+        }) \
+        .eq("id", v2.get("id")) \
+        .execute()
+
+    round_number = v2.get("version_number", 2) - 1
+    try:
+        tenant_sb.table("negotiation_rounds").upsert({
+            "tenant_id": tenant_id,
+            "contract_id": contract_id,
+            "round_number": round_number,
+            "from_version_id": v1.get("id"),
+            "to_version_id": v2.get("id"),
+            "diff_snapshot": diff_result_dict,
+        }, on_conflict="contract_id,round_number").execute()
+        print(f"✅ Negotiation Round {round_number} tracked for contract {contract_id}")
+    except Exception as round_err:
+        print(f"Warning: Failed to track negotiation round: {round_err}")
+
+    deviations = diff_result_dict.get("deviations", [])
+    return {
+        "deviations_count": len(deviations),
+        "critical_count": sum(1 for deviation in deviations if deviation.get("severity") == "critical"),
+        "risk_delta": diff_result_dict.get("risk_delta", 0),
+        "round_number": round_number,
+        "v1_version_id": v1.get("id"),
+        "v2_version_id": v2.get("id"),
+        "v1_version_number": v1.get("version_number"),
+        "v2_version_number": v2.get("version_number"),
+        "v1_tokens": v1_tokens,
+        "v2_tokens": v2_tokens,
+        "playbook_tokens": playbook_tokens,
+        "prior_rounds_tokens": rounds_tokens,
+        "budget_total": v1_tokens + v2_tokens + playbook_tokens + rounds_tokens,
+        "v1_truncated": safe_v1 != v1_text,
+        "v2_truncated": safe_v2 != v2_text,
+        "playbook_truncated": safe_playbook != playbook_rules_text,
+        "prior_rounds_truncated": safe_rounds != (prior_rounds_context or ""),
+    }
+
+
+async def process_smart_diff_background(
+    *,
+    contract_id: str,
+    tenant_id: str,
+    v1_version_id: str | None = None,
+    v2_version_id: str | None = None,
+    existing_log_id: str | None = None,
+    task_input_metadata: dict | None = None,
+) -> dict:
+    diff_logger = TaskLogger(
+        tenant_id=tenant_id,
+        task_type="smart_diff",
+        contract_id=contract_id,
+        version_id=v2_version_id,
+        input_metadata={
+            "requested_v1_version_id": v1_version_id,
+            "requested_v2_version_id": v2_version_id,
+            **(task_input_metadata or {}),
+        },
+        existing_log_id=existing_log_id,
+    )
+    diff_logger.log_agent_start("smart_diff")
+
+    try:
+        tenant_sb = get_tenant_admin_supabase(tenant_id)  # TenantSupabaseClient
+        await publish_negotiation_event(
+            "diff.started",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "v1_version_id": v1_version_id,
+                "v2_version_id": v2_version_id,
+                "message": "Starting Smart Diff analysis with GPT-4o...",
+            },
+        )
+
+        result_summary = await _execute_diff_and_persist(
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            v1_version_id=v1_version_id,
+            v2_version_id=v2_version_id,
+            supabase_client=tenant_sb,
+        )
+
+        diff_logger.update_input_metadata({
+            "v1_tokens": result_summary["v1_tokens"],
+            "v2_tokens": result_summary["v2_tokens"],
+            "playbook_tokens": result_summary["playbook_tokens"],
+            "prior_rounds_tokens": result_summary["prior_rounds_tokens"],
+            "budget_total": result_summary["budget_total"],
+            "v1_truncated": result_summary["v1_truncated"],
+            "v2_truncated": result_summary["v2_truncated"],
+            "playbook_truncated": result_summary["playbook_truncated"],
+            "prior_rounds_truncated": result_summary["prior_rounds_truncated"],
+        })
+        diff_logger.log_agent_complete("smart_diff", {
+            "deviations_count": result_summary["deviations_count"],
+            "critical_count": result_summary["critical_count"],
+        })
+        diff_logger.complete(result_summary=result_summary)
+
+        await publish_negotiation_event(
+            "negotiation.round_created",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "round_number": result_summary["round_number"],
+                "from_version_id": result_summary["v1_version_id"],
+                "to_version_id": result_summary["v2_version_id"],
+            },
+        )
+        await publish_negotiation_event(
+            "diff.completed",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "deviations_count": result_summary["deviations_count"],
+                "critical_count": result_summary["critical_count"],
+                "risk_delta": result_summary["risk_delta"],
+                "message": "Smart Diff analysis complete",
+            },
+        )
+        return result_summary
+    except Exception as exc:
+        diff_logger.log_agent_failed("smart_diff", exc, used_fallback=False)
+        diff_logger.fail(exc)
+        await publish_negotiation_event(
+            "diff.failed",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "error": str(exc)[:500],
+                "message": "Smart Diff analysis failed",
+            },
+        )
+        raise
+
 # =====================================================================
 # POST /diff — Smart Diff Agent Execution
 # =====================================================================
-@router.post("/{contract_id}/diff", response_model=SmartDiffResult)
+@router.post("/{contract_id}/diff")
 @limiter.limit("3/minute")
-@limiter.limit("20/hour")
+@limiter.limit("15/hour")
 async def generate_smart_diff(
     request: Request,
     contract_id: str,
@@ -350,236 +675,103 @@ async def generate_smart_diff(
     """
     try:
         tenant_id = claims["verified_tenant_id"]
-        _diff_logger = TaskLogger(tenant_id=tenant_id, task_type="smart_diff", contract_id=contract_id)
-        _diff_logger.log_agent_start("smart_diff")
-
-        # 1. Get the latest 2 versions
-        res = supabase.table("contract_versions") \
-            .select("*") \
+        version_query = supabase.table("contract_versions") \
+            .select("id") \
             .eq("contract_id", contract_id) \
             .eq("tenant_id", tenant_id) \
             .gt("version_number", 0) \
             .order("version_number", desc=True) \
             .limit(2) \
             .execute()
-        
-        versions = res.data or []
-        if len(versions) < 2:
-            raise HTTPException(status_code=400, detail="Not enough versions to perform a diff. Requires at least V1 and V2.")
-
-        # versions[0] is V2 (latest), versions[1] is V1 (previous)
-        v2 = versions[0]
-        v1 = versions[1]
-
-        v1_text = v1.get("raw_text", "")
-        v2_text = v2.get("raw_text", "")
-        v1_score = v1.get("risk_score", 0.0) or 0.0
-
-        # 2. Fetch Playbook rules from Qdrant
-        user_id = claims.get("sub", "")
-        
-        def fetch_rules():
-            hits, _ = qdrant_client.scroll(
-                collection_name="company_rules",
-                limit=50
-            )
-            return hits
-            
-        try:
-            hits = await asyncio.to_thread(fetch_rules)
-            playbook_rules_text = ""
-            for hit in hits:
-                playbook_rules_text += f"- {hit.payload.get('rule_text', '')}\n"
-        except Exception as q_err:
-            print(f"Warning: Failed to fetch playbook rules: {q_err}")
-            playbook_rules_text = ""
-
-        if not playbook_rules_text.strip():
-            playbook_rules_text = "No custom playbook rules defined."
-
-        # 3. Fetch prior rounds context for multi-round intelligence
-        prior_rounds_context = None
-        try:
-            rounds_res = supabase.table("negotiation_rounds") \
-                .select("round_number, diff_snapshot, concession_analysis") \
+        versions = version_query.data or []
+        if payload and payload.v1_version_id and payload.v2_version_id:
+            explicit_versions = supabase.table("contract_versions").select("id") \
                 .eq("contract_id", contract_id) \
                 .eq("tenant_id", tenant_id) \
-                .order("round_number") \
+                .in_("id", [payload.v1_version_id, payload.v2_version_id]) \
                 .execute()
-            prior_rounds = rounds_res.data or []
-            if prior_rounds:
-                context_parts = []
-                for r in prior_rounds:
-                    snap = r.get("diff_snapshot", {}) or {}
-                    summary = snap.get("summary", "No summary available.")
-                    context_parts.append(f"Round {r['round_number']}: {summary}")
-                prior_rounds_context = "\n".join(context_parts)
-        except Exception as rounds_err:
-            print(f"Warning: Failed to fetch prior rounds: {rounds_err}")
+            if len(explicit_versions.data or []) < 2:
+                raise HTTPException(status_code=404, detail="Requested versions were not found for this contract.")
+        elif len(versions) < 2:
+            raise HTTPException(status_code=400, detail="Not enough versions to perform a diff. Requires at least V1 and V2.")
 
-        budget_allocation = allocate_budget(
-            inputs={
-                "v1_text": v1_text,
-                "v2_text": v2_text,
-                "playbook_rules": playbook_rules_text,
-                "prior_rounds": prior_rounds_context or "",
-            },
-            priorities={
-                "v1_text": 3,
-                "v2_text": 3,
-                "playbook_rules": 2,
-                "prior_rounds": 1,
-            },
-            total_budget=102_400,
-            model="gpt-4o",
-            system_prompt_tokens=3_000,
-        )
-        safe_v1, v1_tokens = budget_allocation["v1_text"]
-        safe_v2, v2_tokens = budget_allocation["v2_text"]
-        safe_playbook, playbook_tokens = budget_allocation["playbook_rules"]
-        safe_rounds, rounds_tokens = budget_allocation["prior_rounds"]
-
-        _diff_logger.input_metadata.update({
-            "v1_tokens": v1_tokens,
-            "v2_tokens": v2_tokens,
-            "playbook_tokens": playbook_tokens,
-            "prior_rounds_tokens": rounds_tokens,
-            "budget_total": v1_tokens + v2_tokens + playbook_tokens + rounds_tokens,
-            "v1_truncated": safe_v1 != v1_text,
-            "v2_truncated": safe_v2 != v2_text,
-            "playbook_truncated": safe_playbook != playbook_rules_text,
-            "prior_rounds_truncated": safe_rounds != (prior_rounds_context or ""),
-        })
-        print(
-            f"[SMART DIFF] Token allocation: V1={v1_tokens:,} V2={v2_tokens:,} "
-            f"Playbook={playbook_tokens:,} Rounds={rounds_tokens:,} "
-            f"Total={v1_tokens + v2_tokens + playbook_tokens + rounds_tokens:,}"
-        )
-
-        await publish_negotiation_event(
-            "diff.started",
-            tenant_id,
+        active_task = _get_active_diff_task(
+            supabase_client=supabase,
+            tenant_id=tenant_id,
             contract_id=contract_id,
-            data={
-                "v1_version": v1.get("version_number"),
-                "v2_version": v2.get("version_number"),
-                "playbook_rules_count": 0 if playbook_rules_text == "No custom playbook rules defined." else len([line for line in playbook_rules_text.splitlines() if line.strip()]),
-                "message": "Starting Smart Diff analysis with GPT-4o...",
-            },
         )
-
-        # 5. Execute Smart Diff Agent
-        diff_result_dict = await asyncio.to_thread(
-            run_smart_diff_agent,
-            v1_raw_text=safe_v1,
-            v2_raw_text=safe_v2,
-            v1_risk_score=v1_score,
-            playbook_rules_text=safe_playbook,
-            prior_rounds_context=safe_rounds
-        )
-
-        # 5. Pre-Sync: Insert all deviations as persistent negotiation_issues
-        try:
-            issues_payload = []
-            deviations = diff_result_dict.get("deviations", [])
-            for dev in deviations:
-                issues_payload.append({
-                    "tenant_id": tenant_id,
-                    "contract_id": contract_id,
-                    "version_id": v2.get("id"),
-                    "finding_id": dev.get("deviation_id"), # Stash the AI ephemeral ID
-                    "title": dev.get("title", "Untitled Deviation"),
-                    "description": dev.get("impact_analysis", ""),
-                    "severity": dev.get("severity", "warning"),
-                    "category": dev.get("category", "Negotiation"),
-                    "status": "open",
-                    "playbook_reference": dev.get("playbook_violation", ""),
-                })
-            
-            if issues_payload:
-                issues_res = supabase.table("negotiation_issues").insert([{**iss, "tenant_id": tenant_id} for iss in issues_payload]).execute()
-                inserted_issues = issues_res.data or []
-                
-                # Replace the ephemeral deviation_ids with the REAL Supabase UUIDs
-                if len(inserted_issues) == len(deviations):
-                    for idx, dev in enumerate(deviations):
-                        dev["deviation_id"] = inserted_issues[idx]["id"]
-                        
-        except Exception as sync_err:
-            print(f"Warning: Failed to sync deviations to DB: {sync_err}")
-
-        # 6. Cache it inside v2's pipeline_output with REAL IDs
-        pipeline_output = v2.get("pipeline_output") or {}
-        pipeline_output["diff_result"] = diff_result_dict
-
-        supabase.table("contract_versions") \
-            .update({
-                "pipeline_output": pipeline_output,
-                "is_truncated": safe_v2 != v2_text
-            }) \
-            .eq("id", v2.get("id")) \
-            .eq("tenant_id", tenant_id) \
-            .execute()
-
-        # 7. Track this as a negotiation round with REAL IDs
-        try:
-            round_number = v2.get("version_number", 2) - 1
-            supabase.table("negotiation_rounds").upsert({
-                "tenant_id": tenant_id,
-                "contract_id": contract_id,
-                "round_number": round_number,
-                "from_version_id": v1.get("id"),
-                "to_version_id": v2.get("id"),
-                "diff_snapshot": diff_result_dict
-            }, on_conflict="contract_id,round_number").execute()
-            print(f"✅ Negotiation Round {round_number} tracked for contract {contract_id}")
-            await publish_negotiation_event(
-                "negotiation.round_created",
-                tenant_id,
-                contract_id=contract_id,
-                data={
-                    "round_number": round_number,
-                    "from_version_id": v1.get("id"),
-                    "to_version_id": v2.get("id"),
+        if active_task:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "message": "Smart Diff is already queued or running.",
+                    "job_id": active_task.get("arq_job_id"),
+                    "log_id": active_task.get("id"),
                 },
             )
-        except Exception as round_err:
-            print(f"Warning: Failed to track negotiation round: {round_err}")
 
-        await publish_negotiation_event(
-            "diff.completed",
-            tenant_id,
-            contract_id=contract_id,
-            data={
-                "deviations_count": len(diff_result_dict.get("deviations", [])),
-                "critical_count": sum(1 for d in diff_result_dict.get("deviations", []) if d.get("severity") == "critical"),
-                "risk_delta": diff_result_dict.get("risk_delta", 0),
-                "message": "Smart Diff analysis complete",
-            },
-        )
-        _diff_logger.complete(result_summary={"deviations": len(diff_result_dict.get("deviations", []))})
-        return diff_result_dict
+        try:
+            from app.job_queue import enqueue_smart_diff
+
+            enqueue_result = await enqueue_smart_diff(
+                contract_id=contract_id,
+                tenant_id=tenant_id,
+                v1_version_id=payload.v1_version_id if payload else None,
+                v2_version_id=payload.v2_version_id if payload else None,
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "message": "Smart Diff queued for background analysis.",
+                    "job_id": enqueue_result["job_id"],
+                    "log_id": enqueue_result["log_id"],
+                },
+            )
+        except Exception as exc:
+            log_id = getattr(exc, "log_id", None)
+            if log_id is None:
+                fallback_logger = TaskLogger(
+                    tenant_id=tenant_id,
+                    task_type="smart_diff",
+                    contract_id=contract_id,
+                    input_metadata={
+                        "requested_v1_version_id": payload.v1_version_id if payload else None,
+                        "requested_v2_version_id": payload.v2_version_id if payload else None,
+                        "queue_fallback": True,
+                        "queue_error": str(exc),
+                    },
+                )
+                log_id = fallback_logger.log_id
+            task = asyncio.create_task(
+                process_smart_diff_background(
+                    contract_id=contract_id,
+                    tenant_id=tenant_id,
+                    v1_version_id=payload.v1_version_id if payload else None,
+                    v2_version_id=payload.v2_version_id if payload else None,
+                    existing_log_id=log_id,
+                    task_input_metadata={
+                        "queue_fallback": True,
+                        "queue_error": str(exc),
+                    },
+                )
+            )
+            task.add_done_callback(lambda current_task: handle_diff_task_result(current_task, contract_id))
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "status": "queued",
+                    "message": "Smart Diff queued via in-process fallback.",
+                    "job_id": None,
+                    "log_id": log_id,
+                    "fallback": True,
+                },
+            )
 
     except Exception as e:
         print(f"❌ Smart Diff Error: {e}")
-        if '_diff_logger' in locals(): _diff_logger.fail(e)
-        await publish_negotiation_event(
-            "diff.failed",
-            claims["verified_tenant_id"],
-            contract_id=contract_id,
-            data={
-                "error": str(e)[:500],
-                "message": "Smart Diff analysis failed",
-            },
-        )
         traceback.print_exc()
-        try:
-            # Catch backend failures correctly: update document status to failed
-            supabase.table("contracts").update({
-                "status": "Failed"
-            }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
-        except Exception as update_err:
-            print(f"Warning: Failed to set contract status to Failed: {update_err}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -880,7 +1072,7 @@ async def list_negotiation_rounds(
 
 @router.post("/{contract_id}/finalize")
 @router.post("/{contract_id}/finalize-for-signing")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 async def finalize_for_signing(
     request: Request,
     contract_id: str,

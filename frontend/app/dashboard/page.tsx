@@ -5,7 +5,7 @@ export const dynamic = 'force-dynamic'
 export const revalidate = 0
 import { syncProfile } from '@/app/actions/syncProfile'
 import { createClient } from '@supabase/supabase-js'
-import DocumentList from '@/components/DocumentList'
+import RecentDocuments from '@/components/RecentDocuments'
 export default async function DashboardPage() {
     const { userId, orgId, getToken } = await auth()
     const user = await currentUser()
@@ -292,8 +292,8 @@ export default async function DashboardPage() {
                         </div>
                     </div>
 
-                    {/* Intelligent Document List */}
-                    <DocumentList documents={documents} />
+                    {/* Recent Documents */}
+                    <RecentDocuments />
                 </div>
             </div>
         </>

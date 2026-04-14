@@ -31,6 +31,7 @@ from app.review_schemas import (
     ContractObligationV2, ObligationMinerResultV2,
     ClassifiedClauseV2, ClauseClassifierResultV2,
     ReviewFinding, BannerData, QuickInsight, TextCoordinate,
+    assess_pipeline_output_quality,
 )
 from app.event_bus import SSEEvent
 from app.token_budget import allocate_budget, count_tokens, get_budget, preflight_check, truncate_to_budget
@@ -94,6 +95,7 @@ class ContractState(TypedDict):
     review_findings: list           # Unified ReviewFinding dicts (set by aggregator)
     quick_insights: list            # QuickInsight dicts (set by aggregator)
     banner: dict                    # BannerData dict (set by aggregator)
+    pipeline_output_quality: str    # Quality marker for empty-output guard
     _task_logger: Any               # Optional TaskLogger instance (injected by contracts.py)
     _event_bus: Any                 # Optional EventBus instance (injected by contracts.py)
     _tenant_id: str                 # Tenant context for SSE events
@@ -1002,7 +1004,7 @@ def review_aggregator(state: ContractState) -> ContractState:
     findings = deduped
 
     # ── Sort by position in document ──
-    findings.sort(key=lambda f: f.get('coordinates', {}).get('start_char', 0))
+    findings.sort(key=lambda f: (f.get('coordinates') or {}).get('start_char', 0))
 
     # ── 4. Compute BannerData ──
     critical_count = sum(1 for f in findings if f.get('severity') == 'critical')
@@ -1073,6 +1075,22 @@ def review_aggregator(state: ContractState) -> ContractState:
             icon="warning"
         ).model_dump())
 
+    output_quality, sentinel_findings = assess_pipeline_output_quality(state)
+
+    if sentinel_findings:
+        findings = sentinel_findings + findings
+        banner["warning_count"] = banner.get("warning_count", 0) + sum(
+            1 for finding in sentinel_findings if finding.get("severity") == "warning"
+        )
+        banner["info_count"] = banner.get("info_count", 0) + sum(
+            1 for finding in sentinel_findings if finding.get("severity") == "info"
+        )
+        banner["critical_count"] = banner.get("critical_count", 0) + sum(
+            1 for finding in sentinel_findings if finding.get("severity") == "critical"
+        )
+        banner["system_warning_count"] = len(sentinel_findings)
+        banner["total_count"] = len(findings)
+
     print(f"[Review Aggregator] Aggregated {len(findings)} findings, {len(quick_insights)} quick insights.")
     if _logger: _logger.log_agent_complete('review_aggregator', {'findings': len(findings), 'quick_insights': len(quick_insights)})
     _emit_pipeline_event(
@@ -1085,7 +1103,8 @@ def review_aggregator(state: ContractState) -> ContractState:
     return {
         "review_findings": findings,
         "quick_insights": quick_insights,
-        "banner": banner
+        "banner": banner,
+        "pipeline_output_quality": output_quality.value,
     }
 
 

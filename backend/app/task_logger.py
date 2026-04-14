@@ -33,12 +33,43 @@ class TaskLogger:
         parent_task_id: Optional[str] = None,
         attempt_number: int = 1,
         max_attempts: int = 3,
+        existing_log_id: Optional[str] = None,
+        initial_status: str = "running",
     ):
         self.tenant_id = tenant_id
         self.task_type = task_type
         self.start_time = time.time()
         self.agent_progress = []
         self._current_agent_start = None
+        self.input_metadata = input_metadata or {}
+        self.contract_id = contract_id
+        self.version_id = version_id
+        self.parent_task_id = parent_task_id
+        self.attempt_number = attempt_number
+        self.max_attempts = max_attempts
+
+        if existing_log_id is not None:
+            self.log_id = str(existing_log_id)
+            admin_supabase.table("task_execution_logs").update({
+                "tenant_id": tenant_id,
+                "task_type": task_type,
+                "contract_id": contract_id,
+                "version_id": version_id,
+                "status": initial_status,
+                "input_metadata": self.input_metadata,
+                "attempt_number": attempt_number,
+                "max_attempts": max_attempts,
+                "parent_task_id": parent_task_id,
+                "agent_progress": [],
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "completed_at": None,
+                "duration_ms": None,
+                "error_type": None,
+                "error_message": None,
+                "error_traceback": None,
+                "result_summary": {},
+            }).eq("id", self.log_id).execute()
+            return
         
         # Insert the initial "running" record
         record = {
@@ -46,8 +77,8 @@ class TaskLogger:
             "task_type": task_type,
             "contract_id": contract_id,
             "version_id": version_id,
-            "status": "running",
-            "input_metadata": input_metadata or {},
+            "status": initial_status,
+            "input_metadata": self.input_metadata,
             "attempt_number": attempt_number,
             "max_attempts": max_attempts,
             "parent_task_id": parent_task_id,
@@ -136,6 +167,16 @@ class TaskLogger:
             "status": "retrying",
             "completed_at": datetime.now(timezone.utc).isoformat(),
         }).eq("id", self.log_id).execute()
+
+    def update_input_metadata(self, values: dict):
+        """Merge additional metadata into the task log."""
+        self.input_metadata.update(values or {})
+        try:
+            admin_supabase.table("task_execution_logs").update({
+                "input_metadata": self.input_metadata,
+            }).eq("id", self.log_id).execute()
+        except Exception:
+            pass
     
     def _sync_progress(self):
         """Persist agent_progress to database (called after each agent state change)."""

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { supabaseClient } from '@/lib/supabase'
+import { getObligations, toggleObligation, addObligation } from '@/app/actions/obligationActions'
 import { useAuth } from '@clerk/nextjs'
 import { Sparkles, Plus, Loader2, CheckCircle2, Circle, AlertCircle, FileSearch, AlertTriangle } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -18,7 +18,7 @@ interface Obligation {
 }
 
 export default function ObligationsTab({ contractId }: { contractId: string }) {
-    const { getToken, userId } = useAuth()
+    const { getToken } = useAuth()
     const [obligations, setObligations] = useState<Obligation[]>([])
     const [isLoading, setIsLoading] = useState(true)
     const [isAdding, setIsAdding] = useState(false)
@@ -33,17 +33,11 @@ export default function ObligationsTab({ contractId }: { contractId: string }) {
     const fetchObligations = async () => {
         try {
             setIsLoading(true)
-            const token = await getToken({ template: 'supabase' })
-            const supabase = await supabaseClient(token || '')
 
-            const { data, error } = await supabase
-                .from('contract_obligations')
-                .select('*')
-                .eq('contract_id', contractId)
-                .order('created_at', { ascending: false })
+            const { data, error } = await getObligations(contractId)
 
             if (error) {
-                console.error('Supabase Error:', JSON.stringify(error, null, 2))
+                console.error('Server Action Error:', error)
                 return
             }
 
@@ -60,13 +54,8 @@ export default function ObligationsTab({ contractId }: { contractId: string }) {
             const newStatus = ob.status === 'completed' ? 'pending' : 'completed'
             setObligations(prev => prev.map(o => o.id === ob.id ? { ...o, status: newStatus } : o))
 
-            const token = await getToken({ template: 'supabase' })
-            const supabase = await supabaseClient(token || '')
-
-            await supabase
-                .from('contract_obligations')
-                .update({ status: newStatus })
-                .eq('id', ob.id)
+            const { error } = await toggleObligation(ob.id, newStatus)
+            if (error) throw new Error(error)
         } catch (err) {
             console.error('Toggle error:', err)
             // Revert on error
@@ -78,15 +67,18 @@ export default function ObligationsTab({ contractId }: { contractId: string }) {
         try {
             setIsExtracting(true)
 
-            if (!userId) throw new Error("Not authenticated with Clerk")
+            const token = await getToken()
+            if (!token) throw new Error("Not authenticated with Clerk")
 
             const backendUrl = getPublicApiBase()
             const response = await fetch(`${backendUrl}/api/obligations/extract`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
                 body: JSON.stringify({
-                    contract_id: contractId,
-                    user_id: userId
+                    contract_id: contractId
                 })
             })
 
@@ -110,23 +102,11 @@ export default function ObligationsTab({ contractId }: { contractId: string }) {
 
         try {
             setIsSubmitting(true)
-            const token = await getToken({ template: 'supabase' })
-            const supabase = await supabaseClient(token || '')
 
-            const { data, error } = await supabase
-                .from('contract_obligations')
-                .insert([{
-                    contract_id: contractId,
-                    description: newDesc.trim(),
-                    source: 'MANUAL',
-                    compliance_flag: 'SAFE',
-                    status: 'pending'
-                }])
-                .select()
-                .single()
+            const { data, error } = await addObligation(contractId, newDesc.trim())
 
             if (error) {
-                console.error("Insert error:", JSON.stringify(error, null, 2))
+                console.error("Insert error:", error)
                 return
             }
 

@@ -19,8 +19,7 @@ class ClauseAssistantRequest(BaseModel):
 
 
 class PlaybookVectorizeRequest(BaseModel):
-    id: int
-    user_id: str
+    id: str
     rule_text: str
     category: Optional[str] = None
     standard_position: Optional[str] = None
@@ -29,9 +28,16 @@ class PlaybookVectorizeRequest(BaseModel):
     risk_severity: Optional[str] = None
 
 
+class PlaybookRuleCreateRequest(BaseModel):
+    category: str
+    standard_position: str
+    fallback_position: Optional[str] = None
+    redline: Optional[str] = None
+    risk_severity: Optional[str] = None
+
+
 class ExtractObligationsRequest(BaseModel):
     contract_id: str
-    user_id: str
 
 
 # --- SOP Template Engine Models ---

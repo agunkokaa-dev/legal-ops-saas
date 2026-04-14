@@ -11,12 +11,13 @@ import asyncio
 import traceback
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
 from app.config import openai_client, qdrant, NATIONAL_LAWS_COLLECTION
 from app.dependencies import verify_clerk_token
+from app.rate_limiter import limiter
 
 router = APIRouter()
 
@@ -71,7 +72,11 @@ async def async_embed(text: str) -> list[float]:
 # GET /stats
 # ---------------------------------------------------------------------------
 @router.get("/national-laws/stats", response_model=LawStatsResponse)
-async def get_national_laws_stats(claims: dict = Depends(verify_clerk_token)):
+@limiter.limit("60/minute")
+async def get_national_laws_stats(
+    request: Request,
+    claims: dict = Depends(verify_clerk_token),
+):
     """Returns collection health and per-law vector breakdown."""
     try:
         collections = await asyncio.to_thread(qdrant.get_collections)
@@ -126,7 +131,9 @@ async def get_national_laws_stats(claims: dict = Depends(verify_clerk_token)):
 # POST /search
 # ---------------------------------------------------------------------------
 @router.post("/national-laws/search", response_model=LawSearchResponse)
+@limiter.limit("60/minute")
 async def search_national_laws(
+    request: Request,
     body: LawSearchRequest,
     claims: dict = Depends(verify_clerk_token),
 ):

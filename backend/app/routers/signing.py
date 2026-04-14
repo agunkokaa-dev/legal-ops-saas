@@ -2,6 +2,7 @@
 Pariana Backend — E-Signature & E-Meterai Router
 """
 
+import asyncio
 import io
 import logging
 import os
@@ -15,12 +16,19 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from pydantic import BaseModel, Field
 from supabase import Client
 
-from app.config import CLERK_PEM_KEY, SIGNING_WEBHOOK_BASE_URL, admin_supabase
-from app.dependencies import _create_rls_supabase_client, _extract_tenant_id, get_tenant_supabase, verify_clerk_token
+from app.config import CLERK_PEM_KEY, SIGNING_WEBHOOK_BASE_URL, admin_supabase  # CROSS-TENANT: webhook bootstrap and storage fallbacks require privileged access before a request JWT exists.
+from app.dependencies import (
+    _create_rls_supabase_client,
+    _extract_tenant_id,
+    get_tenant_admin_supabase,  # TenantSupabaseClient factory
+    get_tenant_supabase,
+    verify_clerk_token,
+)
 from app.event_bus import SSEEvent, event_bus
 from app.rate_limiter import limiter
 from app.signing_providers import get_signing_provider
 from app.signing_providers.base import SignerConfig, SignatureType
+from app.task_logger import TaskLogger
 
 logger = logging.getLogger("pariana.signing")
 
@@ -107,8 +115,7 @@ def _log_activity_event(
     task_id: Optional[str] = None,
 ) -> None:
     if supabase_client is None:
-        # AUDITED: Requires service-role only for background/webhook callers without a user request context.
-        supabase_client = admin_supabase
+        supabase_client = admin_supabase  # CROSS-TENANT: background/webhook callers without a request JWT need privileged logging access.
     rich_payload = {
         "tenant_id": tenant_id,
         "contract_id": contract_id,
@@ -284,8 +291,7 @@ def _store_pdf_to_storage(
     supabase_client: Optional[Client] = None,
 ) -> Optional[str]:
     if supabase_client is None:
-        # AUDITED: Only background/webhook flows should fall back to service-role storage access.
-        supabase_client = admin_supabase
+        supabase_client = admin_supabase  # CROSS-TENANT: storage API fallback is required for background/webhook flows without a request-bound client.
     try:
         supabase_client.storage.from_("matter-files").upload(
             path=storage_path,
@@ -536,15 +542,15 @@ async def _handle_signing_complete(
     tenant_id: str,
     signing_provider,
 ) -> dict:
-    # AUDITED: Requires service-role due to webhook/background completion outside a browser request context.
+    tenant_sb = get_tenant_admin_supabase(tenant_id)  # TenantSupabaseClient
     session_id = session["id"]
-    current_session = admin_supabase.table("signing_sessions").select("status") \
+    current_session = tenant_sb.table("signing_sessions").select("status") \
         .eq("id", session_id).single().execute()
     if current_session.data and current_session.data.get("status") == "completed":
         return {"status": "already_completed"}
 
-    contract_res = admin_supabase.table("contracts").select("status, matter_id, title, contract_value") \
-        .eq("id", contract_id).eq("tenant_id", tenant_id).single().execute()
+    contract_res = tenant_sb.table("contracts").select("status, matter_id, title, contract_value") \
+        .eq("id", contract_id).single().execute()
     contract = contract_res.data or {}
     previous_contract_status = contract.get("status")
 
@@ -557,37 +563,39 @@ async def _handle_signing_complete(
     signed_document_path = None
     if signed_pdf:
         timestamp = _utc_now().strftime("%Y%m%d_%H%M%S")
+        # CROSS-TENANT: storage API is outside the PostgREST table wrapper; tenant isolation is enforced by the storage path.
         signed_document_path = _store_pdf_to_storage(
             f"signed-contracts/{tenant_id}/{contract_id}/signed_{timestamp}.pdf",
             signed_pdf,
+            tenant_sb.raw,
         )
 
     completion_time = _iso_now()
-    admin_supabase.table("signing_signers").update({
+    tenant_sb.table("signing_signers").update({
         "status": "signed",
         "signed_at": completion_time,
     }).eq("session_id", session_id).in_("status", ["pending", "notified", "viewed"]).execute()
-    admin_supabase.table("signing_sessions").update({
+    tenant_sb.table("signing_sessions").update({
         "status": "completed",
         "completed_at": completion_time,
         "signed_document_path": signed_document_path,
     }).eq("id", session_id).execute()
 
-    admin_supabase.table("contracts").update({
+    tenant_sb.table("contracts").update({
         "status": "Executed",
         "updated_at": completion_time,
-    }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+    }).eq("id", contract_id).execute()
 
-    obligations_res = admin_supabase.table("contract_obligations").select("*") \
-        .eq("contract_id", contract_id).eq("tenant_id", tenant_id) \
+    obligations_res = tenant_sb.table("contract_obligations").select("*") \
+        .eq("contract_id", contract_id) \
         .eq("status", "pending").execute()
     obligations = obligations_res.data or []
     activated_count = 0
     if obligations:
-        admin_supabase.table("contract_obligations").update({
+        tenant_sb.table("contract_obligations").update({
             "status": "active",
             "updated_at": completion_time,
-        }).eq("contract_id", contract_id).eq("tenant_id", tenant_id).eq("status", "pending").execute()
+        }).eq("contract_id", contract_id).eq("status", "pending").execute()
         activated_count = len(obligations)
 
     tasks_created = 0
@@ -596,7 +604,7 @@ async def _handle_signing_complete(
     for obligation in obligations:
         if not obligation.get("due_date"):
             continue
-        admin_supabase.table("tasks").insert({
+        tenant_sb.table("tasks").insert({
             "tenant_id": tenant_id,
             "matter_id": matter_id,
             "title": f"Kewajiban: {(obligation.get('description') or 'Contract obligation')[:80]}",
@@ -614,16 +622,16 @@ async def _handle_signing_complete(
 
     contract_value = float(contract.get("contract_value", 0) or 0)
     if matter_id and contract_value > 0 and previous_contract_status != "Executed":
-        matter_res = admin_supabase.table("matters").select("total_contract_value") \
-            .eq("id", matter_id).eq("tenant_id", tenant_id).single().execute()
+        matter_res = tenant_sb.table("matters").select("total_contract_value") \
+            .eq("id", matter_id).single().execute()
         if matter_res.data:
             current_total = float(matter_res.data.get("total_contract_value", 0) or 0)
-            admin_supabase.table("matters").update({
+            tenant_sb.table("matters").update({
                 "total_contract_value": current_total + contract_value,
-            }).eq("id", matter_id).eq("tenant_id", tenant_id).execute()
+            }).eq("id", matter_id).execute()
 
     _log_signing_event(
-        admin_supabase,
+        tenant_sb,
         session_id,
         tenant_id,
         "session_completed",
@@ -639,7 +647,7 @@ async def _handle_signing_complete(
         },
     )
     _log_activity_event(
-        supabase_client=admin_supabase,
+        supabase_client=tenant_sb,
         tenant_id=tenant_id,
         contract_id=contract_id,
         matter_id=matter_id,
@@ -706,8 +714,158 @@ async def _handle_signing_complete(
     }
 
 
+def _get_active_signing_completion_task(
+    *,
+    session_id: str,
+    contract_id: str,
+    tenant_id: str,
+) -> dict | None:
+    tenant_sb = get_tenant_admin_supabase(tenant_id)  # TenantSupabaseClient
+    result = tenant_sb.table("task_execution_logs").select("id, arq_job_id, status, input_metadata") \
+        .eq("tenant_id", tenant_id) \
+        .eq("contract_id", contract_id) \
+        .eq("task_type", "signing_completion") \
+        .in_("status", ["queued", "running", "retrying"]) \
+        .order("created_at", desc=True) \
+        .limit(10) \
+        .execute()
+
+    for row in result.data or []:
+        metadata = row.get("input_metadata") or {}
+        if metadata.get("session_id") == session_id:
+            return row
+    return None
+
+
+def handle_signing_task_result(task: asyncio.Task, session_id: str):
+    try:
+        exc = task.exception()
+        if exc:
+            logger.error("signing_completion_task_failed | session=%s | err=%s", session_id, exc)
+    except asyncio.CancelledError:
+        logger.warning("signing_completion_task_cancelled | session=%s", session_id)
+
+
+async def process_signing_completion_background(
+    *,
+    session_id: str,
+    contract_id: str,
+    tenant_id: str,
+    provider: str,
+    provider_document_id: str,
+    existing_log_id: str | None = None,
+    task_input_metadata: dict | None = None,
+) -> dict:
+    task_logger = TaskLogger(
+        tenant_id=tenant_id,
+        task_type="signing_completion",
+        contract_id=contract_id,
+        input_metadata={
+            "session_id": session_id,
+            "provider": provider,
+            "provider_document_id": provider_document_id,
+            **(task_input_metadata or {}),
+        },
+        existing_log_id=existing_log_id,
+    )
+    task_logger.log_agent_start("signing_completion")
+
+    try:
+        tenant_sb = get_tenant_admin_supabase(tenant_id)  # TenantSupabaseClient
+        session_res = tenant_sb.table("signing_sessions").select("*") \
+            .eq("id", session_id).single().execute()
+        session = session_res.data
+        if not session:
+            raise ValueError(f"Signing session {session_id} not found")
+
+        signing_provider = get_signing_provider()
+        result = await _handle_signing_complete(session, contract_id, tenant_id, signing_provider)
+        task_logger.log_agent_complete("signing_completion", {"session_id": session_id})
+        task_logger.complete(result_summary=result)
+        return result
+    except Exception as exc:
+        task_logger.log_agent_failed("signing_completion", exc, used_fallback=False)
+        task_logger.fail(exc)
+        raise
+
+
+async def _queue_signing_completion(
+    *,
+    session_id: str,
+    contract_id: str,
+    tenant_id: str,
+    provider: str,
+    provider_document_id: str,
+) -> dict:
+    active_task = _get_active_signing_completion_task(
+        session_id=session_id,
+        contract_id=contract_id,
+        tenant_id=tenant_id,
+    )
+    if active_task:
+        return {
+            "status": "queued",
+            "job_id": active_task.get("arq_job_id"),
+            "log_id": active_task.get("id"),
+            "deduplicated": True,
+        }
+
+    try:
+        from app.job_queue import enqueue_signing_completion
+
+        enqueue_result = await enqueue_signing_completion(
+            session_id=session_id,
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            provider=provider,
+            provider_document_id=provider_document_id,
+        )
+        return {
+            "status": "queued",
+            "job_id": enqueue_result["job_id"],
+            "log_id": enqueue_result["log_id"],
+        }
+    except Exception as exc:
+        log_id = getattr(exc, "log_id", None)
+        if log_id is None:
+            fallback_logger = TaskLogger(
+                tenant_id=tenant_id,
+                task_type="signing_completion",
+                contract_id=contract_id,
+                input_metadata={
+                    "session_id": session_id,
+                    "provider": provider,
+                    "provider_document_id": provider_document_id,
+                    "queue_fallback": True,
+                    "queue_error": str(exc),
+                },
+            )
+            log_id = fallback_logger.log_id
+        task = asyncio.create_task(
+            process_signing_completion_background(
+                session_id=session_id,
+                contract_id=contract_id,
+                tenant_id=tenant_id,
+                provider=provider,
+                provider_document_id=provider_document_id,
+                existing_log_id=log_id,
+                task_input_metadata={
+                    "queue_fallback": True,
+                    "queue_error": str(exc),
+                },
+            )
+        )
+        task.add_done_callback(lambda current_task: handle_signing_task_result(current_task, session_id))
+        return {
+            "status": "queued",
+            "job_id": None,
+            "log_id": log_id,
+            "fallback": True,
+        }
+
+
 @router.post("/{contract_id}/checklist")
-@limiter.limit("30/minute")
+@limiter.limit("60/minute")
 async def run_presign_checklist(
     request: Request,
     contract_id: str,
@@ -726,7 +884,7 @@ async def run_presign_checklist(
 
 
 @router.post("/{contract_id}/initiate")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 async def initiate_signing(
     request: Request,
     contract_id: str,
@@ -1024,6 +1182,7 @@ async def get_signing_status(
 
 
 @router.post("/webhook/{provider}")
+@limiter.limit("60/minute")
 async def handle_signing_webhook(provider: str, request: Request):
     body = await request.body()
     headers = dict(request.headers)
@@ -1040,8 +1199,10 @@ async def handle_signing_webhook(provider: str, request: Request):
     if not provider_document_id:
         raise HTTPException(status_code=400, detail="Missing document identifier in webhook payload")
 
-    session_res = admin_supabase.table("signing_sessions").select("*") \
+    session_res = (
+        admin_supabase.table("signing_sessions").select("*")  # CROSS-TENANT: webhook bootstrap must resolve tenant_id from provider_document_id before a tenant wrapper can exist.
         .eq("provider_document_id", provider_document_id).single().execute()
+    )
     if not session_res.data:
         logger.warning("signing_webhook_unknown_document | provider=%s | doc_id=%s", provider, provider_document_id)
         return {"status": "ignored", "reason": "Unknown document"}
@@ -1050,19 +1211,19 @@ async def handle_signing_webhook(provider: str, request: Request):
     session_id = session["id"]
     tenant_id = session["tenant_id"]
     contract_id = session["contract_id"]
+    tenant_sb = get_tenant_admin_supabase(tenant_id)  # TenantSupabaseClient
     event_type = event.get("event_type") or event.get("type") or ""
     signer_email = event.get("signer_email") or event.get("email") or ""
 
     try:
-        # AUDITED: Requires service-role because webhook requests are provider-originated and do not carry a user Clerk JWT.
         if event_type in ("signer_viewed", "document_viewed"):
             if signer_email:
-                admin_supabase.table("signing_signers").update({
+                tenant_sb.table("signing_signers").update({
                     "status": "viewed",
                     "viewed_at": _iso_now(),
                 }).eq("session_id", session_id).eq("email", signer_email).execute()
                 _log_signing_event(
-                    admin_supabase,
+                    tenant_sb,
                     session_id,
                     tenant_id,
                     "signer_viewed",
@@ -1086,10 +1247,10 @@ async def handle_signing_webhook(provider: str, request: Request):
                 "signature_hash": event.get("signature_hash", ""),
             }
             if signer_email:
-                admin_supabase.table("signing_signers").update(update_payload) \
+                tenant_sb.table("signing_signers").update(update_payload) \
                     .eq("session_id", session_id).eq("email", signer_email).execute()
                 _log_signing_event(
-                    admin_supabase,
+                    tenant_sb,
                     session_id,
                     tenant_id,
                     "signer_signed",
@@ -1098,21 +1259,27 @@ async def handle_signing_webhook(provider: str, request: Request):
                     {"certificate_serial": event.get("certificate_serial", "")},
                 )
 
-            signers_res = admin_supabase.table("signing_signers").select("*") \
+            signers_res = tenant_sb.table("signing_signers").select("*") \
                 .eq("session_id", session_id).execute()
             signers = signers_res.data or []
             progress = _get_issue_signer_status_counts(signers)
 
             if progress["is_complete"]:
-                await _handle_signing_complete(session, contract_id, tenant_id, signing_provider)
+                await _queue_signing_completion(
+                    session_id=session_id,
+                    contract_id=contract_id,
+                    tenant_id=tenant_id,
+                    provider=provider,
+                    provider_document_id=provider_document_id,
+                )
             else:
-                admin_supabase.table("signing_sessions").update({
+                tenant_sb.table("signing_sessions").update({
                     "status": "partially_signed",
                 }).eq("id", session_id).execute()
-                admin_supabase.table("contracts").update({
+                tenant_sb.table("contracts").update({
                     "status": "Partially Signed",
                     "updated_at": _iso_now(),
-                }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+                }).eq("id", contract_id).execute()
                 await _publish_signing_event(
                     "contract.status_changed",
                     tenant_id,
@@ -1138,20 +1305,20 @@ async def handle_signing_webhook(provider: str, request: Request):
         elif event_type in ("signer_rejected", "document_rejected"):
             rejection_reason = event.get("reason", "No reason provided")
             if signer_email:
-                admin_supabase.table("signing_signers").update({
+                tenant_sb.table("signing_signers").update({
                     "status": "rejected",
                     "rejected_at": _iso_now(),
                     "rejection_reason": rejection_reason,
                 }).eq("session_id", session_id).eq("email", signer_email).execute()
-            admin_supabase.table("signing_sessions").update({
+            tenant_sb.table("signing_sessions").update({
                 "status": "rejected",
             }).eq("id", session_id).execute()
-            admin_supabase.table("contracts").update({
+            tenant_sb.table("contracts").update({
                 "status": "Pending Approval",
                 "updated_at": _iso_now(),
-            }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+            }).eq("id", contract_id).execute()
             _log_signing_event(
-                admin_supabase,
+                tenant_sb,
                 session_id,
                 tenant_id,
                 "signer_rejected",
@@ -1178,18 +1345,24 @@ async def handle_signing_webhook(provider: str, request: Request):
             )
 
         elif event_type in ("document_completed", "completed"):
-            await _handle_signing_complete(session, contract_id, tenant_id, signing_provider)
+            await _queue_signing_completion(
+                session_id=session_id,
+                contract_id=contract_id,
+                tenant_id=tenant_id,
+                provider=provider,
+                provider_document_id=provider_document_id,
+            )
 
         elif event_type in ("document_expired", "expired"):
-            admin_supabase.table("signing_sessions").update({
+            tenant_sb.table("signing_sessions").update({
                 "status": "expired",
             }).eq("id", session_id).execute()
-            admin_supabase.table("contracts").update({
+            tenant_sb.table("contracts").update({
                 "status": "Pending Approval",
                 "updated_at": _iso_now(),
-            }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+            }).eq("id", contract_id).execute()
             _log_signing_event(
-                admin_supabase,
+                tenant_sb,
                 session_id,
                 tenant_id,
                 "session_expired",
@@ -1215,7 +1388,7 @@ async def handle_signing_webhook(provider: str, request: Request):
             )
 
         _log_signing_event(
-            admin_supabase,
+            tenant_sb,
             session_id,
             tenant_id,
             "webhook_received",
@@ -1231,7 +1404,7 @@ async def handle_signing_webhook(provider: str, request: Request):
 
 
 @router.post("/{contract_id}/cancel")
-@limiter.limit("10/minute")
+@limiter.limit("60/minute")
 async def cancel_signing(
     request: Request,
     contract_id: str,
@@ -1296,7 +1469,7 @@ async def cancel_signing(
 
 
 @router.post("/{contract_id}/remind/{signer_id}")
-@limiter.limit("20/minute")
+@limiter.limit("60/minute")
 async def send_reminder(
     request: Request,
     contract_id: str,
@@ -1339,7 +1512,7 @@ async def send_reminder(
 
 
 @router.get("/{contract_id}/download")
-@limiter.limit("20/minute")
+@limiter.limit("60/minute")
 async def download_signed_document(
     request: Request,
     contract_id: str,
