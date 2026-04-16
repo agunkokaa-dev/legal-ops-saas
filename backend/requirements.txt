@@ -6,6 +6,7 @@ pydantic-settings
 qdrant-client>=1.6.4
 supabase>=2.3.0
 openai
+anthropic
 python-dotenv==1.0.0
 python-multipart==0.0.6
 PyPDF2==3.0.1

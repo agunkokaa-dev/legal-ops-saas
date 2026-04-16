@@ -11,7 +11,7 @@ Used by:
   - routers/review.py (API response envelope)
 """
 from enum import Enum
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 import uuid
 
@@ -415,6 +415,14 @@ class DiffDeviation(BaseModel):
         default=None,
         description="Analysis of WHY the counterparty made this change — their likely motivation, strategic objective, and what they are trying to achieve or avoid."
     )
+    pre_debate_severity: Optional[str] = Field(
+        default=None,
+        description="Original severity before debate protocol enrichment."
+    )
+    debate_verdict: Optional["DebateVerdict"] = Field(
+        default=None,
+        description="Debate verdict for this deviation, if debate was executed."
+    )
 
 class BATNAFallback(BaseModel):
     """An AI-generated BATNA fallback clause for a deviation."""
@@ -432,6 +440,60 @@ class BATNAFallback(BaseModel):
         description="Bullet points of negotiation leverage to use when proposing this fallback."
     )
 
+class DebatePerspective(str, Enum):
+    CLIENT_ADVOCATE = "client_advocate"
+    COUNTERPARTY_ADVOCATE = "counterparty_advocate"
+    NEUTRAL_ARBITER = "neutral_arbiter"
+
+
+class DebateArgument(BaseModel):
+    perspective: DebatePerspective
+    position: Literal["upgrade_severity", "downgrade_severity", "maintain_severity"]
+    recommended_severity: Literal["critical", "warning", "info"]
+    reasoning: str
+    key_points: list[str] = Field(default_factory=list)
+    legal_basis: Optional[str] = None
+    risk_quantification: Optional[str] = None
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class DebateVerdict(BaseModel):
+    original_severity: Literal["critical", "warning", "info"]
+    final_severity: Literal["critical", "warning", "info"]
+    severity_changed: bool
+    consensus_level: Literal["unanimous", "majority", "split"]
+    verdict_reasoning: str
+    adjusted_impact_analysis: str
+    adjusted_batna: Optional[str] = None
+    confidence_score: float = Field(ge=0.0, le=1.0)
+
+
+class DeviationDebateResult(BaseModel):
+    deviation_id: str
+    debate_triggered: bool
+    arguments: list[DebateArgument] = Field(default_factory=list)
+    verdict: Optional[DebateVerdict] = None
+    debate_duration_ms: int = 0
+    tokens_used: int = 0
+
+
+class DebateModelVersions(BaseModel):
+    client_advocate: str = "claude-sonnet-4-6"
+    counterparty_advocate: str = "claude-sonnet-4-6"
+    neutral_arbiter: str = "claude-opus-4-6"
+
+
+class DebateProtocolResult(BaseModel):
+    debate_results: list[DeviationDebateResult] = Field(default_factory=list)
+    total_deviations: int = 0
+    debated_count: int = 0
+    skipped_count: int = 0
+    severity_changes: int = 0
+    total_duration_ms: int = 0
+    total_tokens_used: int = 0
+    model_versions: DebateModelVersions = Field(default_factory=DebateModelVersions)
+
+
 class SmartDiffResult(BaseModel):
     """Structured output for the Smart Diff Agent."""
     deviations: list[DiffDeviation] = Field(
@@ -448,3 +510,56 @@ class SmartDiffResult(BaseModel):
     summary: str = Field(
         description="A 2-3 sentence executive summary of the negotiation position."
     )
+    debate_protocol: Optional[DebateProtocolResult] = Field(
+        default=None,
+        description="Optional post-processing debate enrichment for the diff result."
+    )
+
+
+DiffDeviation.model_rebuild()
+SmartDiffResult.model_rebuild()
+
+
+class CounselMessageRole(str, Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
+class CounselSessionType(str, Enum):
+    DEVIATION = "deviation"
+    GENERAL_STRATEGY = "general_strategy"
+
+
+class CounselMessage(BaseModel):
+    """Single message in a counsel chat session."""
+
+    id: str
+    role: CounselMessageRole
+    content: str
+    timestamp: str
+    deviation_id: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class CounselSession(BaseModel):
+    """A counsel chat session within a War Room."""
+
+    id: str
+    contract_id: str
+    tenant_id: str
+    session_type: CounselSessionType
+    deviation_id: Optional[str] = None
+    messages: list[CounselMessage] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+    is_active: bool = True
+
+
+class CounselRequest(BaseModel):
+    """Request body for counsel chat endpoint."""
+
+    message: str = Field(min_length=1, max_length=1000)
+    session_id: Optional[str] = None
+    deviation_id: Optional[str] = None
+    session_type: CounselSessionType = CounselSessionType.DEVIATION

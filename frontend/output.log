@@ -1,0 +1,48 @@
+
+> frontend@0.1.0 build
+> next build
+
+▲ Next.js 16.1.6 (Turbopack)
+- Environments: .env.local
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 22.2s
+  Running TypeScript ...
+  Collecting page data using 5 workers ...
+  Generating static pages using 5 workers (0/15) ...
+  Generating static pages using 5 workers (3/15) 
+  Generating static pages using 5 workers (7/15) 
+  Generating static pages using 5 workers (11/15) 
+✓ Generating static pages using 5 workers (15/15) in 804.7ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ○ /apple-icon.png
+├ ƒ /dashboard
+├ ƒ /dashboard/bilingual/[contractId]
+├ ƒ /dashboard/contracts/[id]
+├ ƒ /dashboard/contracts/[id]/review
+├ ƒ /dashboard/contracts/[id]/signing
+├ ƒ /dashboard/contracts/[id]/war-room
+├ ○ /dashboard/documents
+├ ○ /dashboard/drafting
+├ ƒ /dashboard/drafting/[matterId]
+├ ƒ /dashboard/matters
+├ ƒ /dashboard/matters/[id]
+├ ○ /dashboard/settings
+├ ○ /dashboard/settings/clause-library
+├ ○ /dashboard/settings/playbook
+├ ○ /dashboard/settings/templates
+├ ○ /dashboard/tasks
+├ ○ /icon.png
+├ ○ /intake
+└ ○ /test-panel
+
+
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

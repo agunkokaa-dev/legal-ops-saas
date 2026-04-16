@@ -131,3 +131,6 @@ def init_qdrant_collections():
 
 # --- OpenAI ---
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# --- Anthropic ---
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")

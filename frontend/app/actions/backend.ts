@@ -277,3 +277,75 @@ export async function confirmVersionLink(
         return { success: false, error: error.message || "Internal server error" }
     }
 }
+
+export async function triggerSmartDiff(contractId: string, enableDebate: boolean = true) {
+    const { userId, orgId, getToken } = await auth()
+    const tenantId = orgId || userId
+
+    if (!tenantId) {
+        return { success: false, error: "Unauthorized: No tenant or user ID found." }
+    }
+
+    try {
+        const token = await getToken()
+        const response = await fetch(
+            `${INTERNAL_API_URL}/api/v1/negotiation/${contractId}/diff?enable_debate=${enableDebate}`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`,
+                },
+                body: JSON.stringify({}),
+            }
+        )
+
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) {
+            return { success: false, error: data.detail || 'Failed to trigger Smart Diff' }
+        }
+
+        return { success: true, data }
+    } catch (error: any) {
+        console.error("Trigger Smart Diff Action Error:", error)
+        return { success: false, error: error.message || "Internal server error" }
+    }
+}
+
+export async function sendCounselMessage(
+    contractId: string,
+    message: string,
+    sessionType: "deviation" | "general_strategy",
+    sessionId?: string,
+    deviationId?: string,
+): Promise<Response> {
+    const { getToken } = await auth();
+    const token = await getToken();
+    
+    // Return raw response for streaming — frontend handles SSE parsing
+    return fetch(`${INTERNAL_API_URL}/api/v1/negotiation/${contractId}/counsel`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            message,
+            session_id: sessionId,
+            deviation_id: deviationId,
+            session_type: sessionType,
+        }),
+    });
+}
+
+export async function getCounselSessions(contractId: string) {
+    const { getToken } = await auth();
+    const token = await getToken();
+    
+    const res = await fetch(`${INTERNAL_API_URL}/api/v1/negotiation/${contractId}/counsel/sessions`, {
+        headers: { 'Authorization': `Bearer ${token}` },
+    });
+    
+    if (!res.ok) return { sessions: [] };
+    return res.json();
+}

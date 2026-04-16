@@ -36,33 +36,31 @@ export default function Sidebar() {
 
     return (
         <nav className="w-20 lg:w-64 border-r border-surface-border bg-surface flex flex-col shrink-0 transition-all duration-300">
-            <Link href="/dashboard" className="flex items-center px-4 py-6 border-b border-surface-border hover:opacity-80 transition-opacity whitespace-nowrap overflow-hidden">
+            <Link href="/dashboard" className="flex items-center px-4 pt-2 pb-1 border-b border-surface-border hover:opacity-80 transition-opacity whitespace-nowrap overflow-hidden">
                 {/* Icon-only view on small sidebar, full logo on wide sidebar */}
-                <div className="hidden lg:flex items-center">
+                <div className="hidden lg:flex items-center w-full">
                     <Image
-                        src="/logo-clause.png"
+                        src="/logo-golden.png"
                         alt="Clause Logo"
-                        width={120}
-                        height={40}
-                        className="object-contain"
-                        style={{ width: 'auto', height: 'auto' }}
+                        width={200}
+                        height={60}
+                        className="w-44 object-contain"
                         priority
                     />
                 </div>
                 {/* Compact icon on small sidebar */}
-                <div className="flex lg:hidden items-center">
+                <div className="flex lg:hidden items-center w-full">
                     <Image
-                        src="/logo-clause.png"
+                        src="/logo-golden.png"
                         alt="Clause"
-                        width={32}
-                        height={32}
-                        className="object-contain"
-                        style={{ width: 'auto', height: 'auto' }}
+                        width={40}
+                        height={40}
+                        className="w-10 object-contain"
                         priority
                     />
                 </div>
             </Link>
-            <div className="flex-1 overflow-y-auto py-6 flex flex-col gap-2 px-3">
+            <div className="flex-1 overflow-y-auto pt-0 pb-6 flex flex-col gap-2 px-3 mt-2">
                 {navItems.map((item) => {
                     const active = isActive(item.href, item.exact)
                     return (

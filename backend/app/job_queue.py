@@ -231,8 +231,9 @@ async def enqueue_smart_diff(
     tenant_id: str,
     v1_version_id: Optional[str] = None,
     v2_version_id: Optional[str] = None,
+    enable_debate: bool = False,
 ) -> dict[str, str]:
-    job_key = f"diff:{contract_id}:{v1_version_id or 'auto'}:{v2_version_id or 'auto'}"
+    job_key = f"diff:{contract_id}:{v1_version_id or 'auto'}:{v2_version_id or 'auto'}:{int(enable_debate)}"
     return await _enqueue_with_log(
         function_name="run_diff",
         task_type="smart_diff",
@@ -242,12 +243,14 @@ async def enqueue_smart_diff(
         input_metadata={
             "v1_version_id": v1_version_id,
             "v2_version_id": v2_version_id,
+            "enable_debate": enable_debate,
         },
         job_kwargs={
             "contract_id": contract_id,
             "tenant_id": tenant_id,
             "v1_version_id": v1_version_id,
             "v2_version_id": v2_version_id,
+            "enable_debate": enable_debate,
         },
         job_id=job_key,
         queued_event_type="diff.queued",
@@ -329,4 +332,29 @@ async def enqueue_signing_completion(
             "provider_document_id": provider_document_id,
         },
         job_id=f"signing-complete:{session_id}",
+    )
+
+
+async def enqueue_debate(
+    *,
+    contract_id: str,
+    tenant_id: str,
+    debate_session_id: str,
+    deviation_id: str,
+) -> dict[str, str]:
+    return await _enqueue_with_log(
+        function_name="run_debate",
+        task_type="debate_protocol",
+        tenant_id=tenant_id,
+        contract_id=contract_id,
+        input_metadata={
+            "debate_session_id": debate_session_id,
+            "deviation_id": deviation_id,
+        },
+        job_kwargs={
+            "debate_session_id": debate_session_id,
+            "contract_id": contract_id,
+            "tenant_id": tenant_id,
+        },
+        job_id=f"debate:{contract_id}:{deviation_id}",
     )

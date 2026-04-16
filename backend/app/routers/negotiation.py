@@ -9,12 +9,16 @@ Handles:
 import uuid
 import traceback
 from datetime import datetime, timezone
+from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Depends, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from supabase import Client
 
 from app.config import openai_client, COLLECTION_NAME, qdrant
+from app.counsel_engine import handle_counsel_message
+from app.debate.graph import run_debate_and_persist
+from app.debate.schemas import DebateSessionCreate, DebateSessionResponse
 from app.dependencies import (
     TenantQdrantClient,
     TenantSupabaseClient,
@@ -24,16 +28,15 @@ from app.dependencies import (
     get_tenant_supabase,
 )
 from app.schemas import EscalateIssueRequest, DiffRequest
-from app.review_schemas import SmartDiffResult
+from app.review_schemas import CounselRequest, SmartDiffResult
 from app.task_logger import TaskLogger
 from app.rate_limiter import limiter
 from app.token_budget import allocate_budget
 from app.event_bus import SSEEvent, event_bus
-from graph import run_smart_diff_agent
+from graph import run_smart_diff_with_debate
 import asyncio
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from pydantic import BaseModel
-from typing import Optional
 
 router = APIRouter()
 
@@ -60,6 +63,15 @@ def handle_diff_task_result(task: asyncio.Task, contract_id: str):
             print(f"🚨 [SMART DIFF TASK FAILED] Contract {contract_id}: {exc}")
     except asyncio.CancelledError:
         print(f"⚠️ [SMART DIFF TASK CANCELLED] Contract {contract_id}")
+
+
+def handle_debate_task_result(task: asyncio.Task, contract_id: str):
+    try:
+        exc = task.exception()
+        if exc:
+            print(f"🚨 [DEBATE TASK FAILED] Contract {contract_id}: {exc}")
+    except asyncio.CancelledError:
+        print(f"⚠️ [DEBATE TASK CANCELLED] Contract {contract_id}")
 
 
 class UpdateIssueStatusRequest(BaseModel):
@@ -142,6 +154,15 @@ async def list_negotiation_issues(
     """
     try:
         tenant_id = claims["verified_tenant_id"]
+        active_deviation_ids: set[str] | None = None
+
+        if version_id:
+            active_deviation_ids = _extract_version_deviation_ids(
+                supabase_client=supabase,
+                tenant_id=tenant_id,
+                contract_id=contract_id,
+                version_id=version_id,
+            )
 
         query = supabase.table("negotiation_issues") \
             .select("*") \
@@ -156,6 +177,12 @@ async def list_negotiation_issues(
 
         res = query.execute()
         issues = res.data or []
+        if active_deviation_ids is not None:
+            issues = [
+                issue for issue in issues
+                if issue.get("id") in active_deviation_ids
+                or issue.get("finding_id") in active_deviation_ids
+            ]
 
         task_ids = [issue.get("linked_task_id") for issue in issues if issue.get("linked_task_id")]
         task_status_map = {}
@@ -164,9 +191,14 @@ async def list_negotiation_issues(
                 .eq("tenant_id", tenant_id).in_("id", task_ids).execute()
             task_status_map = {task["id"]: task.get("status") for task in (task_res.data or [])}
 
-        for issue in issues:
-            if issue.get("linked_task_id"):
-                issue["linked_task_status"] = task_status_map.get(issue["linked_task_id"])
+        issues = [
+            _hydrate_negotiation_issue(
+                issue,
+                active_deviation_ids=active_deviation_ids,
+                task_status_map=task_status_map,
+            )
+            for issue in issues
+        ]
 
         # Aggregate counts by severity
         severity_counts = {"critical": 0, "warning": 0, "info": 0}
@@ -309,6 +341,7 @@ async def escalate_issue(
 async def get_smart_diff(
     request: Request,
     contract_id: str,
+    version_id: str | None = Query(default=None, description="Load the cached diff for a specific version"),
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase),
 ):
@@ -318,18 +351,29 @@ async def get_smart_diff(
     try:
         tenant_id = claims["verified_tenant_id"]
 
-        res = supabase.table("contract_versions") \
-            .select("pipeline_output") \
-            .eq("contract_id", contract_id) \
-            .eq("tenant_id", tenant_id) \
-            .gt("version_number", 0) \
-            .order("version_number", desc=True) \
-            .limit(1) \
-            .execute()
-        
+        query = supabase.table("contract_versions") \
+            .select("pipeline_output")
+
+        if version_id:
+            query = query \
+                .eq("id", version_id) \
+                .eq("contract_id", contract_id) \
+                .eq("tenant_id", tenant_id) \
+                .limit(1)
+        else:
+            query = query \
+                .eq("contract_id", contract_id) \
+                .eq("tenant_id", tenant_id) \
+                .gt("version_number", 0) \
+                .order("version_number", desc=True) \
+                .limit(1)
+
+        res = query.execute()
+
         versions = res.data or []
         if len(versions) == 0:
-            raise HTTPException(status_code=404, detail="No versions found.")
+            detail = "Requested version not found." if version_id else "No versions found."
+            raise HTTPException(status_code=404, detail=detail)
 
         v2 = versions[0]
         pipeline_output = v2.get("pipeline_output", {}) or {}
@@ -366,12 +410,339 @@ def _get_active_diff_task(
     return (result.data or [None])[0]
 
 
+def _get_existing_debate_session(
+    *,
+    supabase_client: Client,
+    tenant_id: str,
+    contract_id: str,
+    deviation_id: str,
+) -> dict | None:
+    result = supabase_client.table("debate_sessions") \
+        .select("id, status, current_turn, total_turns, verdict, created_at") \
+        .eq("tenant_id", tenant_id) \
+        .eq("contract_id", contract_id) \
+        .eq("session_kind", "debate") \
+        .eq("deviation_id", deviation_id) \
+        .order("created_at", desc=True) \
+        .limit(5) \
+        .execute()
+    rows = result.data or []
+    for status in ("queued", "running", "completed"):
+        match = next((row for row in rows if row.get("status") == status), None)
+        if match:
+            return match
+    return rows[0] if rows else None
+
+
+def _load_version_diff_result(
+    *,
+    supabase_client: Client,
+    tenant_id: str,
+    contract_id: str,
+    version_id: str,
+) -> dict[str, Any]:
+    version_res = supabase_client.table("contract_versions") \
+        .select("pipeline_output") \
+        .eq("id", version_id) \
+        .eq("contract_id", contract_id) \
+        .eq("tenant_id", tenant_id) \
+        .limit(1) \
+        .execute()
+    if not version_res.data:
+        return {}
+
+    pipeline_output = version_res.data[0].get("pipeline_output") or {}
+    return pipeline_output.get("diff_result") or {}
+
+
+def _extract_version_deviation_ids(
+    *,
+    supabase_client: Client,
+    tenant_id: str,
+    contract_id: str,
+    version_id: str,
+) -> set[str]:
+    diff_result = _load_version_diff_result(
+        supabase_client=supabase_client,
+        tenant_id=tenant_id,
+        contract_id=contract_id,
+        version_id=version_id,
+    )
+    return {
+        str(deviation.get("deviation_id"))
+        for deviation in (diff_result.get("deviations") or [])
+        if deviation.get("deviation_id")
+    }
+
+
+def _resolve_issue_deviation_id(
+    issue: dict[str, Any],
+    active_deviation_ids: set[str] | None = None,
+) -> str | None:
+    issue_id = str(issue.get("id") or "")
+    finding_id = str(issue.get("finding_id") or "")
+
+    if active_deviation_ids is not None:
+        if issue_id and issue_id in active_deviation_ids:
+            return issue_id
+        if finding_id and finding_id in active_deviation_ids:
+            return finding_id
+
+    if issue_id:
+        return issue_id
+    if finding_id:
+        return finding_id
+    return None
+
+
+def _hydrate_negotiation_issue(
+    issue: dict[str, Any],
+    *,
+    active_deviation_ids: set[str] | None = None,
+    task_status_map: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    hydrated = dict(issue)
+    deviation_id = _resolve_issue_deviation_id(hydrated, active_deviation_ids)
+    if deviation_id:
+        hydrated["deviation_id"] = deviation_id
+
+    linked_task_id = hydrated.get("linked_task_id")
+    if linked_task_id and task_status_map:
+        hydrated["linked_task_status"] = task_status_map.get(linked_task_id)
+
+    return hydrated
+
+
+def _rewrite_diff_issue_ids(
+    diff_result: dict[str, Any],
+    issue_id_aliases: dict[str, str],
+) -> int:
+    rewritten = 0
+
+    def rewrite(items: list[dict[str, Any]] | None) -> None:
+        nonlocal rewritten
+        for item in items or []:
+            current_id = str(item.get("deviation_id") or "").strip()
+            if not current_id:
+                continue
+            canonical_id = issue_id_aliases.get(current_id)
+            if canonical_id and canonical_id != current_id:
+                item["deviation_id"] = canonical_id
+                rewritten += 1
+
+    rewrite(diff_result.get("deviations") or [])
+    rewrite(diff_result.get("batna_fallbacks") or [])
+
+    debate_protocol = diff_result.get("debate_protocol") or {}
+    rewrite(debate_protocol.get("debate_results") or [])
+
+    return rewritten
+
+
+def _build_negotiation_issue_payload(
+    *,
+    issue_id: str,
+    tenant_id: str,
+    contract_id: str,
+    version_id: str,
+    deviation: dict[str, Any],
+    fallback_by_deviation_id: dict[str, dict[str, Any]],
+    created_at: str,
+) -> dict[str, Any]:
+    source_deviation_id = str(deviation.get("deviation_id") or "").strip()
+    fallback = fallback_by_deviation_id.get(source_deviation_id) or {}
+
+    return {
+        "id": issue_id,
+        "tenant_id": tenant_id,
+        "contract_id": contract_id,
+        "version_id": version_id,
+        "finding_id": source_deviation_id,
+        "title": deviation.get("title", "Untitled Deviation"),
+        "description": deviation.get("impact_analysis", ""),
+        "severity": deviation.get("severity", "warning"),
+        "category": deviation.get("category", "Negotiation"),
+        "status": "open",
+        "coordinates": deviation.get("v2_coordinates") or {},
+        "suggested_revision": fallback.get("fallback_clause"),
+        "playbook_reference": deviation.get("playbook_violation", ""),
+        "reasoning_log": [{
+            "action": "open",
+            "actor": "System",
+            "reason": "Issue created from Smart Diff deviation.",
+            "timestamp": created_at,
+            "previous_status": None,
+        }],
+    }
+
+
+def _ensure_negotiation_issues(
+    *,
+    tenant_supabase_client: Client,
+    contract_id: str,
+    tenant_id: str,
+    version_id: str,
+    diff_result: dict[str, Any],
+) -> dict[str, int]:
+    deviations = diff_result.get("deviations") or []
+    if not deviations:
+        return {"created_count": 0, "rewritten_count": 0}
+
+    existing_res = tenant_supabase_client.table("negotiation_issues") \
+        .select("id, finding_id, created_at") \
+        .eq("contract_id", contract_id) \
+        .eq("tenant_id", tenant_id) \
+        .eq("version_id", version_id) \
+        .order("created_at", desc=True) \
+        .execute()
+    existing_rows = existing_res.data or []
+
+    existing_by_id = {
+        str(row.get("id")): row
+        for row in existing_rows
+        if row.get("id")
+    }
+    existing_by_finding: dict[str, dict[str, Any]] = {}
+    for row in existing_rows:
+        finding_id = str(row.get("finding_id") or "").strip()
+        if finding_id and finding_id not in existing_by_finding:
+            existing_by_finding[finding_id] = row
+
+    fallback_by_deviation_id = {
+        str(item.get("deviation_id")): item
+        for item in (diff_result.get("batna_fallbacks") or [])
+        if item.get("deviation_id")
+    }
+
+    created_at = datetime.now(timezone.utc).isoformat()
+    alias_map: dict[str, str] = {}
+    pending_rows: list[dict[str, Any]] = []
+    pending_aliases: dict[str, str] = {}
+
+    for deviation in deviations:
+        current_id = str(deviation.get("deviation_id") or "").strip()
+        if not current_id:
+            continue
+
+        if current_id in alias_map:
+            continue
+
+        if current_id in existing_by_id:
+            alias_map[current_id] = current_id
+            continue
+
+        existing_issue = existing_by_finding.get(current_id)
+        if existing_issue:
+            alias_map[current_id] = str(existing_issue["id"])
+            continue
+
+        issue_id = str(uuid.uuid4())
+        pending_aliases[current_id] = issue_id
+        pending_rows.append(_build_negotiation_issue_payload(
+            issue_id=issue_id,
+            tenant_id=tenant_id,
+            contract_id=contract_id,
+            version_id=version_id,
+            deviation=deviation,
+            fallback_by_deviation_id=fallback_by_deviation_id,
+            created_at=created_at,
+        ))
+
+    created_count = 0
+    if pending_rows:
+        try:
+            tenant_supabase_client.table("negotiation_issues").insert(pending_rows).execute()
+            alias_map.update(pending_aliases)
+            created_count = len(pending_rows)
+        except Exception as batch_err:
+            print(f"Warning: Failed to batch ensure negotiation issues: {batch_err}")
+            for row in pending_rows:
+                try:
+                    tenant_supabase_client.table("negotiation_issues").insert(row).execute()
+                    alias_map[str(row["finding_id"])] = str(row["id"])
+                    created_count += 1
+                except Exception as row_err:
+                    print(f"Warning: Failed to ensure negotiation issue {row['id']}: {row_err}")
+
+    rewritten_count = _rewrite_diff_issue_ids(diff_result, alias_map)
+    return {"created_count": created_count, "rewritten_count": rewritten_count}
+
+
+def _resolve_deviation_snapshot(
+    *,
+    supabase_client: Client,
+    tenant_id: str,
+    contract_id: str,
+    deviation_id: str,
+) -> tuple[dict[str, Any], str, str | None]:
+    version_res = supabase_client.table("contract_versions") \
+        .select("id, pipeline_output") \
+        .eq("contract_id", contract_id) \
+        .eq("tenant_id", tenant_id) \
+        .gt("version_number", 0) \
+        .order("version_number", desc=True) \
+        .limit(1) \
+        .execute()
+    if not version_res.data:
+        raise HTTPException(status_code=404, detail="No contract versions found.")
+
+    version = version_res.data[0]
+    pipeline_output = version.get("pipeline_output") or {}
+    diff_result = pipeline_output.get("diff_result") or {}
+    deviations = diff_result.get("deviations") or []
+    batna_fallbacks = diff_result.get("batna_fallbacks") or []
+
+    issue_rows_res = supabase_client.table("negotiation_issues") \
+        .select("id, finding_id") \
+        .eq("tenant_id", tenant_id) \
+        .eq("contract_id", contract_id) \
+        .eq("version_id", version["id"]) \
+        .execute()
+    issue_rows = issue_rows_res.data or []
+
+    matching_issue = next(
+        (
+            row for row in issue_rows
+            if row.get("id") == deviation_id or row.get("finding_id") == deviation_id
+        ),
+        None,
+    )
+
+    candidate_ids = {deviation_id}
+    if matching_issue:
+        if matching_issue.get("id"):
+            candidate_ids.add(str(matching_issue["id"]))
+        if matching_issue.get("finding_id"):
+            candidate_ids.add(str(matching_issue["finding_id"]))
+
+    deviation = next(
+        (item for item in deviations if str(item.get("deviation_id")) in candidate_ids),
+        None,
+    )
+    if deviation is None:
+        raise HTTPException(status_code=404, detail="Deviation not found in diff results.")
+
+    batna = next(
+        (item for item in batna_fallbacks if str(item.get("deviation_id")) in candidate_ids),
+        None,
+    )
+    snapshot = dict(deviation)
+    if batna:
+        snapshot["batna_fallback"] = batna
+
+    issue_id = str(matching_issue["id"]) if matching_issue and matching_issue.get("id") else None
+
+    return snapshot, version["id"], issue_id
+
+
 async def _execute_diff_and_persist(
     *,
     contract_id: str,
     tenant_id: str,
     v1_version_id: str | None = None,
     v2_version_id: str | None = None,
+    enable_debate: bool = False,
+    event_bus_ref: Any | None = None,
     supabase_client: TenantSupabaseClient | None = None,
 ) -> dict:
     tenant_sb = supabase_client or get_tenant_admin_supabase(tenant_id)  # TenantSupabaseClient
@@ -476,38 +847,32 @@ async def _execute_diff_and_persist(
         f"Total={v1_tokens + v2_tokens + playbook_tokens + rounds_tokens:,}"
     )
 
-    diff_result_dict = await asyncio.to_thread(
-        run_smart_diff_agent,
-        v1_raw_text=safe_v1,
-        v2_raw_text=safe_v2,
+    diff_result_dict = await run_smart_diff_with_debate(
+        v1_text=safe_v1,
+        v2_text=safe_v2,
         v1_risk_score=v1_score,
-        playbook_rules_text=safe_playbook,
-        prior_rounds_context=safe_rounds,
+        playbook_rules=safe_playbook,
+        prior_rounds=safe_rounds,
+        tenant_id=tenant_id,
+        contract_id=contract_id,
+        enable_debate=enable_debate,
+        event_bus=event_bus_ref or event_bus,
     )
 
+    issue_sync_stats = {"created_count": 0, "rewritten_count": 0}
     try:
-        issues_payload = []
-        deviations = diff_result_dict.get("deviations", [])
-        for dev in deviations:
-            issues_payload.append({
-                "tenant_id": tenant_id,
-                "contract_id": contract_id,
-                "version_id": v2.get("id"),
-                "finding_id": dev.get("deviation_id"),
-                "title": dev.get("title", "Untitled Deviation"),
-                "description": dev.get("impact_analysis", ""),
-                "severity": dev.get("severity", "warning"),
-                "category": dev.get("category", "Negotiation"),
-                "status": "open",
-                "playbook_reference": dev.get("playbook_violation", ""),
-            })
-
-        if issues_payload:
-            issues_res = tenant_sb.table("negotiation_issues").insert(issues_payload).execute()
-            inserted_issues = issues_res.data or []
-            if len(inserted_issues) == len(deviations):
-                for idx, dev in enumerate(deviations):
-                    dev["deviation_id"] = inserted_issues[idx]["id"]
+        issue_sync_stats = _ensure_negotiation_issues(
+            tenant_supabase_client=tenant_sb,
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            version_id=str(v2.get("id")),
+            diff_result=diff_result_dict,
+        )
+        print(
+            "[SMART DIFF] Ensured negotiation issues: "
+            f"created={issue_sync_stats['created_count']} "
+            f"rewritten={issue_sync_stats['rewritten_count']}"
+        )
     except Exception as sync_err:
         print(f"Warning: Failed to sync deviations to DB: {sync_err}")
 
@@ -555,6 +920,8 @@ async def _execute_diff_and_persist(
         "v2_truncated": safe_v2 != v2_text,
         "playbook_truncated": safe_playbook != playbook_rules_text,
         "prior_rounds_truncated": safe_rounds != (prior_rounds_context or ""),
+        "issues_created": issue_sync_stats["created_count"],
+        "issues_rewritten": issue_sync_stats["rewritten_count"],
     }
 
 
@@ -564,6 +931,7 @@ async def process_smart_diff_background(
     tenant_id: str,
     v1_version_id: str | None = None,
     v2_version_id: str | None = None,
+    enable_debate: bool = False,
     existing_log_id: str | None = None,
     task_input_metadata: dict | None = None,
 ) -> dict:
@@ -575,6 +943,7 @@ async def process_smart_diff_background(
         input_metadata={
             "requested_v1_version_id": v1_version_id,
             "requested_v2_version_id": v2_version_id,
+            "enable_debate": enable_debate,
             **(task_input_metadata or {}),
         },
         existing_log_id=existing_log_id,
@@ -590,6 +959,7 @@ async def process_smart_diff_background(
             data={
                 "v1_version_id": v1_version_id,
                 "v2_version_id": v2_version_id,
+                "enable_debate": enable_debate,
                 "message": "Starting Smart Diff analysis with GPT-4o...",
             },
         )
@@ -599,6 +969,8 @@ async def process_smart_diff_background(
             tenant_id=tenant_id,
             v1_version_id=v1_version_id,
             v2_version_id=v2_version_id,
+            enable_debate=enable_debate,
+            event_bus_ref=event_bus,
             supabase_client=tenant_sb,
         )
 
@@ -655,6 +1027,63 @@ async def process_smart_diff_background(
         )
         raise
 
+
+async def process_debate_background(
+    *,
+    debate_session_id: str,
+    contract_id: str,
+    tenant_id: str,
+    existing_log_id: str | None = None,
+    task_input_metadata: dict | None = None,
+) -> dict:
+    debate_logger = TaskLogger(
+        tenant_id=tenant_id,
+        task_type="debate_protocol",
+        contract_id=contract_id,
+        input_metadata={
+            "debate_session_id": debate_session_id,
+            **(task_input_metadata or {}),
+        },
+        existing_log_id=existing_log_id,
+    )
+    debate_logger.log_agent_start("debate_protocol")
+
+    tenant_sb = get_tenant_admin_supabase(tenant_id)
+    session_res = tenant_sb.table("debate_sessions").select(
+        "id, version_id, issue_id, deviation_snapshot, deviation_id"
+    ).eq("id", debate_session_id).eq("session_kind", "debate").limit(1).execute()
+    if not session_res.data:
+        exc = ValueError(f"Debate session {debate_session_id} not found")
+        debate_logger.log_agent_failed("debate_protocol", exc, used_fallback=False)
+        debate_logger.fail(exc)
+        raise exc
+
+    session = session_res.data[0]
+
+    try:
+        result_summary = await run_debate_and_persist(
+            debate_session_id=debate_session_id,
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            issue_id=session.get("issue_id"),
+            deviation_snapshot=session.get("deviation_snapshot") or {},
+        )
+        debate_logger.update_input_metadata({
+            "debate_session_id": debate_session_id,
+            "deviation_id": session.get("deviation_id"),
+            "version_id": session.get("version_id"),
+        })
+        debate_logger.log_agent_complete("debate_protocol", {
+            "recommendation": result_summary.get("recommendation"),
+            "confidence": result_summary.get("confidence"),
+        })
+        debate_logger.complete(result_summary=result_summary)
+        return result_summary
+    except Exception as exc:
+        debate_logger.log_agent_failed("debate_protocol", exc, used_fallback=False)
+        debate_logger.fail(exc)
+        raise
+
 # =====================================================================
 # POST /diff — Smart Diff Agent Execution
 # =====================================================================
@@ -665,6 +1094,7 @@ async def generate_smart_diff(
     request: Request,
     contract_id: str,
     payload: DiffRequest = None,
+    enable_debate: bool = Query(default=False, description="Enable multi-agent debate protocol"),
     claims: dict = Depends(verify_clerk_token),
     qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
     supabase: Client = Depends(get_tenant_supabase),
@@ -719,6 +1149,7 @@ async def generate_smart_diff(
                 tenant_id=tenant_id,
                 v1_version_id=payload.v1_version_id if payload else None,
                 v2_version_id=payload.v2_version_id if payload else None,
+                enable_debate=enable_debate,
             )
             return JSONResponse(
                 status_code=202,
@@ -739,6 +1170,7 @@ async def generate_smart_diff(
                     input_metadata={
                         "requested_v1_version_id": payload.v1_version_id if payload else None,
                         "requested_v2_version_id": payload.v2_version_id if payload else None,
+                        "enable_debate": enable_debate,
                         "queue_fallback": True,
                         "queue_error": str(exc),
                     },
@@ -750,8 +1182,10 @@ async def generate_smart_diff(
                     tenant_id=tenant_id,
                     v1_version_id=payload.v1_version_id if payload else None,
                     v2_version_id=payload.v2_version_id if payload else None,
+                    enable_debate=enable_debate,
                     existing_log_id=log_id,
                     task_input_metadata={
+                        "enable_debate": enable_debate,
                         "queue_fallback": True,
                         "queue_error": str(exc),
                     },
@@ -771,6 +1205,335 @@ async def generate_smart_diff(
 
     except Exception as e:
         print(f"❌ Smart Diff Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{contract_id}/counsel")
+@limiter.limit("30/minute")
+async def counsel_chat(
+    request: Request,
+    contract_id: str,
+    request_body: CounselRequest,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+    qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
+):
+    """
+    Interactive AI negotiation counsel chat.
+    Streams the response as SSE for real-time rendering in the War Room.
+    """
+    tenant_id = claims["verified_tenant_id"]
+
+    async def generate():
+        async for chunk in handle_counsel_message(
+            message=request_body.message,
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            session_id=request_body.session_id,
+            session_type=request_body.session_type,
+            deviation_id=request_body.deviation_id,
+            supabase=supabase,
+            qdrant_client=qdrant_client,
+        ):
+            yield chunk
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get("/{contract_id}/counsel/sessions")
+async def get_counsel_sessions(
+    contract_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    """Get recent counsel sessions for a contract."""
+    tenant_id = claims["verified_tenant_id"]
+    result = supabase.table("debate_sessions") \
+        .select("id, session_type, deviation_id, created_at, updated_at, is_active, messages, status, version_id") \
+        .eq("contract_id", contract_id) \
+        .eq("tenant_id", tenant_id) \
+        .eq("session_kind", "counsel") \
+        .order("updated_at", desc=True) \
+        .limit(20) \
+        .execute()
+
+    sessions = []
+    for session in result.data or []:
+        messages = session.get("messages") or []
+        last_message = messages[-1] if messages else {}
+        sessions.append({
+            "id": session["id"],
+            "session_type": session.get("session_type", "deviation"),
+            "deviation_id": session.get("deviation_id"),
+            "version_id": session.get("version_id"),
+            "status": session.get("status"),
+            "message_count": len(messages),
+            "last_message_preview": str(last_message.get("content") or "")[:100],
+            "created_at": session.get("created_at"),
+            "updated_at": session.get("updated_at"),
+            "is_active": session.get("is_active", True),
+        })
+
+    return {"sessions": sessions}
+
+
+@router.get("/{contract_id}/counsel/sessions/{session_id}")
+async def get_counsel_session(
+    contract_id: str,
+    session_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    """Get full message history for a counsel session."""
+    tenant_id = claims["verified_tenant_id"]
+    result = supabase.table("debate_sessions") \
+        .select("*") \
+        .eq("id", session_id) \
+        .eq("contract_id", contract_id) \
+        .eq("tenant_id", tenant_id) \
+        .eq("session_kind", "counsel") \
+        .limit(1) \
+        .execute()
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Counsel session not found.")
+
+    return result.data[0]
+
+
+@router.post("/{contract_id}/debate")
+@limiter.limit("2/minute")
+@limiter.limit("10/hour")
+async def trigger_debate(
+    request: Request,
+    contract_id: str,
+    body: DebateSessionCreate,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    try:
+        tenant_id = claims["verified_tenant_id"]
+
+        contract_res = supabase.table("contracts") \
+            .select("id") \
+            .eq("id", contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .limit(1) \
+            .execute()
+        if not contract_res.data:
+            raise HTTPException(status_code=404, detail="Contract not found.")
+
+        existing = _get_existing_debate_session(
+            supabase_client=supabase,
+            tenant_id=tenant_id,
+            contract_id=contract_id,
+            deviation_id=body.deviation_id,
+        )
+        if existing and existing.get("status") == "completed":
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "debate_session_id": existing["id"],
+                    "status": "completed",
+                    "estimated_turns": 5,
+                    "message": "Existing debate session reused.",
+                    "reused": True,
+                },
+            )
+        if existing and existing.get("status") in {"queued", "running"}:
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "debate_session_id": existing["id"],
+                    "status": existing["status"],
+                    "estimated_turns": 5,
+                    "message": "Debate already in progress for this deviation.",
+                },
+            )
+
+        deviation_snapshot, version_id, derived_issue_id = _resolve_deviation_snapshot(
+            supabase_client=supabase,
+            tenant_id=tenant_id,
+            contract_id=contract_id,
+            deviation_id=body.deviation_id,
+        )
+        issue_id = body.issue_id or derived_issue_id
+
+        session_id = str(uuid.uuid4())
+        admin_sb = get_tenant_admin_supabase(tenant_id)
+        admin_sb.table("debate_sessions").insert({
+            "id": session_id,
+            "tenant_id": tenant_id,
+            "contract_id": contract_id,
+            "version_id": version_id,
+            "issue_id": issue_id,
+            "deviation_id": body.deviation_id,
+            "deviation_snapshot": deviation_snapshot,
+            "status": "queued",
+            "current_turn": 0,
+            "total_turns": 5,
+            "session_kind": "debate",
+        }).execute()
+
+        try:
+            from app.job_queue import enqueue_debate
+
+            enqueue_result = await enqueue_debate(
+                contract_id=contract_id,
+                tenant_id=tenant_id,
+                debate_session_id=session_id,
+                deviation_id=body.deviation_id,
+            )
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "debate_session_id": session_id,
+                    "status": "queued",
+                    "estimated_turns": 5,
+                    "message": "Debate session initiated. Subscribe to SSE for real-time updates.",
+                    "job_id": enqueue_result["job_id"],
+                    "log_id": enqueue_result["log_id"],
+                },
+            )
+        except Exception as exc:
+            log_id = getattr(exc, "log_id", None)
+            if log_id is None:
+                fallback_logger = TaskLogger(
+                    tenant_id=tenant_id,
+                    task_type="debate_protocol",
+                    contract_id=contract_id,
+                    input_metadata={
+                        "debate_session_id": session_id,
+                        "deviation_id": body.deviation_id,
+                        "queue_fallback": True,
+                        "queue_error": str(exc),
+                    },
+                )
+                log_id = fallback_logger.log_id
+
+            task = asyncio.create_task(
+                process_debate_background(
+                    debate_session_id=session_id,
+                    contract_id=contract_id,
+                    tenant_id=tenant_id,
+                    existing_log_id=log_id,
+                    task_input_metadata={
+                        "deviation_id": body.deviation_id,
+                        "queue_fallback": True,
+                        "queue_error": str(exc),
+                    },
+                )
+            )
+            task.add_done_callback(lambda current_task: handle_debate_task_result(current_task, contract_id))
+            return JSONResponse(
+                status_code=202,
+                content={
+                    "debate_session_id": session_id,
+                    "status": "queued",
+                    "estimated_turns": 5,
+                    "message": "Debate session initiated via in-process fallback.",
+                    "job_id": None,
+                    "log_id": log_id,
+                    "fallback": True,
+                },
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Debate Trigger Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{contract_id}/debate/{debate_session_id}")
+async def get_debate_session(
+    contract_id: str,
+    debate_session_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    try:
+        tenant_id = claims["verified_tenant_id"]
+        res = supabase.table("debate_sessions") \
+            .select("*") \
+            .eq("id", debate_session_id) \
+            .eq("contract_id", contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .eq("session_kind", "debate") \
+            .limit(1) \
+            .execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Debate session not found.")
+
+        row = res.data[0]
+        response = DebateSessionResponse(
+            id=row["id"],
+            contract_id=row["contract_id"],
+            deviation_id=row["deviation_id"],
+            status=row["status"],
+            current_turn=row.get("current_turn", 0),
+            total_turns=row.get("total_turns", 5),
+            turns=row.get("turns") or [],
+            verdict=row.get("verdict"),
+            duration_ms=row.get("duration_ms"),
+            total_input_tokens=row.get("total_input_tokens", 0),
+            total_output_tokens=row.get("total_output_tokens", 0),
+            created_at=row["created_at"],
+            completed_at=row.get("completed_at"),
+            error_message=row.get("error_message"),
+        )
+        return response.model_dump(mode="json")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Get Debate Session Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{contract_id}/debates")
+async def list_debates(
+    contract_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    try:
+        tenant_id = claims["verified_tenant_id"]
+        res = supabase.table("debate_sessions") \
+            .select("id, deviation_id, status, current_turn, total_turns, verdict, created_at, duration_ms") \
+            .eq("contract_id", contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .eq("session_kind", "debate") \
+            .order("created_at", desc=True) \
+            .execute()
+
+        debates = []
+        for row in res.data or []:
+            verdict = row.get("verdict") or {}
+            debates.append({
+                "id": row["id"],
+                "deviation_id": row["deviation_id"],
+                "status": row["status"],
+                "current_turn": row.get("current_turn", 0),
+                "total_turns": row.get("total_turns", 5),
+                "verdict_recommendation": verdict.get("recommendation"),
+                "verdict_confidence": verdict.get("confidence"),
+                "created_at": row.get("created_at"),
+                "duration_ms": row.get("duration_ms"),
+            })
+
+        return {"debates": debates}
+    except Exception as e:
+        print(f"❌ List Debates Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -816,6 +1579,9 @@ async def update_issue_status(
         issue = issue_res.data[0]
         previous_status = issue.get("status", "open")
         current_log = issue.get("reasoning_log") or []
+        deviation_lookup_ids = {str(issue_id)}
+        if issue.get("finding_id"):
+            deviation_lookup_ids.add(str(issue["finding_id"]))
 
         # 1. Fetch Deviation Context from rounds
         rounds_res = supabase.table("negotiation_rounds") \
@@ -830,8 +1596,17 @@ async def update_issue_status(
         if rounds_res.data and rounds_res.data[0].get("diff_snapshot"):
             snapshot = rounds_res.data[0]["diff_snapshot"]
             for dev in snapshot.get("deviations", []):
-                if dev.get("deviation_id") == issue_id:
-                    deviation = dev
+                if str(dev.get("deviation_id")) in deviation_lookup_ids:
+                    deviation = dict(dev)
+                    batna = next(
+                        (
+                            item for item in (snapshot.get("batna_fallbacks") or [])
+                            if str(item.get("deviation_id")) in deviation_lookup_ids
+                        ),
+                        None,
+                    )
+                    if batna:
+                        deviation["batna"] = batna
                     break
 
         # 2. Draft Accumulation (V3-Draft)

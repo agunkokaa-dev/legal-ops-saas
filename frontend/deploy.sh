@@ -15,7 +15,7 @@ fi
 cd "$SCRIPT_DIR"
 
 if pm2 describe "$APP_NAME" >/dev/null 2>&1; then
-  pm2 restart "$PM2_CONFIG" --only "$APP_NAME" --update-env
+  pm2 restart "$PM2_CONFIG" --only "$APP_NAME" --env production --update-env
 else
-  pm2 start "$PM2_CONFIG" --only "$APP_NAME" --update-env
+  pm2 start "$PM2_CONFIG" --only "$APP_NAME" --env production --update-env
 fi

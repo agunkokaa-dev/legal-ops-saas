@@ -1,6 +1,18 @@
+import type { Metadata } from 'next'
 import { ClerkProvider } from '@clerk/nextjs'
 import { Toaster } from 'sonner'
+import RuntimeDiagnostics from '@/components/system/RuntimeDiagnostics'
 import './globals.css'
+
+export const metadata: Metadata = {
+  title: 'clause.id',
+  description: 'Enterprise Contract Intelligence System',
+  icons: {
+    icon: '/icon.png',
+    shortcut: '/favicon.ico',
+    apple: '/apple-icon.png',
+  },
+}
 
 export default function RootLayout({
   children,
@@ -17,6 +29,7 @@ export default function RootLayout({
           <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
         </head>
         <body className="bg-background text-white font-sans antialiased h-screen w-screen overflow-hidden" suppressHydrationWarning>
+          <RuntimeDiagnostics />
           {children}
           <Toaster position="top-right" expand={false} richColors theme="dark" />
         </body>

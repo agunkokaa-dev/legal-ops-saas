@@ -54,6 +54,7 @@ TENANT_SCOPED_TABLES = [
     "contract_obligations",
     "contract_clauses",
     "contract_notes",
+    "debate_sessions",
     "negotiation_issues",
     "negotiation_rounds",
     "tasks",

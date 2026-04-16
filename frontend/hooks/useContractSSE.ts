@@ -59,6 +59,11 @@ const CONTRACT_EVENT_TYPES = [
     'signing.emeterai_affixed',
     'negotiation.issue_updated',
     'negotiation.round_created',
+    'debate.started',
+    'debate.turn_completed',
+    'debate.verdict_ready',
+    'debate.completed',
+    'debate.failed',
     'obligation.activated',
     'task.created',
 ] as const

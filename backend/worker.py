@@ -14,6 +14,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta, timezone
 
 from arq import cron
+from arq.worker import func
 
 from app.config import admin_supabase, init_qdrant_collections
 from app.event_bus import SSEEvent, event_bus
@@ -56,6 +57,7 @@ async def run_diff(
     v1_version_id: str | None,
     v2_version_id: str | None,
     log_id: str,
+    enable_debate: bool = False,
 ) -> dict:
     from app.routers.negotiation import process_smart_diff_background
 
@@ -64,6 +66,7 @@ async def run_diff(
         tenant_id=tenant_id,
         v1_version_id=v1_version_id,
         v2_version_id=v2_version_id,
+        enable_debate=enable_debate,
         existing_log_id=log_id,
     )
 
@@ -121,6 +124,23 @@ async def run_signing_completion(
         tenant_id=tenant_id,
         provider=provider,
         provider_document_id=provider_document_id,
+        existing_log_id=log_id,
+    )
+
+
+async def run_debate(
+    ctx: dict,
+    debate_session_id: str,
+    contract_id: str,
+    tenant_id: str,
+    log_id: str,
+) -> dict:
+    from app.routers.negotiation import process_debate_background
+
+    return await process_debate_background(
+        debate_session_id=debate_session_id,
+        contract_id=contract_id,
+        tenant_id=tenant_id,
         existing_log_id=log_id,
     )
 
@@ -190,6 +210,7 @@ class WorkerSettings:
         run_bilingual_sync,
         run_bilingual_validate,
         run_signing_completion,
+        func(run_debate, max_tries=2),
     ]
 
     cron_jobs = [

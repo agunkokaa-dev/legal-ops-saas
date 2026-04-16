@@ -4,12 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:pm2": "pm2 start ecosystem.config.js --only frontend --update-env",
     "build": "next build",
     "start": "next start",
+    "start:pm2:prod": "pm2 start ecosystem.config.js --only frontend --env production --update-env",
     "lint": "eslint"
   },
   "dependencies": {
     "@clerk/nextjs": "^6.38.2",
+    "@sentry/nextjs": "^10.48.0",
     "@supabase/supabase-js": "^2.97.0",
     "@tailwindcss/typography": "^0.5.19",
     "@tiptap/extension-color": "^3.22.3",

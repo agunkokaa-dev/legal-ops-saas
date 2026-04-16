@@ -1,6 +1,8 @@
+import asyncio
 import os
 import json
 import operator
+import logging
 import time
 import uuid
 from typing import TypedDict, Annotated, List, Dict, Any, Optional
@@ -1425,6 +1427,67 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
         import traceback
         traceback.print_exc()
         raise e
+
+
+async def run_smart_diff_with_debate(
+    v1_text: str,
+    v2_text: str,
+    v1_risk_score: float,
+    playbook_rules: str,
+    prior_rounds: str | None,
+    tenant_id: str,
+    contract_id: str,
+    enable_debate: bool = False,
+    event_bus=None,
+) -> dict:
+    """
+    Wrapper: runs Smart Diff Agent + optional Debate Protocol.
+    Debate enriches the diff_result, it does not replace it.
+    """
+    diff_result = await asyncio.to_thread(
+        run_smart_diff_agent,
+        v1_raw_text=v1_text,
+        v2_raw_text=v2_text,
+        v1_risk_score=v1_risk_score,
+        playbook_rules_text=playbook_rules,
+        prior_rounds_context=prior_rounds,
+    )
+
+    if enable_debate and diff_result:
+        try:
+            from app.debate_engine import run_debate_protocol
+
+            debate_result = await run_debate_protocol(
+                diff_result=diff_result,
+                v2_raw_text=v2_text,
+                tenant_id=tenant_id,
+                contract_id=contract_id,
+                event_bus=event_bus,
+            )
+
+            diff_result["debate_protocol"] = debate_result.model_dump()
+
+            for dev in diff_result.get("deviations", []):
+                dev_id = dev.get("deviation_id")
+                matching = next(
+                    (
+                        result for result in debate_result.debate_results
+                        if result.deviation_id == dev_id and result.verdict
+                    ),
+                    None,
+                )
+                if matching and matching.verdict:
+                    dev["pre_debate_severity"] = dev.get("severity")
+                    dev["debate_verdict"] = matching.verdict.model_dump()
+                    if matching.verdict.severity_changed:
+                        dev["severity"] = matching.verdict.final_severity
+        except Exception as exc:
+            logging.getLogger(__name__).error("[DEBATE] Protocol failed, using raw diff: %s", exc)
+            diff_result["debate_protocol"] = None
+    else:
+        diff_result["debate_protocol"] = None
+
+    return diff_result
 
 
 class PreSignChecklistAssessment(BaseModel):
