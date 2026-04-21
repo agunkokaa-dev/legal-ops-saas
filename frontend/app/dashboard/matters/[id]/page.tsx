@@ -8,6 +8,7 @@ import OverviewTab from '@/components/matter-detail/OverviewTab'
 import DocumentsTab from '@/components/matter-detail/DocumentsTab'
 import ObligationMaster from '@/components/genealogy/ObligationMaster'
 import MatterGenealogyPanel from '@/components/genealogy/MatterGenealogyPanel'
+import CoverageBanner from '@/components/laws/CoverageBanner'
 
 export const dynamic = 'force-dynamic'
 
@@ -53,6 +54,12 @@ export default async function MatterDetailPage(props: { params: Promise<{ id: st
                     <span className="material-symbols-outlined text-[14px]">arrow_back</span>
                     Back to Matters
                 </Link>
+
+                <CoverageBanner
+                    matterId={matter.id}
+                    matterType={(matter as any).matter_type || null}
+                    practiceArea={(matter as any).practice_area || null}
+                />
 
                 {/* Header */}
                 <MatterDetailHeader matter={matter} />

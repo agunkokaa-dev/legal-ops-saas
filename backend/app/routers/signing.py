@@ -135,10 +135,10 @@ def _log_activity_event(
         "actor_name": actor,
     }
     try:
-        supabase_client.table("activity_logs").insert(rich_payload).execute()
+        supabase_client.table("activity_logs").insert({**rich_payload, "tenant_id": tenant_id}).execute()
     except Exception:
         try:
-            supabase_client.table("activity_logs").insert(fallback_payload).execute()
+            supabase_client.table("activity_logs").insert({**fallback_payload, "tenant_id": tenant_id}).execute()
         except Exception as exc:
             logger.warning("activity_log_insert_failed | action=%s | err=%s", action, exc)
 

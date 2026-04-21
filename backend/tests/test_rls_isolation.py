@@ -7,10 +7,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
-DEPENDENCIES_PATH = ROOT / "backend" / "app" / "dependencies.py"
-MIGRATION_PATH = ROOT / "backend" / "migrations" / "015_harden_clerk_rls.sql"
-ZERO_TRUST_MIGRATION_PATH = ROOT / "backend" / "migrations" / "016_zero_trust_rls_lockdown.sql"
+ROOT = Path(__file__).resolve().parents[1]
+DEPENDENCIES_PATH = ROOT / "app" / "dependencies.py"
+MIGRATION_PATH = ROOT / "migrations" / "015_harden_clerk_rls.sql"
+ZERO_TRUST_MIGRATION_PATH = ROOT / "migrations" / "016_zero_trust_rls_lockdown.sql"
+PRODUCTION_RLS_MIGRATION_PATH = ROOT / "migrations" / "018_rls_clerk_production.sql"
 
 
 @dataclass
@@ -161,6 +162,13 @@ def load_dependencies_module():
 
 
 class RLSIsolationTests(unittest.TestCase):
+    def setUp(self):
+        self._original_modules = sys.modules.copy()
+
+    def tearDown(self):
+        sys.modules.clear()
+        sys.modules.update(self._original_modules)
+
     def test_supabase_rls_client_forwards_clerk_jwt_via_anon_client(self):
         deps, _raw_qdrant, create_client_calls = load_dependencies_module()
 
@@ -215,15 +223,16 @@ class RLSIsolationTests(unittest.TestCase):
         self.assertIn("company_playbooks_select", sql)
 
     def test_zero_trust_migration_locks_rls_to_org_id_and_storage_paths(self):
-        sql = ZERO_TRUST_MIGRATION_PATH.read_text()
+        zero_trust_sql = ZERO_TRUST_MIGRATION_PATH.read_text()
+        production_sql = PRODUCTION_RLS_MIGRATION_PATH.read_text()
 
-        self.assertIn("create or replace function app.current_org_id()", sql)
-        self.assertIn("tenant_id = (auth.jwt()->>'org_id')::text", sql)
-        self.assertNotIn("auth.jwt()->>'sub'", sql)
-        self.assertIn("force row level security", sql.lower())
-        self.assertIn("zero_trust_task_template_items", sql)
-        self.assertIn("zero_trust_sub_tasks", sql)
-        self.assertIn("storage.foldername(name)", sql)
+        self.assertIn("create or replace function app.current_org_id()", zero_trust_sql)
+        self.assertIn("tenant_id = (auth.jwt()->>'org_id')::text", zero_trust_sql)
+        self.assertNotIn("auth.jwt()->>'sub'", zero_trust_sql)
+        self.assertIn("force row level security", zero_trust_sql.lower())
+        self.assertIn("zero_trust_task_template_items", zero_trust_sql)
+        self.assertIn("zero_trust_sub_tasks", zero_trust_sql)
+        self.assertIn("storage.foldername(name)", production_sql)
 
     @unittest.skipUnless(
         os.getenv("PARIANA_PG_DSN"),

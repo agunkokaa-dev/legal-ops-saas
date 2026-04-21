@@ -4,13 +4,18 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useAuth } from '@clerk/nextjs';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
+import { searchLaws } from '@/app/actions/backend';
 import { uploadDocument } from '@/app/actions/documentActions';
+import { useLawsUI } from '@/components/laws/LawsUIProvider';
 import ReactMarkdown from 'react-markdown';
+import DiffMatchPatch from 'diff-match-patch';
 import WordDiff from './WordDiff';
 import DebatePanel from './DebatePanel';
+import FinalizeRoundButton from './FinalizeRoundButton';
 import { useContractSSE } from '@/hooks/useContractSSE';
 import { SSEStatusBadge } from '@/components/status/SSEStatusBadge';
 import { getPublicApiBase } from '@/lib/public-api-base';
+import type { LawSearchResponse, LawSearchResult } from '@/types/laws';
 import CounselChat from './CounselChat';
 
 interface DiffDeviation {
@@ -106,6 +111,10 @@ interface ContractVersion {
     raw_text?: string;
     uploaded_filename?: string | null;
     risk_level?: string;
+    source?: string | null;
+    finalized_at?: string | null;
+    finalized_by?: string | null;
+    parent_version_id?: string | null;
 }
 
 interface NegotiationIssue {
@@ -128,6 +137,64 @@ interface NegotiationIssue {
 const RESOLVED_STATUSES = new Set(['accepted', 'rejected', 'countered', 'resolved']);
 const TERMINAL_STATUSES = new Set(['accepted', 'rejected', 'countered', 'resolved', 'dismissed']);
 type LooseRecord = Record<string, unknown>;
+
+function encodeWordTokens(
+    text: string,
+    tokenMap: Map<string, number>,
+    tokenArray: string[]
+): string {
+    let encoded = '';
+    const tokens = text.match(/\S+|\s+/g) || [];
+
+    for (const token of tokens) {
+        const existing = tokenMap.get(token);
+        if (existing !== undefined) {
+            encoded += String.fromCharCode(existing);
+            continue;
+        }
+
+        const nextIndex = tokenArray.length;
+        tokenArray.push(token);
+        tokenMap.set(token, nextIndex);
+        encoded += String.fromCharCode(nextIndex);
+    }
+
+    return encoded;
+}
+
+function calculateStructuralChangeRatio(previousText: string, nextText: string): number {
+    if (!previousText && !nextText) return 0;
+
+    const tokenMap = new Map<string, number>();
+    const tokenArray: string[] = [];
+    const encodedPrevious = encodeWordTokens(previousText || '', tokenMap, tokenArray);
+    const encodedNext = encodeWordTokens(nextText || '', tokenMap, tokenArray);
+
+    const dmp = new DiffMatchPatch();
+    const encodedDiffs = dmp.diff_main(encodedPrevious, encodedNext);
+    dmp.diff_cleanupSemantic(encodedDiffs);
+
+    let changedChars = 0;
+    let totalChars = 0;
+
+    for (const [operation, chunk] of encodedDiffs) {
+        let decodedLength = 0;
+        for (let index = 0; index < chunk.length; index += 1) {
+            decodedLength += tokenArray[chunk.charCodeAt(index)]?.length ?? 0;
+        }
+
+        totalChars += decodedLength;
+        if (operation !== 0) {
+            changedChars += decodedLength;
+        }
+    }
+
+    return totalChars > 0 ? changedChars / totalChars : 0;
+}
+
+function isStructuralChangeDetected(previousText: string, nextText: string): boolean {
+    return calculateStructuralChangeRatio(previousText, nextText) > 0.8;
+}
 
 function asRecord(value: unknown): LooseRecord | null {
     return value && typeof value === 'object' ? value as LooseRecord : null;
@@ -195,6 +262,10 @@ function normalizeVersion(input: unknown): ContractVersion | null {
         raw_text: readString(record, 'raw_text', 'rawText'),
         uploaded_filename: readString(record, 'uploaded_filename', 'uploadedFilename') || null,
         risk_level: readString(record, 'risk_level', 'riskLevel'),
+        source: readString(record, 'source'),
+        finalized_at: readString(record, 'finalized_at', 'finalizedAt') || null,
+        finalized_by: readString(record, 'finalized_by', 'finalizedBy') || null,
+        parent_version_id: readString(record, 'parent_version_id', 'parentVersionId') || null,
     };
 }
 
@@ -412,13 +483,16 @@ function normalizeIssue(issue: unknown): NegotiationIssue | null {
 export default function WarRoomClient({
     contractId,
     matterId,
-    contractTitle
+    contractTitle,
+    contractStatus,
 }: {
     contractId: string;
     matterId: string;
     contractTitle: string;
+    contractStatus?: string | null;
 }) {
     const { getToken, userId } = useAuth();
+    const { openNodeDetail } = useLawsUI();
     const router = useRouter();
 
     const [isLoading, setIsLoading] = useState(true);
@@ -450,6 +524,11 @@ export default function WarRoomClient({
     const [counselOpen, setCounselOpen] = useState(false);
     const [counselSessionType, setCounselSessionType] = useState<"deviation" | "general_strategy">("deviation");
     const [counselDeviationId, setCounselDeviationId] = useState<string | null>(null);
+    const [relatedLawResults, setRelatedLawResults] = useState<LawSearchResult[]>([]);
+    const [showRelatedLawsPanel, setShowRelatedLawsPanel] = useState(false);
+    const [isLoadingRelatedLaws, setIsLoadingRelatedLaws] = useState(false);
+    const [relatedLawsError, setRelatedLawsError] = useState<string | null>(null);
+    const [relatedLawsCoverageNote, setRelatedLawsCoverageNote] = useState<string | null>(null);
 
     const openCounselChat = (type: "deviation" | "general_strategy", devId?: string) => {
         setCounselSessionType(type);
@@ -1044,6 +1123,87 @@ export default function WarRoomClient({
         });
         return sorted;
     }, [deviations, issueStatuses, severityFilters, statusFilter]);
+    const structuralChangeDeviationIds = useMemo(() => new Set(
+        deviations
+            .filter((deviation) => deviation.category === 'Modified')
+            .filter((deviation) => isStructuralChangeDetected(deviation.v1_text, deviation.v2_text))
+            .map((deviation) => deviation.deviation_id)
+    ), [deviations]);
+
+    const selectedDev = sortedDeviations.find(d => d.deviation_id === selectedDevId) || sortedDeviations[0];
+    const selectedIssue = selectedDev ? issuesById[selectedDev.deviation_id] || null : null;
+    const selectedIssueStatus = selectedIssue?.status || 'open';
+    const selectedIssueAuditLog = selectedIssue?.reasoning_log || [];
+    const isSelectedIssuePending = pendingDecision?.issueId === selectedIssue?.id;
+    const isSelectedIssueLocked = selectedIssue ? (TERMINAL_STATUSES.has(selectedIssue.status) || selectedIssue.status === 'escalated') : false;
+    const selectedBATNA = batnaFallbacks.find(b => b.deviation_id === selectedDevId);
+    const selectedDebate = selectedDev
+        ? (effectiveDiffResult?.debate_protocol?.debate_results?.find(d => d.deviation_id === selectedDev.deviation_id) || null)
+        : null;
+
+    const buildRelatedLawsCoverageNote = (payload: LawSearchResponse): string | null => {
+        const explicitNote = payload.corpus_status?.query_coverage_note?.trim();
+        if (explicitNote) {
+            return explicitNote;
+        }
+
+        const categoryCoverage = Object.values(payload.corpus_status?.category_coverage || {}) as Array<Record<string, unknown>>;
+        const activeCoverage = categoryCoverage.filter((item) => Number(item?.ingested_laws || 0) > 0);
+        if (activeCoverage.length !== 1) {
+            return null;
+        }
+
+        const row = activeCoverage[0];
+        const label = String(row.category_label_en || row.category || 'the current legal category');
+        const ingested = Number(row.ingested_laws || 0);
+        const planned = Number(row.total_planned_laws || 0) || ingested;
+
+        return `Current regulations corpus only covers ${label} (${ingested} of ${planned} planned law(s) ingested). The selected deviation does not appear to match that coverage yet.`;
+    };
+
+    const loadRelatedLaws = async () => {
+        if (!selectedDev) {
+            toast.error('Select a deviation before loading related regulations.');
+            return;
+        }
+
+        const query = `${selectedDev.v2_text?.slice(0, 150) || ''} ${selectedDev.impact_analysis?.slice(0, 150) || ''}`.trim();
+        if (!query) {
+            toast.error('No deviation context is available for a regulation lookup.');
+            return;
+        }
+
+        setShowRelatedLawsPanel(true);
+        setIsLoadingRelatedLaws(true);
+        setRelatedLawsError(null);
+        setRelatedLawsCoverageNote(null);
+        const result = await searchLaws(
+            query,
+            { contract_relevance: 'high' },
+            undefined,
+            3,
+            {
+                source_type: 'war_room_deviation',
+                title: selectedDev.title || null,
+                impact_analysis: selectedDev.impact_analysis || null,
+                v1_text: selectedDev.v1_text || null,
+                v2_text: selectedDev.v2_text || null,
+                severity: selectedDev.severity || null,
+                playbook_violation: selectedDev.playbook_violation || null,
+            },
+        );
+        setIsLoadingRelatedLaws(false);
+
+        if (!result.success || !result.data) {
+            setRelatedLawResults([]);
+            setRelatedLawsError(result.error || 'Unable to load related regulations.');
+            return;
+        }
+
+        const payload = result.data as LawSearchResponse;
+        setRelatedLawsCoverageNote(buildRelatedLawsCoverageNote(payload));
+        setRelatedLawResults(payload.results || []);
+    };
 
     if (isLoading) {
         return (
@@ -1185,16 +1345,22 @@ export default function WarRoomClient({
     const criticalCount = deviations.filter(d => d.severity === 'critical').length;
     const warningCount = deviations.filter(d => d.severity === 'warning').length;
 
-    const selectedDev = sortedDeviations.find(d => d.deviation_id === selectedDevId) || sortedDeviations[0];
-    const selectedIssue = selectedDev ? issuesById[selectedDev.deviation_id] || null : null;
-    const selectedIssueStatus = selectedIssue?.status || 'open';
-    const selectedIssueAuditLog = selectedIssue?.reasoning_log || [];
-    const isSelectedIssuePending = pendingDecision?.issueId === selectedIssue?.id;
-    const isSelectedIssueLocked = selectedIssue ? (TERMINAL_STATUSES.has(selectedIssue.status) || selectedIssue.status === 'escalated') : false;
-    const selectedBATNA = batnaFallbacks.find(b => b.deviation_id === selectedDevId);
-    const selectedDebate = selectedDev
-        ? (effectiveDiffResult?.debate_protocol?.debate_results?.find(d => d.deviation_id === selectedDev.deviation_id) || null)
-        : null;
+    const renderModifiedDeviationDiff = (deviation: DiffDeviation) => {
+        const showStructuralChange = structuralChangeDeviationIds.has(deviation.deviation_id);
+
+        return (
+            <div className="mb-4 text-left">
+                <WordDiff 
+                    oldText={deviation.v1_text} 
+                    newText={deviation.v2_text} 
+                    title={deviation.title}
+                    category={deviation.category}
+                    roundNumber={1}
+                    showStructuralChangeBadge={showStructuralChange} 
+                />
+            </div>
+        );
+    };
 
     const renderV2WithContextualDeviations = () => {
         if (!v2?.raw_text) return <p className="text-zinc-500 italic">No raw text available for V2.</p>;
@@ -1244,19 +1410,15 @@ export default function WarRoomClient({
                                 key={`dev-${dev.deviation_id}`}
                                 id={`dev-${dev.deviation_id}`}
                                 onClick={(e) => { e.stopPropagation(); setSelectedDevId(dev.deviation_id); }}
-                                className={`deviation-block transition-all duration-300 ${isSelected ? `ring-2 ring-opacity-50 pulse-ring shadow-md scale-[1.01] z-10` : 'opacity-80 hover:opacity-100'} ${(!isSelected && Object.values(severityFilters).some(v => v) && !severityFilters[dev.severity]) ||
+                                className={`deviation-block transition-all duration-300 rounded-xl border border-white/5 bg-[#161618] shadow-lg ${isSelected ? `ring-1 ring-white/20 scale-[1.01] z-10` : 'opacity-80 hover:opacity-100'} ${(!isSelected && Object.values(severityFilters).some(v => v) && !severityFilters[dev.severity]) ||
                                         (!isSelected && statusFilter === 'unresolved' && RESOLVED_STATUSES.has(issueStatuses[dev.deviation_id] || 'open')) ||
                                         (!isSelected && statusFilter && statusFilter !== 'unresolved' && issueStatuses[dev.deviation_id] !== statusFilter)
                                         ? 'opacity-30 grayscale' : ''
                                     }`}
                                 style={{
-                                    borderLeft: `4px solid ${borderColor}`,
-                                    backgroundColor: bgColor,
                                     padding: '16px 20px',
                                     margin: '12px 0',
-                                    borderRadius: '6px',
                                     cursor: 'pointer',
-                                    ...(isSelected ? { boxShadow: `0 0 0 2px ${borderColor}50` } : {})
                                 }}
                             >
                                 {/* Deviation Header */}
@@ -1287,41 +1449,41 @@ export default function WarRoomClient({
                                         {(() => {
                                             if (dStatus === 'accepted') {
                                                 return (
-                                                    <div className="bg-emerald-900/20 border border-emerald-500/30 p-3 rounded-md mt-2">
-                                                        <div className="text-[10px] font-bold text-emerald-400 mb-2 tracking-wider uppercase flex items-center gap-1">
-                                                            <span className="material-symbols-outlined text-[14px]">check_circle</span> Accepted (V2 Merged)
+                                                    <div className="mt-3">
+                                                        <div className="text-[10px] font-bold text-emerald-500/90 mb-2 tracking-wider uppercase flex items-center gap-1.5">
+                                                            <span className="material-symbols-outlined text-[13px]">check_circle</span> Accepted (V2 Merged)
                                                         </div>
-                                                        <p className="font-sans text-[13px] text-emerald-300 italic">{dev.v2_text}</p>
+                                                        <p className="font-sans text-[13px] text-zinc-300 italic">{dev.v2_text}</p>
                                                     </div>
                                                 );
                                             } else if (dStatus === 'rejected') {
                                                 return (
-                                                    <div className="bg-rose-900/20 border border-rose-500/30 p-3 rounded-md mt-2">
-                                                        <div className="text-[10px] font-bold text-rose-400 mb-2 tracking-wider uppercase flex items-center gap-1">
-                                                            <span className="material-symbols-outlined text-[14px]">cancel</span> Rejected (Reverted to V1)
+                                                    <div className="mt-3">
+                                                        <div className="text-[10px] font-bold text-rose-500/90 mb-2 tracking-wider uppercase flex items-center gap-1.5">
+                                                            <span className="material-symbols-outlined text-[13px]">cancel</span> Rejected (Reverted to V1)
                                                         </div>
-                                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-rose-500/50 mb-2">{dev.v2_text}</p>
-                                                        <p className="font-sans text-[13px] text-rose-300">{dev.v1_text || 'Removed Clause'}</p>
+                                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-rose-500/30 mb-2">{dev.v2_text}</p>
+                                                        <p className="font-sans text-[13px] text-zinc-300">{dev.v1_text || 'Removed Clause'}</p>
                                                     </div>
                                                 );
                                             } else if (dStatus === 'countered') {
                                                 const resolvedBatna = batnaFallbacks.find(b => b.deviation_id === dev.deviation_id);
                                                 return (
-                                                    <div className="bg-amber-900/20 border border-amber-500/30 p-3 rounded-md mt-2">
-                                                        <div className="text-[10px] font-bold text-amber-400 mb-2 tracking-wider uppercase flex items-center gap-1">
-                                                            <span className="material-symbols-outlined text-[14px]">reply</span> Countered (BATNA Inserted)
+                                                    <div className="mt-3">
+                                                        <div className="text-[10px] font-bold text-amber-500/90 mb-2 tracking-wider uppercase flex items-center gap-1.5">
+                                                            <span className="material-symbols-outlined text-[13px]">reply</span> Countered (BATNA Inserted)
                                                         </div>
-                                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-amber-500/50 mb-2">{dev.v2_text}</p>
-                                                        <p className="font-sans text-[13px] text-amber-300 font-medium">{resolvedBatna?.fallback_clause || dev.v1_text}</p>
+                                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-zinc-600 mb-2">{dev.v2_text}</p>
+                                                        <p className="font-sans text-[13px] text-zinc-300 font-medium">{resolvedBatna?.fallback_clause || dev.v1_text}</p>
                                                     </div>
                                                 );
                                             } else if (dStatus === 'escalated') {
                                                 return (
-                                                    <div className="bg-purple-900/20 border border-purple-500/30 p-3 rounded-md mt-2">
-                                                        <div className="text-[10px] font-bold text-purple-400 mb-2 tracking-wider uppercase flex items-center gap-1">
-                                                            <span className="material-symbols-outlined text-[14px]">link</span> Escalated to Task
+                                                    <div className="mt-3">
+                                                        <div className="text-[10px] font-bold text-violet-400/90 mb-2 tracking-wider uppercase flex items-center gap-1.5">
+                                                            <span className="material-symbols-outlined text-[13px]">link</span> Escalated to Task
                                                         </div>
-                                                        <p className="font-sans text-[13px] text-purple-200">{dev.v2_text}</p>
+                                                        <p className="font-sans text-[13px] text-zinc-300">{dev.v2_text}</p>
                                                     </div>
                                                 );
                                             }
@@ -1330,10 +1492,7 @@ export default function WarRoomClient({
                                             return (
                                                 <div>
                                                     {dev.category === 'Modified' ? (
-                                                        <div className="bg-[#111] p-3 rounded border border-zinc-800">
-                                                            <span className="text-[9px] uppercase tracking-widest text-zinc-500 block mb-2 font-bold">Word-Level Diff</span>
-                                                            <WordDiff oldText={dev.v1_text} newText={dev.v2_text} />
-                                                        </div>
+                                                        renderModifiedDeviationDiff(dev)
                                                     ) : (
                                                         <div className="deviation-text font-sans text-[14px] leading-[1.6] text-zinc-200">
                                                             {dev.v2_text}
@@ -1397,19 +1556,15 @@ export default function WarRoomClient({
                     key={`dev-${dev.deviation_id}`}
                     id={`dev-${dev.deviation_id}`}
                     onClick={(e) => { e.stopPropagation(); setSelectedDevId(dev.deviation_id); }}
-                    className={`deviation-block transition-all duration-300 ${isSelected ? `ring-2 ring-opacity-50 pulse-ring shadow-lg scale-[1.01] z-10` : 'opacity-80 hover:opacity-100'} ${(!isSelected && Object.values(severityFilters).some(v => v) && !severityFilters[dev.severity]) ||
+                    className={`deviation-block transition-all duration-300 rounded-xl border border-white/5 bg-[#161618] shadow-lg ${isSelected ? `ring-1 ring-white/20 scale-[1.01] z-10` : 'opacity-80 hover:opacity-100'} ${(!isSelected && Object.values(severityFilters).some(v => v) && !severityFilters[dev.severity]) ||
                             (!isSelected && statusFilter === 'unresolved' && RESOLVED_STATUSES.has(issueStatuses[dev.deviation_id] || 'open')) ||
                             (!isSelected && statusFilter && statusFilter !== 'unresolved' && issueStatuses[dev.deviation_id] !== statusFilter)
                             ? 'opacity-30 grayscale' : ''
                         }`}
                     style={{
-                        borderLeft: `4px solid ${borderColor}`,
-                        backgroundColor: bgColor,
                         padding: '16px 20px',
                         margin: '16px 0',
-                        borderRadius: '6px',
                         cursor: 'pointer',
-                        ...(isSelected ? { boxShadow: `0 0 0 2px ${borderColor}50` } : {})
                     }}
                 >
                     {/* Deviation Header */}
@@ -1434,41 +1589,41 @@ export default function WarRoomClient({
                         {(() => {
                             if (dStatus === 'accepted') {
                                 return (
-                                    <div className="bg-emerald-900/20 border border-emerald-500/30 p-3 rounded-md mt-2">
-                                        <div className="text-[10px] font-bold text-emerald-400 mb-2 tracking-wider uppercase flex items-center gap-1">
-                                            <span className="material-symbols-outlined text-[14px]">check_circle</span> Accepted (V2 Merged)
+                                    <div className="mt-3">
+                                        <div className="text-[10px] font-bold text-emerald-500/90 mb-2 tracking-wider uppercase flex items-center gap-1.5">
+                                            <span className="material-symbols-outlined text-[13px]">check_circle</span> Accepted (V2 Merged)
                                         </div>
-                                        <p className="font-sans text-[13px] text-emerald-300 italic">{dev.v2_text}</p>
+                                        <p className="font-sans text-[13px] text-zinc-300 italic">{dev.v2_text}</p>
                                     </div>
                                 );
                             } else if (dStatus === 'rejected') {
                                 return (
-                                    <div className="bg-rose-900/20 border border-rose-500/30 p-3 rounded-md mt-2">
-                                        <div className="text-[10px] font-bold text-rose-400 mb-2 tracking-wider uppercase flex items-center gap-1">
-                                            <span className="material-symbols-outlined text-[14px]">cancel</span> Rejected (Reverted to V1)
+                                    <div className="mt-3">
+                                        <div className="text-[10px] font-bold text-rose-500/90 mb-2 tracking-wider uppercase flex items-center gap-1.5">
+                                            <span className="material-symbols-outlined text-[13px]">cancel</span> Rejected (Reverted to V1)
                                         </div>
-                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-rose-500/50 mb-2">{dev.v2_text}</p>
-                                        <p className="font-sans text-[13px] text-rose-300">{dev.v1_text || 'Removed Clause'}</p>
+                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-rose-500/30 mb-2">{dev.v2_text}</p>
+                                        <p className="font-sans text-[13px] text-zinc-300">{dev.v1_text || 'Removed Clause'}</p>
                                     </div>
                                 );
                             } else if (dStatus === 'countered') {
                                 const resolvedBatna = batnaFallbacks.find(b => b.deviation_id === dev.deviation_id);
                                 return (
-                                    <div className="bg-amber-900/20 border border-amber-500/30 p-3 rounded-md mt-2">
-                                        <div className="text-[10px] font-bold text-amber-400 mb-2 tracking-wider uppercase flex items-center gap-1">
-                                            <span className="material-symbols-outlined text-[14px]">reply</span> Countered (BATNA Inserted)
+                                    <div className="mt-3">
+                                        <div className="text-[10px] font-bold text-amber-500/90 mb-2 tracking-wider uppercase flex items-center gap-1.5">
+                                            <span className="material-symbols-outlined text-[13px]">reply</span> Countered (BATNA Inserted)
                                         </div>
-                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-amber-500/50 mb-2">{dev.v2_text}</p>
-                                        <p className="font-sans text-[13px] text-amber-300 font-medium">{resolvedBatna?.fallback_clause || dev.v1_text}</p>
+                                        <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-zinc-600 mb-2">{dev.v2_text}</p>
+                                        <p className="font-sans text-[13px] text-zinc-300 font-medium">{resolvedBatna?.fallback_clause || dev.v1_text}</p>
                                     </div>
                                 );
                             } else if (dStatus === 'escalated') {
                                 return (
-                                    <div className="bg-purple-900/20 border border-purple-500/30 p-3 rounded-md mt-2">
-                                        <div className="text-[10px] font-bold text-purple-400 mb-2 tracking-wider uppercase flex items-center gap-1">
-                                            <span className="material-symbols-outlined text-[14px]">link</span> Escalated to Task
+                                    <div className="mt-3">
+                                        <div className="text-[10px] font-bold text-violet-400/90 mb-2 tracking-wider uppercase flex items-center gap-1.5">
+                                            <span className="material-symbols-outlined text-[13px]">link</span> Escalated to Task
                                         </div>
-                                        <p className="font-sans text-[13px] text-purple-200">{dev.v2_text}</p>
+                                        <p className="font-sans text-[13px] text-zinc-300">{dev.v2_text}</p>
                                     </div>
                                 );
                             }
@@ -1477,10 +1632,7 @@ export default function WarRoomClient({
                             return (
                                 <div>
                                     {dev.category === 'Modified' ? (
-                                        <div className="bg-[#111] p-3 rounded border border-zinc-800">
-                                            <span className="text-[9px] uppercase tracking-widest text-zinc-500 block mb-2 font-bold">Word-Level Diff</span>
-                                            <WordDiff oldText={dev.v1_text} newText={dev.v2_text} />
-                                        </div>
+                                        renderModifiedDeviationDiff(dev)
                                     ) : (
                                         <div className="deviation-text font-sans text-[14px] leading-[1.6] text-zinc-200">
                                             {dev.v2_text}
@@ -1888,6 +2040,16 @@ export default function WarRoomClient({
                                 )}
                             </div>
 
+                            <div className="mb-6 flex items-center justify-center">
+                                <FinalizeRoundButton
+                                    contractId={contractId}
+                                    contractStatus={contractStatus}
+                                    allResolved={allResolved}
+                                    pendingIssueCount={pendingIssueCount}
+                                    nextVersionNumber={(v2?.version_number || 0) + 1}
+                                />
+                            </div>
+
                             {/* ENHANCEMENT 3: VIEW MODE TOGGLE */}
                             <div className="inline-flex bg-[#141414] border border-zinc-800/80 rounded-lg p-1.5 shadow-inner mx-auto mb-4">
                                 <button
@@ -2067,6 +2229,16 @@ export default function WarRoomClient({
                                         </div>
                                     )}
 
+                                    <div className="mb-4 rounded-lg border border-zinc-800/60 bg-[#101214] p-3">
+                                        <span className="text-[9px] uppercase tracking-widest text-[#D4AF37] font-bold block mb-2">Related Regulations</span>
+                                        <button
+                                            onClick={() => void loadRelatedLaws()}
+                                            className="w-full rounded-lg border border-white/10 px-3 py-2 text-left text-[11px] text-zinc-300 transition hover:border-white/20 hover:bg-white/[0.03]"
+                                        >
+                                            View 3 relevant articles →
+                                        </button>
+                                    </div>
+
                                     {/* ── NEGOTIATION STATE ACTIONS ── */}
                                     <div className="mb-4">
                                         <button
@@ -2223,6 +2395,57 @@ export default function WarRoomClient({
                 </div>
             )}
         </aside>
+
+        {showRelatedLawsPanel && (
+            <aside className="w-[360px] bg-[#0a0a0a] border-l border-zinc-800/40 flex flex-col shrink-0 overflow-hidden">
+                <div className="flex items-center justify-between border-b border-zinc-800/40 px-5 py-4">
+                    <div>
+                        <p className="text-[10px] uppercase tracking-[0.24em] text-[#D4AF37]">Related Regulations</p>
+                        <p className="mt-1 text-xs text-zinc-500">Top 3 articles derived from the selected deviation.</p>
+                    </div>
+                    <button
+                        onClick={() => setShowRelatedLawsPanel(false)}
+                        className="rounded-full border border-white/10 px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-zinc-400 transition hover:border-white/20 hover:text-white"
+                    >
+                        Close
+                    </button>
+                </div>
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-3">
+                    {isLoadingRelatedLaws ? (
+                        <div className="text-sm text-zinc-400">Loading related regulations…</div>
+                    ) : relatedLawsError ? (
+                        <div className="rounded-xl border border-rose-500/20 bg-rose-500/10 p-3 text-sm text-rose-200">{relatedLawsError}</div>
+                    ) : relatedLawResults.length ? (
+                        relatedLawResults.map((result) => (
+                            <button
+                                key={result.node_id}
+                                onClick={() => void openNodeDetail(result.node_id)}
+                                className="block w-full rounded-xl border border-white/8 bg-white/[0.02] p-4 text-left transition hover:border-white/15 hover:bg-white/[0.04]"
+                            >
+                                <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                        <p className="text-sm font-semibold text-white">{result.law_short} · {result.identifier_full}</p>
+                                        <p className="mt-1 text-[10px] uppercase tracking-[0.2em] text-zinc-500">{result.category}</p>
+                                    </div>
+                                    <span className="rounded-full bg-white/5 px-2 py-1 text-[9px] uppercase tracking-[0.2em] text-zinc-400">
+                                        {result.legal_status}
+                                    </span>
+                                </div>
+                                <p className="mt-3 text-xs leading-relaxed text-zinc-300">{result.body_snippet}</p>
+                            </button>
+                        ))
+                    ) : relatedLawsCoverageNote ? (
+                        <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 p-4 text-sm text-sky-100">
+                            {relatedLawsCoverageNote}
+                        </div>
+                    ) : (
+                        <div className="rounded-xl border border-white/8 bg-white/[0.02] p-4 text-sm text-zinc-500">
+                            No related regulations were returned for this deviation.
+                        </div>
+                    )}
+                </div>
+            </aside>
+        )}
 
             </section>
         </main>

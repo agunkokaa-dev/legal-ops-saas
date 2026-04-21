@@ -520,6 +520,37 @@ DiffDeviation.model_rebuild()
 SmartDiffResult.model_rebuild()
 
 
+class FinalizeRoundRequest(BaseModel):
+    allow_partial: bool = False
+    confirmation_note: Optional[str] = Field(default=None, max_length=500)
+
+
+class BlockingIssue(BaseModel):
+    issue_id: str
+    deviation_id: str
+    title: str
+    severity: str
+    status: str
+
+
+class FinalizePreviewResponse(BaseModel):
+    can_finalize: bool
+    blocking_issues: list[BlockingIssue] = Field(default_factory=list)
+    decisions_summary: dict[str, int] = Field(default_factory=dict)
+    v3_text_preview: str
+    v3_text_length: int
+    v2_text_length: int
+    estimated_changes: int
+
+
+class FinalizeRoundResponse(BaseModel):
+    version_id: str
+    version_number: int
+    v3_text_preview: str
+    decisions_summary: dict[str, int] = Field(default_factory=dict)
+    next_action: str
+
+
 class CounselMessageRole(str, Enum):
     USER = "user"
     ASSISTANT = "assistant"

@@ -1,0 +1,2 @@
+"""Global regulatory intelligence module."""
+

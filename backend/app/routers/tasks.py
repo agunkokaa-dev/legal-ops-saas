@@ -623,7 +623,7 @@ async def create_task(
     tenant_id = claims["verified_tenant_id"]
     payload = req.dict(exclude_unset=True)
     payload["tenant_id"] = tenant_id
-    res = supabase.table("tasks").insert(payload).select().single().execute()
+    res = supabase.table("tasks").insert({**payload, "tenant_id": tenant_id}).select().single().execute()
     return {"task": res.data}
 
 @router.get("/tasks/{task_id}")

@@ -1,0 +1,57 @@
+[
+  {
+    "text": "UU PDP Pasal 56 ayat (2) huruf b",
+    "expect_complete": true,
+    "law_short": "UU PDP",
+    "law_type": "UU",
+    "law_number": null,
+    "law_year": null,
+    "pasal": "Pasal 56",
+    "ayat": "(2)",
+    "huruf": "b"
+  },
+  {
+    "text": "Pasal 46 UU 27/2022",
+    "expect_complete": true,
+    "law_short": null,
+    "law_type": "UU",
+    "law_number": "27",
+    "law_year": 2022,
+    "pasal": "Pasal 46",
+    "ayat": null,
+    "huruf": null
+  },
+  {
+    "text": "UU No. 27 Tahun 2022 Pasal 24",
+    "expect_complete": true,
+    "law_short": null,
+    "law_type": "UU",
+    "law_number": "27",
+    "law_year": 2022,
+    "pasal": "Pasal 24",
+    "ayat": null,
+    "huruf": null
+  },
+  {
+    "text": "Pasal 56 ayat (2) huruf c",
+    "expect_complete": false,
+    "law_short": null,
+    "law_type": null,
+    "law_number": null,
+    "law_year": null,
+    "pasal": "Pasal 56",
+    "ayat": "(2)",
+    "huruf": "c"
+  },
+  {
+    "text": "kami membahas pasal ini untuk negosiasi besok",
+    "expect_complete": false,
+    "law_short": null,
+    "law_type": null,
+    "law_number": null,
+    "law_year": null,
+    "pasal": null,
+    "ayat": null,
+    "huruf": null
+  }
+]

@@ -19,25 +19,25 @@ WHY asyncio.to_thread()?
   handle other concurrent requests while the LLM call completes.
 """
 import asyncio
-import re
+import json
+import logging
 import traceback
-from typing import Any, Dict
+from typing import Any
 
 from fastapi import APIRouter, Form, HTTPException, Depends, Request
 from supabase import Client
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from qdrant_client import models
 
-from app.config import openai_client, qdrant, COLLECTION_NAME
+from app.config import openai_client, COLLECTION_NAME
+from app.laws.schemas import LawSearchContext, LawSearchRequest
+from app.laws.service import LawRetrievalService, build_law_retrieval_service
 from app.rate_limiter import limiter
 from app.dependencies import TenantQdrantClient, get_tenant_qdrant, verify_clerk_token, get_tenant_supabase
 from app.schemas import ClauseAssistantRequest
 
-import os
-from dotenv import load_dotenv
-load_dotenv()
-
 router = APIRouter()
+chat_logger = logging.getLogger("pariana.chat.router")
 
 
 # =====================================================================
@@ -146,7 +146,6 @@ async def async_fetch_full_document(
             collection_name=COLLECTION_NAME,
             scroll_filter=Filter(must=[
                 FieldCondition(key="contract_id", match=MatchValue(value=contract_id)),
-                FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))
             ]),
             limit=50,  # More chunks for better coverage
             with_payload=True
@@ -166,6 +165,227 @@ async def async_fetch_full_document(
         import logging
         logging.error(f"🔥 RAG SCROLL CRASHED in chat.py: {str(e)}")
         return ""
+
+
+CLAUSE_ASSISTANT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "search_playbook_rules",
+            "description": "Retrieve relevant internal playbook or company rules for the current clause question.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Focused clause or negotiation issue to search for."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_national_laws",
+            "description": "Retrieve relevant Indonesian national law provisions from the active v2 law corpus.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Focused legal issue or clause question to search for."},
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_graph_dependencies",
+            "description": "Resolve deterministic law-to-law cross references from pasal_references using retrieved canonical law node ids.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "node_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Canonical law node ids returned by search_national_laws.",
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional fallback issue text if you need the system to search laws first.",
+                    },
+                },
+            },
+        },
+    },
+]
+
+
+def _build_clause_assistant_search_context(message: str) -> LawSearchContext:
+    return LawSearchContext(
+        source_type="clause_assistant",
+        impact_analysis=message,
+    )
+
+
+def _format_contract_excerpt_context(contract_results: list[Any], contract_titles: dict[str, str]) -> str:
+    if not contract_results:
+        return "Tidak ada cuplikan kontrak terindeks yang relevan."
+
+    lines: list[str] = []
+    for hit in contract_results[:4]:
+        payload = dict(getattr(hit, "payload", {}) or {})
+        contract_id = str(payload.get("contract_id") or "")
+        title = contract_titles.get(contract_id, "Unknown Document")
+        lines.extend(
+            [
+                f"- [DOKUMEN: {title}]",
+                f"  Cuplikan: {payload.get('text', '')[:420] or 'Tidak ada teks.'}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _format_playbook_context(playbook_results: list[dict[str, Any]]) -> str:
+    if not playbook_results:
+        return "Tidak ada aturan playbook relevan yang ditemukan."
+
+    lines: list[str] = []
+    for item in playbook_results[:5]:
+        lines.extend(
+            [
+                f"- [PLAYBOOK: {item.get('category') or 'Unknown'}]",
+                f"  Rule: {item.get('rule_text') or 'N/A'}",
+                f"  Standard: {item.get('standard_position') or 'N/A'}",
+                f"  Fallback: {item.get('fallback_position') or 'N/A'}",
+                f"  Redline: {item.get('redline') or 'N/A'}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _format_law_context(law_results: list[Any]) -> str:
+    if not law_results:
+        return "Tidak ada pasal nasional relevan yang ditemukan."
+
+    lines: list[str] = []
+    for item in law_results[:5]:
+        retrieval_label = item.retrieval_path or "semantic"
+        reference_label = f" / {item.reference_type}" if item.reference_type else ""
+        lines.extend(
+            [
+                f"- [HUKUM: {item.law_short} · {item.identifier_full}] ({retrieval_label}{reference_label})",
+                f"  Teks: {item.body_snippet or 'Tidak ada teks.'}",
+                f"  Status: {item.legal_status}",
+                f"  Catatan Referensi: {item.reference_context}" if item.reference_context else "",
+            ]
+        )
+    return "\n".join(line for line in lines if line)
+
+
+def _format_graph_context(graph_results: list[dict[str, Any]]) -> str:
+    if not graph_results:
+        return "Tidak ada dependensi graf deterministik yang ditemukan."
+
+    lines: list[str] = []
+    for item in graph_results[:5]:
+        lines.extend(
+            [
+                f"- [REFERENSI: {item.get('reference_type', 'conditional')} -> {item.get('law_short', '?')} · {item.get('identifier_full', '?')}]",
+                f"  Konteks: {item.get('reference_context') or 'N/A'}",
+                f"  Teks: {item.get('body_snippet') or 'Tidak ada teks.'}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+async def _run_clause_assistant_tool(
+    *,
+    tool_name: str,
+    args: dict[str, Any],
+    law_service: LawRetrievalService,
+    qdrant_client: TenantQdrantClient,
+) -> str:
+    query = str(args.get("query") or "").strip()
+    context = _build_clause_assistant_search_context(query) if query else None
+
+    try:
+        if tool_name == "search_playbook_rules":
+            results = await law_service.search_playbook_rules(
+                tenant_qdrant=qdrant_client,
+                query=query,
+                context=context,
+                limit=4,
+            )
+            return json.dumps({"items": results}, ensure_ascii=False)
+
+        if tool_name == "search_national_laws":
+            response = await law_service.search(
+                LawSearchRequest(
+                    query=query,
+                    context=context,
+                    limit=4,
+                )
+            )
+            return json.dumps(
+                {
+                    "items": [
+                        {
+                            "node_id": item.node_id,
+                            "law_short": item.law_short,
+                            "identifier_full": item.identifier_full,
+                            "body_snippet": item.body_snippet,
+                            "legal_status": item.legal_status,
+                            "retrieval_path": item.retrieval_path,
+                            "reference_type": item.reference_type,
+                            "reference_context": item.reference_context,
+                            "confidence_score": item.confidence_score,
+                        }
+                        for item in response.results
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+        if tool_name == "get_graph_dependencies":
+            node_ids = [str(node_id) for node_id in (args.get("node_ids") or []) if str(node_id).strip()]
+            score_by_node_id: dict[str, float] = {}
+            if not node_ids and query:
+                response = await law_service.search(
+                    LawSearchRequest(
+                        query=query,
+                        context=context,
+                        limit=4,
+                    )
+                )
+                node_ids = [item.node_id for item in response.results]
+                score_by_node_id = {item.node_id: float(item.confidence_score) for item in response.results}
+
+            results = await law_service.get_graph_dependencies(
+                node_ids=node_ids,
+                score_by_node_id=score_by_node_id,
+                limit=4,
+            )
+            return json.dumps(
+                {
+                    "items": [
+                        {
+                            "node_id": item.get("node_id"),
+                            "law_short": item.get("law_short"),
+                            "identifier_full": item.get("identifier_full"),
+                            "reference_type": item.get("reference_type"),
+                            "reference_context": item.get("reference_context"),
+                            "body_snippet": item.get("body_snippet"),
+                        }
+                        for item in results
+                    ]
+                },
+                ensure_ascii=False,
+            )
+    except Exception as exc:
+        chat_logger.warning("Clause assistant tool %s failed: %s", tool_name, exc)
+        return json.dumps({"items": [], "error": str(exc)}, ensure_ascii=False)
+
+    return json.dumps({"items": [], "error": f"Unknown tool: {tool_name}"}, ensure_ascii=False)
 
 
 # =====================================================================
@@ -375,6 +595,7 @@ async def chat_clause_assistant(
     claims: dict = Depends(verify_clerk_token),
     supabase: Client = Depends(get_tenant_supabase),
     qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
+    law_service: LawRetrievalService = Depends(build_law_retrieval_service),
 ):
     try:
         tenant_id = claims["verified_tenant_id"]
@@ -429,7 +650,7 @@ async def chat_clause_assistant(
         # 3. Embed User Query (NON-BLOCKING)
         question_vector = await async_embed(body.message)
 
-        # 4. Dual RAG Retrieval (NON-BLOCKING, PARALLEL)
+        # 4. Contract retrieval for clause-local context
         # SECURITY: Contract filter must include tenant_id to prevent cross-tenant vector access
         contract_filter = Filter(
             must=[
@@ -437,28 +658,47 @@ async def chat_clause_assistant(
                 FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id))
             ]
         )
-
-        # Run contract search, law search, and playbook search IN PARALLEL
         contract_task = async_qdrant_search(qdrant_client, COLLECTION_NAME, question_vector, limit=4, query_filter=contract_filter)
-        law_task = async_qdrant_search(qdrant, "id_national_laws", question_vector, limit=2)
-        playbook_task = async_qdrant_search(
-            qdrant_client,
-            "company_rules", question_vector, limit=3,
-            query_filter=None
+        search_context = _build_clause_assistant_search_context(body.message)
+        playbook_task = law_service.search_playbook_rules(
+            tenant_qdrant=qdrant_client,
+            query=body.message,
+            context=search_context,
+            limit=4,
+        )
+        law_task = law_service.search(
+            LawSearchRequest(
+                query=body.message,
+                context=search_context,
+                limit=4,
+            )
         )
 
         try:
-            contract_results, law_results, playbook_results = await asyncio.gather(
+            contract_results, law_response, playbook_results = await asyncio.gather(
                 contract_task, law_task, playbook_task, return_exceptions=True
             )
             if isinstance(contract_results, BaseException):
                 contract_results = []
-            if isinstance(law_results, BaseException):
-                law_results = []
+            if isinstance(law_response, BaseException):
+                law_response = None
             if isinstance(playbook_results, BaseException):
                 playbook_results = []
         except Exception:
-            contract_results, law_results, playbook_results = [], [], []
+            contract_results, law_response, playbook_results = [], None, []
+
+        law_results = list(getattr(law_response, "results", []) or [])
+        graph_results: list[dict[str, Any]] = []
+        if law_results:
+            try:
+                graph_results = await law_service.get_graph_dependencies(
+                    node_ids=[item.node_id for item in law_results[:3]],
+                    score_by_node_id={item.node_id: float(item.confidence_score) for item in law_results[:3]},
+                    limit=4,
+                )
+            except Exception as exc:
+                chat_logger.warning("Clause assistant graph expansion failed: %s", exc)
+                graph_results = []
 
         # 5. Assemble Context — PRIMARY document is the single source of truth
         combined_context = ""
@@ -489,30 +729,14 @@ async def chat_clause_assistant(
         except Exception as e:
             print(f"Error fetching full document texts: {e}")
 
-        combined_context += "=== KONTEKS HUKUM NASIONAL (INDONESIA) ===\n"
-        if not law_results:
-            combined_context += "Tidak ada pasal hukum nasional yang cocok.\n\n"
-        else:
-            for hit in law_results:
-                source = hit.payload.get("source_law", "Unknown Law")
-                pasal = hit.payload.get("pasal", "Unknown Pasal")
-                text = hit.payload.get("text", "")
-                combined_context += f"TAG SUMBER: [{source}, Pasal {pasal}]\nTeks: {text}\n\n"
-
-        # Inject real-time playbook rules
-        combined_context += "=== ATURAN PERUSAHAAN SAAT INI (PLAYBOOK) ===\n"
-        if not playbook_results:
-            combined_context += "Tidak ada aturan playbook yang relevan ditemukan.\n\n"
-        else:
-            for hit in playbook_results:
-                p = hit.payload
-                combined_context += (
-                    f"- Kategori: {p.get('category', 'N/A')}\n"
-                    f"  Standard Position: {p.get('standard_position', 'N/A')}\n"
-                    f"  Fallback (Compromise): {p.get('fallback_position', 'Tidak ada')}\n"
-                    f"  Redline (Walk-away): {p.get('redline', 'Tidak ada')}\n"
-                    f"  Severity: {p.get('risk_severity', 'N/A')}\n\n"
-                )
+        combined_context += "=== RELEVANT CONTRACT EXCERPTS ===\n"
+        combined_context += f"{_format_contract_excerpt_context(contract_results, contract_titles)}\n\n"
+        combined_context += "=== PLAYBOOK EVIDENCE ===\n"
+        combined_context += f"{_format_playbook_context(playbook_results)}\n\n"
+        combined_context += "=== NATIONAL LAW EVIDENCE ===\n"
+        combined_context += f"{_format_law_context(law_results)}\n\n"
+        combined_context += "=== GRAPH DEPENDENCIES (pasal_references) ===\n"
+        combined_context += f"{_format_graph_context(graph_results)}\n\n"
 
         # 6. System Prompt — with strict anti-hallucination guardrails
         system_prompt = f"""You are an elite Indonesian Corporate Lawyer and Contract Negotiator.
@@ -526,11 +750,13 @@ ABSOLUTE RULES — VIOLATION OF THESE MEANS FAILURE:
 5. If information is insufficient to answer the question, say so honestly. Never compensate with fabricated content.
 
 ANALYSIS INSTRUCTIONS:
-6. Always base your legal analysis on Indonesian Law (KONTEKS HUKUM NASIONAL section).
-7. Jika pertanyaan berkaitan dengan batas toleransi, denda, atau kebijakan, rujuk pada ATURAN PERUSAHAAN (PLAYBOOK). Laporkan jika dokumen melanggar 'Redline'.
-8. WAJIB KUTIP SUMBER: Akhiri kalimat dengan [DOKUMEN: Nama File] saat mengutip dari dokumen.
-9. Format using clean Markdown with bold, bullet points, and numbered lists.
-10. Answer in professional Indonesian, maintaining legal terminology.
+6. Always cross-reference the contract against BOTH NATIONAL LAW EVIDENCE and PLAYBOOK EVIDENCE before answering.
+7. Graph dependencies from pasal_references are deterministic links and should be treated as stronger evidence than semantic-only law retrieval.
+8. Jika pertanyaan berkaitan dengan batas toleransi, denda, fallback position, atau kebijakan negosiasi, rujuk pada PLAYBOOK EVIDENCE dan laporkan jika dokumen melanggar redline.
+9. WAJIB KUTIP SUMBER: gunakan penanda sumber yang jelas seperti [DOKUMEN: Nama File], [PLAYBOOK: Kategori], [HUKUM: UU X · Pasal Y], atau [REFERENSI: direct/implementing/conditional].
+10. If the initial retrieval bundle is insufficient, call the available retrieval tools before answering. Never guess.
+11. Format using clean Markdown with bold, bullet points, and numbered lists.
+12. Answer in professional Indonesian, maintaining legal terminology.
 
 HISTORICAL AGENT DATA:
 {historical_context}
@@ -549,14 +775,47 @@ Context:
         print("=== DEBUG LLM CONTEXT ===")
         print(combined_context)
         print("=========================")
-        response = await async_chat_completion([
+        messages: list[Any] = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": body.message}
-        ])
+            {"role": "user", "content": body.message},
+        ]
+        final_content = ""
+        for _ in range(2):
+            response = await async_chat_completion(messages, tools=CLAUSE_ASSISTANT_TOOLS, tool_choice="auto")
+            response_message = response.choices[0].message
+            if response_message.tool_calls:
+                messages.append(response_message)
+                for tool_call in response_message.tool_calls:
+                    raw_args = tool_call.function.arguments or "{}"
+                    try:
+                        tool_args = json.loads(raw_args)
+                    except json.JSONDecodeError:
+                        tool_args = {}
+                    tool_result = await _run_clause_assistant_tool(
+                        tool_name=tool_call.function.name,
+                        args=tool_args,
+                        law_service=law_service,
+                        qdrant_client=qdrant_client,
+                    )
+                    messages.append(
+                        {
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": tool_call.function.name,
+                            "content": tool_result,
+                        }
+                    )
+                continue
+            final_content = response_message.content or ""
+            break
+
+        if not final_content:
+            fallback_response = await async_chat_completion(messages)
+            final_content = fallback_response.choices[0].message.content or ""
 
         return {
-            "reply": response.choices[0].message.content,
-            "answer": response.choices[0].message.content
+            "reply": final_content,
+            "answer": final_content
         }
 
     except Exception as e:

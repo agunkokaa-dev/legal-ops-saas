@@ -311,6 +311,103 @@ def test_list_negotiation_issues_filters_to_active_version_issue_ids():
     assert first_issue["linked_task_status"] == "done"
 
 
+def test_list_negotiation_issues_falls_back_to_tenant_admin_client(monkeypatch):
+    request_fake = FakeSupabase({
+        "contract_versions": [],
+        "negotiation_issues": [],
+    })
+    admin_fake = FakeSupabase({
+        "contract_versions": [
+            {
+                "id": "version-2",
+                "contract_id": "contract-1",
+                "tenant_id": "tenant-1",
+                "pipeline_output": {
+                    "diff_result": {
+                        "deviations": [{"deviation_id": "issue-1"}]
+                    }
+                },
+            }
+        ],
+        "negotiation_issues": [
+            {
+                "id": "issue-1",
+                "tenant_id": "tenant-1",
+                "contract_id": "contract-1",
+                "version_id": "version-2",
+                "finding_id": "legacy-1",
+                "title": "Current issue",
+                "status": "open",
+                "severity": "warning",
+                "created_at": "2026-04-16T00:00:01+00:00",
+            }
+        ],
+    })
+    monkeypatch.setattr(negotiation, "get_tenant_admin_supabase", lambda tenant_id: admin_fake)
+
+    list_issues = unwrap_async_handler(negotiation.list_negotiation_issues)
+    response = asyncio.run(list_issues(
+        request=MagicMock(),
+        contract_id="contract-1",
+        version_id="version-2",
+        claims={"verified_tenant_id": "tenant-1"},
+        supabase=request_fake,
+    ))
+
+    assert response["total_issues"] == 1
+    assert response["issues"][0]["id"] == "issue-1"
+
+
+def test_update_issue_status_falls_back_to_tenant_admin_client(monkeypatch):
+    request_fake = FakeSupabase({
+        "negotiation_issues": [],
+        "negotiation_rounds": [],
+        "contract_versions": [],
+    })
+    admin_fake = FakeSupabase({
+        "negotiation_issues": [
+            {
+                "id": "issue-1",
+                "tenant_id": "tenant-1",
+                "contract_id": "contract-1",
+                "version_id": "version-2",
+                "finding_id": "legacy-1",
+                "title": "Current issue",
+                "status": "open",
+                "severity": "warning",
+                "reasoning_log": [],
+                "created_at": "2026-04-16T00:00:01+00:00",
+            }
+        ],
+        "negotiation_rounds": [],
+        "contract_versions": [],
+        "activity_logs": [],
+    })
+
+    async def noop_publish(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(negotiation, "get_tenant_admin_supabase", lambda tenant_id: admin_fake)
+    monkeypatch.setattr(negotiation, "publish_negotiation_event", noop_publish)
+
+    update_issue = unwrap_async_handler(negotiation.update_issue_status)
+    response = asyncio.run(update_issue(
+        request=MagicMock(),
+        contract_id="contract-1",
+        issue_id="issue-1",
+        payload=negotiation.UpdateIssueStatusRequest(
+            status="countered",
+            reason="Countered with BATNA fallback",
+            actor="User",
+        ),
+        claims={"verified_tenant_id": "tenant-1", "sub": "user-1"},
+        supabase=request_fake,
+    ))
+
+    assert response["status"] == "success"
+    assert admin_fake.tables["negotiation_issues"][0]["status"] == "countered"
+
+
 def test_get_smart_diff_returns_requested_version_when_version_id_is_provided():
     fake = FakeSupabase({
         "contract_versions": [

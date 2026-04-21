@@ -16,7 +16,7 @@ from app.rate_limiter import limiter, rate_limit_exceeded_handler
 
 from app.config import ALLOWED_ORIGINS, init_qdrant_collections
 from app.event_bus import event_bus
-from app.routers import matters, contracts, chat, templates, tasks, playbook, intake, drafting, clauses, review, negotiation, bilingual, national_laws, signing, sse
+from app.routers import matters, contracts, chat, templates, tasks, playbook, intake, drafting, clauses, review, negotiation, bilingual, national_laws, signing, sse, laws
 
 # --- Lifespan ---
 @asynccontextmanager
@@ -66,6 +66,7 @@ app.include_router(clauses.router,    prefix="/api/v1",          tags=["Clause L
 app.include_router(review.router,     prefix="/api/v1/review",       tags=["Contract Review"])
 app.include_router(negotiation.router, prefix="/api/v1/negotiation",  tags=["Negotiation War Room"])
 app.include_router(bilingual.router,  prefix="/api/v1/bilingual",    tags=["Bilingual Editor"])
+app.include_router(laws.router, prefix="/api/v1", tags=["Laws"])
 app.include_router(national_laws.router, prefix="/api/v1/admin",       tags=["National Law Admin"])
 app.include_router(sse.admin_router,      prefix="/api/v1/admin",       tags=["Worker Admin"])
 app.include_router(signing.router,       prefix="/api/v1/signing",       tags=["E-Signature & E-Meterai"])

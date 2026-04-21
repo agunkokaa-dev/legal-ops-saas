@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import { useRouter } from 'next/navigation';
 import { getPublicApiBase } from '@/lib/public-api-base';
+import DownloadButton from '@/components/war-room/DownloadButton';
 
 interface ContractVersion {
     id: string;
@@ -12,9 +13,29 @@ interface ContractVersion {
     risk_level: string;
     uploaded_filename: string;
     created_at: string;
+    source?: string | null;
+    finalized_at?: string | null;
+    finalized_by?: string | null;
 }
 
-export default function ContractGenealogyTab({ contractId }: { contractId: string }) {
+function sourceLabel(source?: string | null) {
+    switch (source) {
+        case 'internal_finalized':
+            return { label: 'Finalized by us', className: 'border border-emerald-700/50 text-emerald-300 bg-emerald-950/30' };
+        case 'counterparty_upload':
+            return { label: 'Counterparty', className: 'border border-blue-700/50 text-blue-300 bg-blue-950/30' };
+        default:
+            return { label: 'Uploaded', className: 'border border-zinc-700 text-zinc-300 bg-zinc-900' };
+    }
+}
+
+export default function ContractGenealogyTab({
+    contractId,
+    contractStatus,
+}: {
+    contractId: string
+    contractStatus?: string | null
+}) {
     const { getToken } = useAuth();
     const router = useRouter();
     
@@ -57,7 +78,7 @@ export default function ContractGenealogyTab({ contractId }: { contractId: strin
     const formatDate = (ds: string) => {
         if (!ds) return 'Unknown Date';
         const d = new Date(ds);
-        return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(d);
+        return new Intl.DateTimeFormat('id-ID', { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' }).format(d);
     };
 
     if (isLoading) {
@@ -111,34 +132,31 @@ export default function ContractGenealogyTab({ contractId }: { contractId: strin
                             </div>
 
                             {/* Node Card */}
-                            <div 
-                                onClick={() => router.push(`/dashboard/contracts/${contractId}/war-room`)}
-                                className={`flex-1 p-4 rounded-xl cursor-pointer transition-all duration-300 group
+                            <div
+                                className={`flex-1 p-4 rounded-xl transition-all duration-300 group
                                     ${isLatest 
                                         ? 'bg-[#141414] border border-[#D4AF37]/40 shadow-[0_0_15px_rgba(212,175,55,0.05)] hover:border-[#D4AF37]' 
                                         : 'bg-[#0a0a0a] border border-white/5 hover:border-white/20 hover:bg-[#141414]'
                                     }`}
                             >
                                 <div className="flex justify-between items-start mb-2">
-                                    <h4 className={`text-xs font-bold ${isLatest ? 'text-white' : 'text-zinc-300'} group-hover:text-[#D4AF37] transition-colors truncate max-w-[180px]`} title={v.uploaded_filename || 'Unknown Document'}>
-                                        {v.uploaded_filename || 'Unknown Document'}
-                                    </h4>
-                                    {isLatest && versions.length === 1 ? (
-                                        <span className="bg-[#D4AF37]/10 text-[#D4AF37] text-[9px] px-2 py-0.5 rounded uppercase font-bold tracking-wider shrink-0">
-                                            Current Baseline
-                                        </span>
-                                    ) : isLatest ? (
-                                        <span className="bg-[#D4AF37]/10 text-[#D4AF37] text-[9px] px-2 py-0.5 rounded uppercase font-bold tracking-wider shrink-0">
-                                            Active
-                                        </span>
-                                    ) : null}
+                                    <div className="pr-3">
+                                        <h4 className={`text-xs font-bold ${isLatest ? 'text-white' : 'text-zinc-300'} group-hover:text-[#D4AF37] transition-colors truncate max-w-[180px]`} title={v.uploaded_filename || 'Unknown Document'}>
+                                            V{v.version_number} {v.uploaded_filename || 'Unknown Document'}
+                                        </h4>
+                                        <p className="mt-1 text-[10px] text-zinc-500">
+                                            {v.source === 'internal_finalized' && v.finalized_at
+                                                ? `Finalized ${formatDate(v.finalized_at)}`
+                                                : `Uploaded ${formatDate(v.created_at)}`}
+                                            {v.finalized_by ? ` • ${v.finalized_by}` : ''}
+                                        </p>
+                                    </div>
+                                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider ${sourceLabel(v.source).className}`}>
+                                        {sourceLabel(v.source).label}
+                                    </span>
                                 </div>
                                 
-                                <div className="flex items-center justify-between mt-3">
-                                    <span className="text-[10px] text-zinc-500">
-                                        {formatDate(v.created_at)}
-                                    </span>
-                                    
+                                <div className="mt-3 flex items-center justify-between gap-3">
                                     <div className="flex items-center gap-1.5 bg-black/40 px-2 py-1 rounded">
                                         <span className={`w-1.5 h-1.5 rounded-full ${
                                             v.risk_level === 'High' ? 'bg-rose-500' :
@@ -153,6 +171,30 @@ export default function ContractGenealogyTab({ contractId }: { contractId: strin
                                             Risk: {Math.round(v.risk_score)}
                                         </span>
                                     </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => router.push(`/dashboard/contracts/${contractId}/war-room`)}
+                                        className="text-[10px] uppercase tracking-widest text-[#D4AF37] transition hover:text-[#f2ca50]"
+                                    >
+                                        War Room
+                                    </button>
+                                </div>
+
+                                <div className="mt-3 grid gap-2 md:grid-cols-2">
+                                    <DownloadButton
+                                        contractId={contractId}
+                                        versionId={v.id}
+                                        versionNumber={v.version_number}
+                                        format="docx"
+                                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-[10px] font-semibold uppercase tracking-widest text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800"
+                                    />
+                                    <DownloadButton
+                                        contractId={contractId}
+                                        versionId={v.id}
+                                        versionNumber={v.version_number}
+                                        format="pdf"
+                                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-[10px] font-semibold uppercase tracking-widest text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800"
+                                    />
                                 </div>
                             </div>
                         </div>
@@ -169,6 +211,19 @@ export default function ContractGenealogyTab({ contractId }: { contractId: strin
                     </div>
                     <span className="material-symbols-outlined text-[#D4AF37]">chevron_right</span>
                 </div>
+            )}
+
+            {String(contractStatus || '').toLowerCase() === 'awaiting_counterparty' && (
+                <button
+                    type="button"
+                    onClick={() => window.dispatchEvent(new CustomEvent('contract-detail:upload-next-version'))}
+                    className="mt-4 w-full rounded-lg border border-emerald-800/50 bg-emerald-950/20 px-4 py-3 text-left transition hover:bg-emerald-950/30"
+                >
+                    <span className="block text-xs font-semibold text-emerald-300">Upload Counterparty Response</span>
+                    <span className="mt-1 block text-[10px] uppercase tracking-widest text-emerald-400/70">
+                        Start the next negotiation round
+                    </span>
+                </button>
             )}
         </div>
     );

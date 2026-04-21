@@ -2,6 +2,8 @@
 
 import { useState } from 'react'
 import { motion } from 'framer-motion'
+import { useLawsUI } from '@/components/laws/LawsUIProvider'
+import { splitTextWithCitationHints } from '@/lib/law-citation'
 
 interface TextCoordinate {
     start_char: number
@@ -61,10 +63,13 @@ export default function FindingCard({
     wizardProgress?: { current: number; total: number }
     onWizardNext?: () => void
 }) {
+    const { openCitationText } = useLawsUI()
     const [isAccepting, setIsAccepting] = useState(false)
     const [isConverting, setIsConverting] = useState(false)
     const [justAccepted, setJustAccepted] = useState(false)
     const config = SEVERITY_CONFIG[finding.severity] || SEVERITY_CONFIG.info
+    const descriptionParts = splitTextWithCitationHints(finding.description)
+    const sourceTextParts = splitTextWithCitationHints(finding.coordinates.source_text)
 
     const handleAccept = async () => {
         if (!finding.suggested_revision) return
@@ -143,7 +148,17 @@ export default function FindingCard({
                 {/* ⚠️ THE PROBLEM */}
                 <Section icon="report_problem" title="THE PROBLEM" color="text-red-400">
                     <p className="text-zinc-300 text-[12px] leading-relaxed">
-                        {finding.description}
+                        {descriptionParts.map((part, index) => part.type === 'citation' ? (
+                            <button
+                                key={`${part.value}-${index}`}
+                                onClick={() => void openCitationText(part.value)}
+                                className="rounded-full bg-[#d4af37]/12 px-2 py-0.5 text-left text-[#f4d884] transition hover:bg-[#d4af37]/20"
+                            >
+                                {part.value}
+                            </button>
+                        ) : (
+                            <span key={`${part.value}-${index}`}>{part.value}</span>
+                        ))}
                     </p>
                 </Section>
 
@@ -175,7 +190,19 @@ export default function FindingCard({
                 <Section icon="format_quote" title="ORIGINAL CLAUSE" color="text-zinc-500">
                     <div className="bg-white/[0.02] border-l-4 border-l-zinc-700 border border-white/5 rounded-r-xl p-3">
                         <p className="text-zinc-500 text-[11px] font-serif leading-relaxed italic">
-                            &ldquo;{finding.coordinates.source_text}&rdquo;
+                            &ldquo;
+                            {sourceTextParts.map((part, index) => part.type === 'citation' ? (
+                                <button
+                                    key={`${part.value}-${index}`}
+                                    onClick={() => void openCitationText(part.value)}
+                                    className="rounded-full bg-[#d4af37]/12 px-1.5 py-0.5 text-left text-[#f4d884] transition hover:bg-[#d4af37]/20"
+                                >
+                                    {part.value}
+                                </button>
+                            ) : (
+                                <span key={`${part.value}-${index}`}>{part.value}</span>
+                            ))}
+                            &rdquo;
                         </p>
                     </div>
                 </Section>

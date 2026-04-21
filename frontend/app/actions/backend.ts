@@ -349,3 +349,177 @@ export async function getCounselSessions(contractId: string) {
     if (!res.ok) return { sessions: [] };
     return res.json();
 }
+
+function normalizeLawsError(status: number, payload: any): string {
+    if (status === 429) {
+        return payload?.detail?.message || payload?.message || 'Rate limit reached. Please wait before trying again.'
+    }
+    if (status === 422) {
+        return payload?.detail || 'The request is invalid. Check the query or filters and try again.'
+    }
+    if (status === 400) {
+        return payload?.detail || 'The laws request was rejected for safety or validation reasons.'
+    }
+    return payload?.detail || payload?.message || `Request failed (HTTP ${status})`
+}
+
+async function fetchLawsApi(path: string, init?: RequestInit) {
+    const { getToken } = await auth()
+    const token = await getToken()
+
+    const response = await fetch(`${INTERNAL_API_URL}${path}`, {
+        ...init,
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            ...(init?.headers || {}),
+        },
+        cache: 'no-store',
+    })
+
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+        return {
+            success: false as const,
+            error: normalizeLawsError(response.status, payload),
+            statusCode: response.status,
+            data: null,
+        }
+    }
+
+    return {
+        success: true as const,
+        error: null,
+        statusCode: response.status,
+        data: payload,
+    }
+}
+
+export async function searchLaws(
+    query: string,
+    filters?: { category?: string; law_short?: string; contract_relevance?: 'high' | 'medium' | 'low'; contract_type?: string },
+    effectiveAsOf?: string,
+    limit: number = 10,
+    context?: {
+        source_type?: string;
+        title?: string | null;
+        impact_analysis?: string | null;
+        v1_text?: string | null;
+        v2_text?: string | null;
+        severity?: string | null;
+        playbook_violation?: string | null;
+    },
+) {
+    return fetchLawsApi('/api/v1/laws/search', {
+        method: 'POST',
+        body: JSON.stringify({
+            query,
+            filters,
+            context: context || null,
+            effective_as_of: effectiveAsOf || null,
+            limit,
+        }),
+    })
+}
+
+export async function citationLookup(text: string, effectiveAsOf?: string) {
+    return fetchLawsApi('/api/v1/laws/citation', {
+        method: 'POST',
+        body: JSON.stringify({
+            text,
+            effective_as_of: effectiveAsOf || null,
+        }),
+    })
+}
+
+export async function getPasalDetail(nodeId: string, effectiveAsOf?: string) {
+    const query = effectiveAsOf ? `?effective_as_of=${encodeURIComponent(effectiveAsOf)}` : ''
+    return fetchLawsApi(`/api/v1/laws/pasal/${nodeId}${query}`, {
+        method: 'GET',
+    })
+}
+
+export async function getLawCoverage() {
+    return fetchLawsApi('/api/v1/laws/coverage', {
+        method: 'GET',
+    })
+}
+
+export async function previewFinalizeRound(contractId: string) {
+    const { getToken } = await auth()
+    const token = await getToken()
+
+    const response = await fetch(`${INTERNAL_API_URL}/api/v1/negotiation/${contractId}/finalize-preview`, {
+        method: 'GET',
+        headers: {
+            'Authorization': `Bearer ${token}`,
+        },
+        cache: 'no-store',
+    })
+
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+        throw new Error(payload?.detail || 'Failed to preview finalize round')
+    }
+    return payload
+}
+
+export async function finalizeRound(
+    contractId: string,
+    allowPartial: boolean = false,
+    confirmationNote?: string,
+) {
+    const { getToken } = await auth()
+    const token = await getToken()
+
+    const response = await fetch(`${INTERNAL_API_URL}/api/v1/negotiation/${contractId}/finalize-round`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            allow_partial: allowPartial,
+            confirmation_note: confirmationNote || null,
+        }),
+        cache: 'no-store',
+    })
+
+    const payload = await response.json().catch(() => ({}))
+    if (!response.ok) {
+        throw new Error(payload?.detail || 'Failed to finalize round')
+    }
+    return payload
+}
+
+export async function exportContractVersion(
+    contractId: string,
+    versionId: string,
+    format: 'docx' | 'pdf',
+) {
+    const { getToken } = await auth()
+    const token = await getToken()
+
+    const response = await fetch(
+        `${INTERNAL_API_URL}/api/v1/contracts/${contractId}/versions/${versionId}/export?format=${format}`,
+        {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+            },
+            cache: 'no-store',
+        }
+    )
+
+    if (!response.ok) {
+        const payload = await response.json().catch(() => ({}))
+        throw new Error(payload?.detail || 'Failed to export contract version')
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer())
+    return {
+        base64: buffer.toString('base64'),
+        contentType: response.headers.get('content-type') || 'application/octet-stream',
+        filename: response.headers.get('content-disposition') || '',
+    }
+}

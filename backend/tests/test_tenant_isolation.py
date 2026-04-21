@@ -30,6 +30,7 @@ import re
 import subprocess
 import pytest
 from unittest.mock import MagicMock, patch
+from starlette.requests import Request
 
 # =====================================================================
 # CONFIG
@@ -155,6 +156,24 @@ def has_tenant_filter(chain_text: str) -> bool:
     )
 
 
+def make_request(method: str = "GET", path: str = "/test") -> Request:
+    """Build a minimal real Request for slowapi-decorated route calls."""
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": method,
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("utf-8"),
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+        }
+    )
+
+
 # =====================================================================
 # APPROACH A — Static Analysis Tests
 # =====================================================================
@@ -244,14 +263,13 @@ def test_no_x_tenant_id_references_in_backend_source():
     )
 
 
-def test_verified_tenant_id_is_set_from_jwt_claims_only():
+@pytest.mark.asyncio
+async def test_verified_tenant_id_is_set_from_jwt_claims_only():
     """
     Validates that verify_clerk_token() sets verified_tenant_id from JWT org_id/sub
     and not from any header or body parameter.
     """
-    import jwt as pyjwt
     from app.dependencies import verify_clerk_token
-    import asyncio
 
     # Create a mock JWT payload
     mock_claims = {
@@ -265,8 +283,9 @@ def test_verified_tenant_id_is_set_from_jwt_claims_only():
          patch("app.dependencies.jwt.decode", return_value=mock_claims):
 
         # Simulate a request with ONLY an Authorization header (no x-tenant-id)
-        result = asyncio.get_event_loop().run_until_complete(
-            verify_clerk_token(authorization="Bearer faketoken123")
+        result = await verify_clerk_token(
+            request=make_request(path="/auth/verify"),
+            authorization="Bearer faketoken123",
         )
 
     assert result["verified_tenant_id"] == TENANT_A, (
@@ -275,14 +294,13 @@ def test_verified_tenant_id_is_set_from_jwt_claims_only():
     )
 
 
-def test_org_id_takes_precedence_over_sub_for_tenant_id():
+@pytest.mark.asyncio
+async def test_org_id_takes_precedence_over_sub_for_tenant_id():
     """
     When org_id is present in JWT, it must take precedence over sub.
     This is the Clerk multi-tenant org context.
     """
-    import jwt as pyjwt
     from app.dependencies import verify_clerk_token
-    import asyncio
 
     mock_claims = {
         "sub": TENANT_A,   # individual user
@@ -294,8 +312,9 @@ def test_org_id_takes_precedence_over_sub_for_tenant_id():
     with patch("app.dependencies.CLERK_PEM_KEY", "fake-key"), \
          patch("app.dependencies.jwt.decode", return_value=mock_claims):
 
-        result = asyncio.get_event_loop().run_until_complete(
-            verify_clerk_token(authorization="Bearer faketoken123")
+        result = await verify_clerk_token(
+            request=make_request(path="/auth/verify"),
+            authorization="Bearer faketoken123",
         )
 
     assert result["verified_tenant_id"] == TENANT_B, (
@@ -304,7 +323,8 @@ def test_org_id_takes_precedence_over_sub_for_tenant_id():
     )
 
 
-def test_cross_tenant_matter_access_returns_empty():
+@pytest.mark.asyncio
+async def test_cross_tenant_matter_access_returns_empty():
     """
     CRITICAL CROSS-TENANT RUNTIME TEST:
     Tenant B must not be able to read Tenant A's matters via the matters router.
@@ -319,13 +339,14 @@ def test_cross_tenant_matter_access_returns_empty():
     # Chain: .table().select().eq("tenant_id", TENANT_B).execute()
     mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = mock_result
 
-    import asyncio
     from app.routers.matters import get_matters
 
     mock_claims = {"verified_tenant_id": TENANT_B}
 
-    result = asyncio.get_event_loop().run_until_complete(
-        get_matters(claims=mock_claims, supabase=mock_supabase)
+    result = await get_matters(
+        request=make_request(path="/api/v1/matters"),
+        claims=mock_claims,
+        supabase=mock_supabase,
     )
 
     # Verify tenant B's call used tenant B's ID (not tenant A's)
@@ -344,7 +365,8 @@ def test_cross_tenant_matter_access_returns_empty():
     )
 
 
-def test_cross_tenant_contracts_access_returns_empty():
+@pytest.mark.asyncio
+async def test_cross_tenant_contracts_access_returns_empty():
     """
     CRITICAL CROSS-TENANT RUNTIME TEST:
     Tenant B must not be able to read Tenant A's contracts via the contracts router.
@@ -364,13 +386,14 @@ def test_cross_tenant_contracts_access_returns_empty():
     mock_eq_tenant.limit.return_value = mock_eq_tenant
     mock_eq_tenant.execute.return_value = mock_result
 
-    import asyncio
     from app.routers.contracts import list_contracts
 
     mock_claims = {"verified_tenant_id": TENANT_B}
 
-    result = asyncio.get_event_loop().run_until_complete(
-        list_contracts(request=MagicMock(), claims=mock_claims, supabase=mock_supabase)
+    result = await list_contracts(
+        request=make_request(path="/api/v1/contracts"),
+        claims=mock_claims,
+        supabase=mock_supabase,
     )
     
     assert result["data"] == [], "Expected empty data for cross-tenant contract access"
@@ -388,7 +411,8 @@ def test_cross_tenant_contracts_access_returns_empty():
     )
 
 
-def test_contracts_list_supports_recent_updated_sort_and_limit():
+@pytest.mark.asyncio
+async def test_contracts_list_supports_recent_updated_sort_and_limit():
     """
     The contracts list route must support the recent-documents widget query:
     sorted by updated_at and limited to 3 records while preserving tenant scope.
@@ -408,21 +432,18 @@ def test_contracts_list_supports_recent_updated_sort_and_limit():
     mock_eq_tenant.limit.return_value = mock_eq_tenant
     mock_eq_tenant.execute.return_value = mock_result
 
-    import asyncio
     from app.routers.contracts import list_contracts
 
     mock_claims = {"verified_tenant_id": TENANT_B}
 
-    result = asyncio.get_event_loop().run_until_complete(
-        list_contracts(
-            request=MagicMock(),
-            claims=mock_claims,
-            supabase=mock_supabase,
-            tab="active",
-            limit=3,
-            sort_by="updated_at",
-            sort_order="desc",
-        )
+    result = await list_contracts(
+        request=make_request(path="/api/v1/contracts"),
+        claims=mock_claims,
+        supabase=mock_supabase,
+        tab="active",
+        limit=3,
+        sort_by="updated_at",
+        sort_order="desc",
     )
 
     assert result["data"] == mock_result.data

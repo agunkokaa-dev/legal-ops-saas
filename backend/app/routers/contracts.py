@@ -16,8 +16,11 @@ import uuid
 import traceback
 import json
 import logging
+import html
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Request
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from supabase import Client
 from qdrant_client.http.models import PointStruct, Filter, FieldCondition, MatchValue
@@ -63,6 +66,65 @@ class ContractPatchRequest(BaseModel):
     currency: str | None = None
     jurisdiction: str | None = None
     governing_law: str | None = None
+
+
+def _sanitize_filename_segment(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", (value or "").strip())
+    cleaned = cleaned.strip("._")
+    return cleaned or "contract"
+
+
+def _render_docx_bytes(*, contract_title: str, version_number: int, raw_text: str, finalized_at: str | None) -> bytes:
+    from docx import Document
+
+    document = Document()
+    document.add_heading(contract_title, level=1)
+    meta_line = f"Version {version_number}"
+    if finalized_at:
+        meta_line = f"{meta_line} — {finalized_at}"
+    document.add_paragraph(meta_line)
+
+    paragraphs = [paragraph.strip() for paragraph in raw_text.splitlines() if paragraph.strip()]
+    if not paragraphs and raw_text.strip():
+        paragraphs = [raw_text.strip()]
+    for paragraph in paragraphs:
+        document.add_paragraph(paragraph)
+
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def _render_pdf_bytes(*, contract_title: str, version_number: int, raw_text: str, finalized_at: str | None) -> bytes:
+    from weasyprint import HTML
+
+    paragraphs = [paragraph.strip() for paragraph in raw_text.splitlines() if paragraph.strip()]
+    if not paragraphs and raw_text.strip():
+        paragraphs = [raw_text.strip()]
+    content_paragraphs = "\n".join(
+        f"<p>{html.escape(paragraph)}</p>"
+        for paragraph in paragraphs
+    )
+    meta_line = html.escape(f"Version {version_number}" + (f" — {finalized_at}" if finalized_at else ""))
+    html_string = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    @page {{ size: A4; margin: 2cm; }}
+    body {{ font-family: "Times New Roman", serif; color: #111827; }}
+    h1 {{ font-size: 16pt; text-align: center; margin-bottom: 8pt; }}
+    .meta {{ text-align: center; font-style: italic; color: #4b5563; margin-bottom: 18pt; }}
+    p {{ text-align: justify; line-height: 1.5; margin-bottom: 10pt; white-space: pre-wrap; }}
+  </style>
+</head>
+<body>
+  <h1>{html.escape(contract_title)}</h1>
+  <div class="meta">{meta_line}</div>
+  {content_paragraphs}
+</body>
+</html>"""
+    return HTML(string=html_string).write_pdf()
 
 
 # =====================================================================
@@ -280,7 +342,7 @@ def _create_contract_with_linked_version(
     }
     print(f"DEBUG RLS: Trying to insert contract with tenant_id={tenant_id}")
     print(f"DEBUG MATTER LINK: Trying to insert contract {contract_id} with matter_id={contract_payload.get('matter_id')}")
-    supabase_client.table("contracts").insert(contract_payload).execute()
+    supabase_client.table("contracts").insert({**contract_payload, "tenant_id": tenant_id}).execute()
 
     if version_insert_data is not None:
         version_payload = {
@@ -289,7 +351,7 @@ def _create_contract_with_linked_version(
             "tenant_id": tenant_id,
             "contract_id": contract_id,
         }
-        supabase_client.table("contract_versions").insert(version_payload).execute()
+        supabase_client.table("contract_versions").insert({**version_payload, "tenant_id": tenant_id}).execute()
     else:
         version_payload = {
             **version_update_data,
@@ -468,6 +530,104 @@ async def get_contract(
         raise
     except Exception as e:
         print(f"[GET /contracts/{contract_id}] Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/contracts/{contract_id}/versions/{version_id}/export")
+@limiter.limit("30/minute")
+async def export_contract_version(
+    request: Request,
+    contract_id: str,
+    version_id: str,
+    format: str = Query(..., pattern="^(docx|pdf)$"),
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    try:
+        tenant_id = claims["verified_tenant_id"]
+        if format not in {"docx", "pdf"}:
+            raise HTTPException(status_code=400, detail="Invalid export format")
+
+        contract_res = supabase.table("contracts").select("id, title") \
+            .eq("id", contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .limit(1) \
+            .execute()
+        if not contract_res.data:
+            raise HTTPException(status_code=404, detail="Contract not found")
+        contract = contract_res.data[0]
+
+        try:
+            version_res = supabase.table("contract_versions").select(
+                "id, contract_id, version_number, raw_text, uploaded_filename, finalized_at, created_at"
+            ) \
+                .eq("id", version_id) \
+                .eq("contract_id", contract_id) \
+                .eq("tenant_id", tenant_id) \
+                .limit(1) \
+                .execute()
+        except Exception as exc:
+            if "contract_versions.finalized_at" not in str(exc):
+                raise
+            version_res = supabase.table("contract_versions").select(
+                "id, contract_id, version_number, raw_text, uploaded_filename, created_at"
+            ) \
+                .eq("id", version_id) \
+                .eq("contract_id", contract_id) \
+                .eq("tenant_id", tenant_id) \
+                .limit(1) \
+                .execute()
+        if not version_res.data:
+            raise HTTPException(status_code=404, detail="Contract version not found")
+        version = version_res.data[0]
+
+        contract_title = str(contract.get("title") or version.get("uploaded_filename") or "Contract")
+        version_number = int(version.get("version_number") or 0)
+        raw_text = str(version.get("raw_text") or "")
+        finalized_at = version.get("finalized_at") or version.get("created_at")
+        finalized_label = None
+        if finalized_at:
+            try:
+                finalized_label = datetime.fromisoformat(str(finalized_at).replace("Z", "+00:00")) \
+                    .astimezone(timezone.utc) \
+                    .strftime("%Y-%m-%d %H:%M UTC")
+            except ValueError:
+                finalized_label = str(finalized_at)
+
+        if format == "docx":
+            file_bytes = _render_docx_bytes(
+                contract_title=contract_title,
+                version_number=version_number,
+                raw_text=raw_text,
+                finalized_at=finalized_label,
+            )
+            media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            extension = "docx"
+        else:
+            file_bytes = _render_pdf_bytes(
+                contract_title=contract_title,
+                version_number=version_number,
+                raw_text=raw_text,
+                finalized_at=finalized_label,
+            )
+            media_type = "application/pdf"
+            extension = "pdf"
+
+        filename = (
+            f"{_sanitize_filename_segment(contract_title)}"
+            f"_V{version_number}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.{extension}"
+        )
+
+        return StreamingResponse(
+            io.BytesIO(file_bytes),
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[EXPORT /contracts/{contract_id}/versions/{version_id}] Error: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -978,7 +1138,7 @@ async def upload_contract(
         matter_id = None
 
     if matter_id:
-        matter_check = supabase.table("matters").select("tenant_id").eq("id", matter_id).execute()
+        matter_check = supabase.table("matters").select("tenant_id").eq("id", matter_id).eq("tenant_id", tenant_id).execute()
         if matter_check.data and matter_check.data[0].get("tenant_id"):
             tenant_id = matter_check.data[0]["tenant_id"]
 

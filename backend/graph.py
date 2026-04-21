@@ -1249,24 +1249,38 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
     Note any such patterns in your analysis.
     """
 
-    system_prompt = "You are a strategic Diff Engine that identifies deviations, evaluates playbook compliance, and generates BATNA compromises."
+    system_prompt = (
+        "You are a strategic Diff Engine that identifies deviations, evaluates playbook "
+        "compliance, and generates BATNA compromises. Language mirroring is mandatory: "
+        "every narrative field must match the dominant language of the V2 contract text."
+    )
+    language_instruction = """
+    CRITICAL LANGUAGE INSTRUCTION (LANGUAGE MIRRORING) — WAJIB DIIKUTI:
+    You MUST detect the dominant language of the V2 contract text.
+    Your output MUST be in the EXACT SAME LANGUAGE as the V2 contract text.
+    - Jika teks kontrak dominan BAHASA INDONESIA → seluruh output HARUS dalam Bahasa Indonesia hukum yang formal
+    - Jika teks kontrak dominan BAHASA INGGRIS → seluruh output HARUS dalam English
+
+    Instruksi ini berlaku untuk SEMUA field output tanpa terkecuali:
+    - Setiap `impact_analysis` → tulis dalam bahasa yang sama dengan kontrak
+    - Setiap `counterparty_intent` → tulis dalam bahasa yang sama dengan kontrak
+    - Setiap `reasoning` di BATNA → tulis dalam bahasa yang sama dengan kontrak
+    - Setiap `fallback_clause` → tulis dalam bahasa yang sama dengan kontrak
+    - Setiap item dalam `leverage_points[]` → tulis dalam bahasa yang sama dengan kontrak
+    - Field `summary` → tulis dalam bahasa yang sama dengan kontrak
+
+    DILARANG mencampur bahasa. DILARANG menggunakan English untuk kontrak Indonesia.
+    Untuk kontrak Indonesia, `counterparty_intent`, `reasoning`, `fallback_clause`, dan setiap item `leverage_points[]`
+    wajib ditulis ulang penuh dalam Bahasa Indonesia, bukan campuran.
+
+    FINAL SELF-CHECK SEBELUM MENJAWAB:
+    - Jika V2 berbahasa Indonesia, periksa ulang setiap `impact_analysis`, `counterparty_intent`, `reasoning`,
+      `fallback_clause`, `leverage_points[]`, dan `summary`.
+    - Jika masih ada kata, kalimat, atau bullet penjelasan dalam English pada field-field tersebut, ubah semuanya ke Bahasa Indonesia.
+    - Response dianggap INVALID jika kontrak Indonesia tetapi field-field tersebut masih berbahasa English.
+    """
     user_template = """
     You are a Senior Contract Negotiation Analyst and Counterparty Strategist performing a V1 vs V2 comparison.
-
-    TASK: Compare the PREVIOUS VERSION (V1) against the CURRENT VERSION (V2) of this contract.
-
-    For each significant difference (added, removed, or materially modified clause):
-    1. Assess its business impact.
-    2. Check if the V2 approach violates the COMPANY PLAYBOOK RULES.
-    3. Generate a BATNA fallback clause (a strategic compromise position).
-    4. Provide the exact verbatim text of the V2 clause (or V1 if removed) and its character coordinates.
-    5. **COUNTERPARTY INTENT (CRITICAL)**: For each deviation, analyze WHY the counterparty made this change.
-       Think like a Senior Lawyer advising your client:
-       - What is the counterparty trying to achieve or avoid?
-       - Are they shifting liability, reducing obligations, expanding rights, or protecting against a specific risk?
-       - Reference specific Playbook Rules if the intent appears to circumvent them.
-       - Example: "Counterparty is shifting indemnification burden to avoid exposure under Playbook Rule 2.1 (Mutual Indemnity Required)."
-       Populate this analysis in the `counterparty_intent` field for each deviation.
 
     VITAL STRICT INSTRUCTION FOR `v2_text`:
     The `v2_text` field MUST be an EXACT verbatim copy-paste from the V2 TEXT below.
@@ -1280,7 +1294,24 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
     For 'Added' and 'Modified' clauses, you MUST provide precise coordinates relative to the V2 TEXT block.
 
     {COORDINATE_INSTRUCTION}
+    {LANGUAGE_INSTRUCTION}
     {rounds_block}
+
+    TASK: Compare the PREVIOUS VERSION (V1) against the CURRENT VERSION (V2) of this contract.
+
+    For each significant difference (added, removed, or materially modified clause):
+    1. Assess its business impact.
+    2. Check if the V2 approach violates the COMPANY PLAYBOOK RULES.
+    3. Generate a BATNA fallback clause (a strategic compromise position), plus BATNA `reasoning` and `leverage_points[]`
+       in the exact same language as the contract.
+    4. Provide the exact verbatim text of the V2 clause (or V1 if removed) and its character coordinates.
+    5. **COUNTERPARTY INTENT (CRITICAL)**: For each deviation, analyze WHY the counterparty made this change.
+       Think like a Senior Lawyer advising your client:
+       - What is the counterparty trying to achieve or avoid?
+       - Are they shifting liability, reducing obligations, expanding rights, or protecting against a specific risk?
+       - Reference specific Playbook Rules if the intent appears to circumvent them.
+       - Example for an Indonesian contract: "Pihak lawan berupaya mengalihkan beban indemnifikasi untuk mengurangi eksposur mereka atas kewajiban klaim pihak ketiga."
+       Populate this analysis in the `counterparty_intent` field for each deviation.
 
     V1 RISK SCORE: {v1_risk_score}
 
@@ -1300,6 +1331,7 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
         user_template=user_template,
         sections={
             "COORDINATE_INSTRUCTION": COORDINATE_INSTRUCTION,
+            "LANGUAGE_INSTRUCTION": language_instruction,
             "rounds_block": rounds_block,
             "v1_risk_score": str(v1_risk_score),
             "playbook_rules_text": playbook_rules_text,
@@ -1308,6 +1340,7 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
         },
         priorities={
             "COORDINATE_INSTRUCTION": 1,
+            "LANGUAGE_INSTRUCTION": 1,
             "rounds_block": 1,
             "v1_risk_score": 1,
             "playbook_rules_text": 2,

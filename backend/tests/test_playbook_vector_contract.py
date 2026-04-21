@@ -1,11 +1,11 @@
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
-PLAYBOOK_PATH = ROOT / "backend" / "app" / "routers" / "playbook.py"
-NEGOTIATION_PATH = ROOT / "backend" / "app" / "routers" / "negotiation.py"
-CHAT_PATH = ROOT / "backend" / "app" / "routers" / "chat.py"
-SCHEMAS_PATH = ROOT / "backend" / "app" / "schemas.py"
+ROOT = Path(__file__).resolve().parents[1]
+PLAYBOOK_PATH = ROOT / "app" / "routers" / "playbook.py"
+NEGOTIATION_PATH = ROOT / "app" / "routers" / "negotiation.py"
+CHAT_PATH = ROOT / "app" / "routers" / "chat.py"
+SCHEMAS_PATH = ROOT / "app" / "schemas.py"
 
 
 def _read(path: Path) -> str:
@@ -32,26 +32,27 @@ def test_playbook_vectorize_request_no_longer_requires_user_id():
 
 def test_negotiation_playbook_scroll_relies_on_tenant_wrapper():
     source = _read(NEGOTIATION_PATH)
-    start = source.index("# 2. Fetch Playbook rules from Qdrant")
-    end = source.index("# 3. Fetch prior rounds context")
+    start = source.index("def fetch_rules():")
+    end = source.index("prior_rounds_context = None", start)
     snippet = source[start:end]
 
     assert '"company_rules"' in snippet
-    assert "async_qdrant_scroll(" in snippet
-    assert "scroll_filter=" not in snippet
-    assert 'claims.get("sub", "")' not in snippet
+    assert "qdrant.scroll(" in snippet
+    assert "scroll_filter=Filter" in snippet
+    assert 'FieldCondition(key="tenant_id"' in snippet
 
 
-def test_chat_playbook_queries_do_not_add_legacy_user_filters():
+def test_chat_clause_assistant_uses_contextual_retrieval_tools():
     source = _read(CHAT_PATH)
 
-    playbook_start = source.index('playbook_task = async_qdrant_search(')
-    playbook_end = source.index("try:", playbook_start)
-    playbook_snippet = source[playbook_start:playbook_end]
-    assert '"company_rules"' in playbook_snippet
-    assert "qdrant_client" in playbook_snippet
-    assert "query_filter=None" in playbook_snippet
-    assert "user_id" not in playbook_snippet
+    assert "CLAUSE_ASSISTANT_TOOLS" in source
+    assert '"name": "search_playbook_rules"' in source
+    assert '"name": "search_national_laws"' in source
+    assert '"name": "get_graph_dependencies"' in source
+    assert "law_service.search_playbook_rules(" in source
+    assert "LawSearchRequest(" in source
+    assert "build_law_retrieval_service" in source
+    assert "user_id" not in source
 
     fallback_start = source.index("# ── Strategy 3: Qdrant vector chunk reconstruction (lossy fallback) ──")
     fallback_end = source.index("# =====================================================================", fallback_start)

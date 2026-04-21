@@ -25,7 +25,8 @@ export default async function WarRoomPage({ params }: { params: Promise<{ id: st
         <WarRoomClient 
             contractId={contractId} 
             matterId={contract.matter_id}
-            contractTitle={contract.title || 'Untitled Contract'} 
+            contractTitle={contract.title || 'Untitled Contract'}
+            contractStatus={contract.status || null}
         />
     );
 }

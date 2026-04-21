@@ -8,6 +8,7 @@ Handles:
 """
 import uuid
 import traceback
+import json
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -28,11 +29,19 @@ from app.dependencies import (
     get_tenant_supabase,
 )
 from app.schemas import EscalateIssueRequest, DiffRequest
-from app.review_schemas import CounselRequest, SmartDiffResult
+from app.review_schemas import (
+    BlockingIssue,
+    CounselRequest,
+    FinalizePreviewResponse,
+    FinalizeRoundRequest,
+    FinalizeRoundResponse,
+    SmartDiffResult,
+)
 from app.task_logger import TaskLogger
 from app.rate_limiter import limiter
 from app.token_budget import allocate_budget
-from app.event_bus import SSEEvent, event_bus
+from app.event_bus import ContractRoundFinalizedEvent, SSEEvent, event_bus
+from app.services.v3_builder import build_v3_merged_text, resolve_active_round_context
 from graph import run_smart_diff_with_debate
 import asyncio
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
@@ -80,6 +89,135 @@ class UpdateIssueStatusRequest(BaseModel):
     actor: str = "System"
 
 
+def _get_next_contract_version_number(supabase_client: Client, contract_id: str, tenant_id: str) -> int:
+    result = supabase_client.table("contract_versions") \
+        .select("version_number, uploaded_filename") \
+        .eq("contract_id", contract_id) \
+        .eq("tenant_id", tenant_id) \
+        .gt("version_number", 0) \
+        .execute()
+    versions = result.data or []
+    material_versions = [
+        version for version in versions
+        if "working_draft" not in str(version.get("uploaded_filename") or "").lower()
+    ]
+    if material_versions:
+        highest = max((version.get("version_number") or 0) for version in material_versions)
+        return highest + 1
+    return 1
+
+
+def _log_negotiation_activity(
+    *,
+    supabase_client: Client,
+    tenant_id: str,
+    contract_id: str,
+    action: str,
+    detail: str,
+    actor: str,
+    matter_id: str | None = None,
+) -> None:
+    rich_payload = {
+        "tenant_id": tenant_id,
+        "contract_id": contract_id,
+        "matter_id": matter_id,
+        "action": action,
+        "detail": detail,
+        "actor": actor,
+        "actor_name": actor,
+    }
+    fallback_payload = {
+        "tenant_id": tenant_id,
+        "contract_id": contract_id,
+        "matter_id": matter_id,
+        "action": f"{action}: {detail}"[:240],
+        "actor_name": actor,
+    }
+    try:
+        supabase_client.table("activity_logs").insert({**rich_payload, "tenant_id": tenant_id}).execute()
+    except Exception:
+        try:
+            supabase_client.table("activity_logs").insert({**fallback_payload, "tenant_id": tenant_id}).execute()
+        except Exception as exc:
+            print(f"[NEGOTIATION] activity_log_insert_failed | action={action} | err={exc}")
+
+
+def _blocking_issues_from_context(context) -> list[BlockingIssue]:
+    blocking_statuses = {"open", "under_review"}
+    issue_by_id = {
+        str(issue.get("id") or ""): issue
+        for issue in context.issues
+        if issue.get("id")
+    }
+    issue_by_finding_id = {
+        str(issue.get("finding_id") or ""): issue
+        for issue in context.issues
+        if issue.get("finding_id")
+    }
+
+    blocking_issues: list[BlockingIssue] = []
+    for deviation in context.deviations:
+        deviation_id = str(deviation.get("deviation_id") or "").strip()
+        if not deviation_id:
+            continue
+        issue = issue_by_id.get(deviation_id) or issue_by_finding_id.get(deviation_id)
+        status = str((issue or {}).get("status") or "open").strip().lower()
+        if status not in blocking_statuses:
+            continue
+        blocking_issues.append(BlockingIssue(
+            issue_id=str((issue or {}).get("id") or deviation_id),
+            deviation_id=deviation_id,
+            title=str((issue or {}).get("title") or deviation.get("title") or "Untitled Deviation"),
+            severity=str((issue or {}).get("severity") or deviation.get("severity") or "warning"),
+            status=status,
+        ))
+
+    return blocking_issues
+
+
+def _recent_internal_finalization(
+    *,
+    supabase_client: Client,
+    tenant_id: str,
+    contract_id: str,
+    parent_version_id: str,
+    user_id: str,
+    now: datetime,
+) -> dict[str, Any] | None:
+    try:
+        res = supabase_client.table("contract_versions") \
+            .select(
+                "id, contract_id, version_number, raw_text, uploaded_filename, "
+                "source, parent_version_id, finalized_at, finalized_by"
+            ) \
+            .eq("contract_id", contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .eq("parent_version_id", parent_version_id) \
+            .eq("source", "internal_finalized") \
+            .order("version_number", desc=True) \
+            .limit(3) \
+            .execute()
+    except Exception as exc:
+        error_text = str(exc)
+        if "contract_versions.source" in error_text or "contract_versions.finalized_at" in error_text:
+            return None
+        raise
+
+    for version in res.data or []:
+        finalized_at_raw = version.get("finalized_at")
+        if not finalized_at_raw:
+            continue
+        try:
+            finalized_at = datetime.fromisoformat(str(finalized_at_raw).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if version.get("finalized_by") != user_id:
+            continue
+        if abs((now - finalized_at).total_seconds()) <= 10:
+            return version
+    return None
+
+
 # =====================================================================
 # GET /versions — Version History for a Contract
 # =====================================================================
@@ -98,14 +236,27 @@ async def list_contract_versions(
     """
     try:
         tenant_id = claims["verified_tenant_id"]
-
-        res = supabase.table("contract_versions") \
-            .select("id, contract_id, version_number, risk_score, risk_level, uploaded_filename, created_at, raw_text") \
-            .eq("contract_id", contract_id) \
-            .eq("tenant_id", tenant_id) \
-            .gt("version_number", 0) \
-            .order("version_number") \
-            .execute()
+        try:
+            res = supabase.table("contract_versions") \
+                .select(
+                    "id, contract_id, version_number, risk_score, risk_level, uploaded_filename, "
+                    "created_at, raw_text, source, finalized_at, finalized_by, parent_version_id"
+                ) \
+                .eq("contract_id", contract_id) \
+                .eq("tenant_id", tenant_id) \
+                .gt("version_number", 0) \
+                .order("version_number") \
+                .execute()
+        except Exception as exc:
+            if "contract_versions.source" not in str(exc) and "contract_versions.finalized_at" not in str(exc):
+                raise
+            res = supabase.table("contract_versions") \
+                .select("id, contract_id, version_number, risk_score, risk_level, uploaded_filename, created_at, raw_text") \
+                .eq("contract_id", contract_id) \
+                .eq("tenant_id", tenant_id) \
+                .gt("version_number", 0) \
+                .order("version_number") \
+                .execute()
 
         versions = res.data or []
 
@@ -154,29 +305,44 @@ async def list_negotiation_issues(
     """
     try:
         tenant_id = claims["verified_tenant_id"]
+        issues_client: Any = supabase
         active_deviation_ids: set[str] | None = None
 
         if version_id:
             active_deviation_ids = _extract_version_deviation_ids(
-                supabase_client=supabase,
+                supabase_client=issues_client,
                 tenant_id=tenant_id,
                 contract_id=contract_id,
                 version_id=version_id,
             )
 
-        query = supabase.table("negotiation_issues") \
-            .select("*") \
-            .eq("contract_id", contract_id) \
-            .eq("tenant_id", tenant_id) \
-            .order("created_at", desc=True)
+        def fetch_issue_rows(client: Any) -> list[dict[str, Any]]:
+            query = client.table("negotiation_issues") \
+                .select("*") \
+                .eq("contract_id", contract_id) \
+                .eq("tenant_id", tenant_id) \
+                .order("created_at", desc=True)
 
-        if status:
-            query = query.eq("status", status)
-        if version_id:
-            query = query.eq("version_id", version_id)
+            if status:
+                query = query.eq("status", status)
+            if version_id:
+                query = query.eq("version_id", version_id)
 
-        res = query.execute()
-        issues = res.data or []
+            res = query.execute()
+            return res.data or []
+
+        issues = fetch_issue_rows(issues_client)
+        if not issues:
+            issues_client = get_tenant_admin_supabase(tenant_id)
+            issues = fetch_issue_rows(issues_client)
+            if not active_deviation_ids and version_id:
+                active_deviation_ids = _extract_version_deviation_ids(
+                    supabase_client=issues_client,
+                    tenant_id=tenant_id,
+                    contract_id=contract_id,
+                    version_id=version_id,
+                )
+
         if active_deviation_ids is not None:
             issues = [
                 issue for issue in issues
@@ -187,7 +353,7 @@ async def list_negotiation_issues(
         task_ids = [issue.get("linked_task_id") for issue in issues if issue.get("linked_task_id")]
         task_status_map = {}
         if task_ids:
-            task_res = supabase.table("tasks").select("id, status") \
+            task_res = issues_client.table("tasks").select("id, status") \
                 .eq("tenant_id", tenant_id).in_("id", task_ids).execute()
             task_status_map = {task["id"]: task.get("status") for task in (task_res.data or [])}
 
@@ -222,6 +388,298 @@ async def list_negotiation_issues(
 
 
 # =====================================================================
+# GET /finalize-preview — Preview Finalize Round
+# =====================================================================
+
+@router.get("/{contract_id}/finalize-preview", response_model=FinalizePreviewResponse)
+@limiter.limit("30/minute")
+async def preview_finalize_round(
+    request: Request,
+    contract_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    try:
+        tenant_id = claims["verified_tenant_id"]
+
+        contract_res = supabase.table("contracts").select("id, status") \
+            .eq("id", contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .limit(1) \
+            .execute()
+        if not contract_res.data:
+            raise HTTPException(status_code=404, detail="Contract not found")
+
+        contract = contract_res.data[0]
+        allowed_statuses = {"Reviewed", "Negotiating", "In_Negotiation"}
+        if contract.get("status") not in allowed_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Contract status is '{contract.get('status')}'. "
+                    f"Finalize preview requires one of: {', '.join(sorted(allowed_statuses))}"
+                ),
+            )
+
+        context = resolve_active_round_context(
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            supabase=supabase,
+        )
+        v3_text, decisions_summary = await build_v3_merged_text(
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            supabase=supabase,
+        )
+        blocking_issues = _blocking_issues_from_context(context)
+
+        return FinalizePreviewResponse(
+            can_finalize=len(blocking_issues) == 0,
+            blocking_issues=blocking_issues,
+            decisions_summary=decisions_summary,
+            v3_text_preview=v3_text[:500],
+            v3_text_length=len(v3_text),
+            v2_text_length=len(str(context.source_version.get("raw_text") or "")),
+            estimated_changes=decisions_summary.get("applied_changes", 0),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Finalize Preview Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================================
+# POST /finalize-round — Persist Finalized V3 Round
+# =====================================================================
+
+@router.post("/{contract_id}/finalize-round", response_model=FinalizeRoundResponse)
+@limiter.limit("10/minute")
+async def finalize_negotiation_round(
+    request: Request,
+    contract_id: str,
+    body: FinalizeRoundRequest,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    try:
+        tenant_id = claims["verified_tenant_id"]
+        user_id = claims.get("sub", "unknown")
+
+        contract_res = supabase.table("contracts").select("id, title, matter_id, status, latest_version_id") \
+            .eq("id", contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .limit(1) \
+            .execute()
+        if not contract_res.data:
+            raise HTTPException(status_code=404, detail="Contract not found")
+        contract = contract_res.data[0]
+
+        now = datetime.now(timezone.utc)
+        context = resolve_active_round_context(
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            supabase=supabase,
+        )
+        existing_recent_version = _recent_internal_finalization(
+            supabase_client=supabase,
+            tenant_id=tenant_id,
+            contract_id=contract_id,
+            parent_version_id=context.source_version["id"],
+            user_id=user_id,
+            now=now,
+        )
+        if existing_recent_version:
+            return FinalizeRoundResponse(
+                version_id=str(existing_recent_version["id"]),
+                version_number=int(existing_recent_version.get("version_number") or 0),
+                v3_text_preview=str(existing_recent_version.get("raw_text") or "")[:500],
+                decisions_summary={"idempotent": 1},
+                next_action="export_and_send",
+            )
+
+        allowed_statuses = {"Reviewed", "Negotiating", "In_Negotiation"}
+        if contract.get("status") not in allowed_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Contract status is '{contract.get('status')}'. "
+                    f"Finalize requires one of: {', '.join(sorted(allowed_statuses))}"
+                ),
+            )
+
+        if not context.deviations:
+            raise HTTPException(status_code=400, detail="No deviations available to finalize.")
+
+        blocking_issues = _blocking_issues_from_context(context)
+        if blocking_issues and not body.allow_partial:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{len(blocking_issues)} issue(s) are still open or under review.",
+            )
+
+        v3_text, decisions_summary = await build_v3_merged_text(
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            supabase=supabase,
+        )
+        v2_text = str(context.source_version.get("raw_text") or "")
+
+        if v3_text == v2_text:
+            raise HTTPException(
+                status_code=400,
+                detail="Finalize would not change the active draft. Review the negotiation decisions first.",
+            )
+        if len(v3_text.strip()) < 100:
+            raise HTTPException(status_code=400, detail="Finalized draft is unexpectedly short.")
+
+        target_version_number = int(context.source_version.get("version_number") or 0) + 1
+        shadow_draft_res = supabase.table("contract_versions").select(
+            "id, version_number, uploaded_filename"
+        ) \
+            .eq("contract_id", contract_id) \
+            .eq("tenant_id", tenant_id) \
+            .eq("version_number", target_version_number) \
+            .limit(1) \
+            .execute()
+        shadow_draft = next(
+            (
+                version for version in (shadow_draft_res.data or [])
+                if "working_draft" in str(version.get("uploaded_filename") or "").lower()
+            ),
+            None,
+        )
+
+        new_version_number = target_version_number if target_version_number > 0 else _get_next_contract_version_number(supabase, contract_id, tenant_id)
+        new_version_id = str(shadow_draft["id"]) if shadow_draft else str(uuid.uuid4())
+        finalized_at = now.isoformat()
+        timestamp_label = now.strftime("%Y%m%dT%H%M%SZ")
+        uploaded_filename = f"V{new_version_number}_Finalized_{timestamp_label}.md"
+
+        version_payload = {
+            "id": new_version_id,
+            "tenant_id": tenant_id,
+            "contract_id": contract_id,
+            "version_number": new_version_number,
+            "raw_text": v3_text[:500000],
+            "uploaded_filename": uploaded_filename,
+            "pipeline_output": {},
+            "source": "internal_finalized",
+            "parent_version_id": context.source_version["id"],
+            "finalized_at": finalized_at,
+            "finalized_by": user_id,
+            "risk_score": context.source_version.get("risk_score"),
+            "risk_level": context.source_version.get("risk_level"),
+        }
+        try:
+            if shadow_draft:
+                supabase.table("contract_versions").update({
+                    "raw_text": v3_text[:500000],
+                    "uploaded_filename": uploaded_filename,
+                    "pipeline_output": {},
+                    "source": "internal_finalized",
+                    "parent_version_id": context.source_version["id"],
+                    "finalized_at": finalized_at,
+                    "finalized_by": user_id,
+                    "risk_score": context.source_version.get("risk_score"),
+                    "risk_level": context.source_version.get("risk_level"),
+                }).eq("id", new_version_id).eq("tenant_id", tenant_id).execute()
+            else:
+                supabase.table("contract_versions").insert({**version_payload, "tenant_id": tenant_id}).execute()
+        except Exception as exc:
+            error_text = str(exc)
+            if "contract_versions.source" in error_text or "contract_versions.finalized_at" in error_text:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Database migration add_version_finalization_fields.sql has not been applied.",
+                ) from exc
+            raise
+
+        try:
+            supabase.table("contracts").update({
+                "latest_version_id": new_version_id,
+                "version_count": new_version_number,
+                "status": "Awaiting_Counterparty",
+                "updated_at": finalized_at,
+            }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+        except Exception:
+            try:
+                if not shadow_draft:
+                    supabase.table("contract_versions").delete() \
+                        .eq("id", new_version_id) \
+                        .eq("tenant_id", tenant_id) \
+                        .execute()
+            except Exception as rollback_exc:
+                print(f"[NEGOTIATION] finalize_round_rollback_failed | version_id={new_version_id} | err={rollback_exc}")
+            raise
+
+        decisions_log = {
+            "event_type": "negotiation_round_finalized",
+            "contract_id": contract_id,
+            "version_from": context.source_version["id"],
+            "version_to": new_version_id,
+            "round_number": max((context.source_version.get("version_number") or 2) - 1, 1),
+            "decisions_applied": decisions_summary,
+            "finalized_by": user_id,
+            "allow_partial": body.allow_partial,
+            "confirmation_note": body.confirmation_note,
+            "reused_shadow_draft": bool(shadow_draft),
+        }
+        _log_negotiation_activity(
+            supabase_client=supabase,
+            tenant_id=tenant_id,
+            contract_id=contract_id,
+            matter_id=contract.get("matter_id"),
+            action="negotiation_round_finalized",
+            detail=json.dumps(decisions_log, default=str),
+            actor=user_id,
+        )
+
+        event_payload = ContractRoundFinalizedEvent(
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            version_from=str(context.source_version["id"]),
+            version_to=new_version_id,
+            round_number=max((context.source_version.get("version_number") or 2) - 1, 1),
+            finalized_at=finalized_at,
+        )
+        await publish_negotiation_event(
+            "contract.round_finalized",
+            tenant_id,
+            contract_id=contract_id,
+            data=event_payload.model_dump(),
+        )
+        await publish_negotiation_event(
+            "contract.status_changed",
+            tenant_id,
+            contract_id=contract_id,
+            data={
+                "contract_id": contract_id,
+                "old_status": contract.get("status"),
+                "new_status": "Awaiting_Counterparty",
+                "message": "Negotiation round finalized and ready to export.",
+                "version_id": new_version_id,
+                "version_number": new_version_number,
+            },
+        )
+
+        return FinalizeRoundResponse(
+            version_id=new_version_id,
+            version_number=new_version_number,
+            v3_text_preview=v3_text[:500],
+            decisions_summary=decisions_summary,
+            next_action="export_and_send",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Finalize Round Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =====================================================================
 # POST /escalate — Escalate Issue to Kanban Task
 # =====================================================================
 
@@ -240,19 +698,25 @@ async def escalate_issue(
     """
     try:
         tenant_id = claims["verified_tenant_id"]
+        issues_client: Any = supabase
 
         # Fetch the issue
-        issue_res = supabase.table("negotiation_issues") \
-            .select("*") \
-            .eq("id", payload.issue_id) \
-            .eq("tenant_id", tenant_id) \
-            .limit(1) \
-            .execute()
-
-        if not issue_res.data:
+        issue = _fetch_negotiation_issue_row(
+            supabase_client=issues_client,
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            issue_identifier=payload.issue_id,
+        )
+        if issue is None:
+            issues_client = get_tenant_admin_supabase(tenant_id)
+            issue = _fetch_negotiation_issue_row(
+                supabase_client=issues_client,
+                contract_id=contract_id,
+                tenant_id=tenant_id,
+                issue_identifier=payload.issue_id,
+            )
+        if issue is None:
             raise HTTPException(status_code=404, detail="Negotiation issue not found.")
-
-        issue = issue_res.data[0]
 
         if issue.get("status") == "escalated" and issue.get("linked_task_id"):
             return {
@@ -281,24 +745,24 @@ async def escalate_issue(
             "source_document_name": contract_id,
         }
 
-        task_res = supabase.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
+        task_res = issues_client.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
 
         if not task_res.data:
             raise HTTPException(status_code=500, detail="Failed to create task.")
 
         # Link task back to the issue and update status
-        supabase.table("negotiation_issues") \
+        issues_client.table("negotiation_issues") \
             .update({
                 "status": "escalated",
                 "linked_task_id": task_id
             }) \
-            .eq("id", payload.issue_id) \
+            .eq("id", issue["id"]) \
             .eq("tenant_id", tenant_id) \
             .execute()
 
         # Log activity
         try:
-            supabase.table("activity_logs").insert({
+            issues_client.table("activity_logs").insert({
                 "tenant_id": tenant_id,
                 "matter_id": payload.matter_id,
                 "task_id": task_id,
@@ -492,6 +956,36 @@ def _resolve_issue_deviation_id(
         return issue_id
     if finding_id:
         return finding_id
+    return None
+
+
+def _fetch_negotiation_issue_row(
+    *,
+    supabase_client: Any,
+    contract_id: str,
+    tenant_id: str,
+    issue_identifier: str,
+) -> dict[str, Any] | None:
+    issue_res = supabase_client.table("negotiation_issues") \
+        .select("*") \
+        .eq("contract_id", contract_id) \
+        .eq("tenant_id", tenant_id) \
+        .eq("id", issue_identifier) \
+        .limit(1) \
+        .execute()
+    if issue_res.data:
+        return issue_res.data[0]
+
+    legacy_res = supabase_client.table("negotiation_issues") \
+        .select("*") \
+        .eq("contract_id", contract_id) \
+        .eq("tenant_id", tenant_id) \
+        .eq("finding_id", issue_identifier) \
+        .limit(1) \
+        .execute()
+    if legacy_res.data:
+        return legacy_res.data[0]
+
     return None
 
 
@@ -1559,32 +2053,38 @@ async def update_issue_status(
     try:
         tenant_id = claims["verified_tenant_id"]
         user_id = claims.get("sub", "unknown")
+        state_client: Any = supabase
 
         valid_statuses = {'open', 'under_review', 'accepted', 'rejected', 'countered', 'escalated', 'resolved', 'dismissed'}
         if payload.status not in valid_statuses:
             raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {', '.join(sorted(valid_statuses))}")
 
         # Fetch current issue
-        issue_res = supabase.table("negotiation_issues") \
-            .select("*") \
-            .eq("id", issue_id) \
-            .eq("contract_id", contract_id) \
-            .eq("tenant_id", tenant_id) \
-            .limit(1) \
-            .execute()
-
-        if not issue_res.data:
+        issue = _fetch_negotiation_issue_row(
+            supabase_client=state_client,
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            issue_identifier=issue_id,
+        )
+        if issue is None:
+            state_client = get_tenant_admin_supabase(tenant_id)
+            issue = _fetch_negotiation_issue_row(
+                supabase_client=state_client,
+                contract_id=contract_id,
+                tenant_id=tenant_id,
+                issue_identifier=issue_id,
+            )
+        if issue is None:
             raise HTTPException(status_code=404, detail="Negotiation issue not found.")
-
-        issue = issue_res.data[0]
         previous_status = issue.get("status", "open")
         current_log = issue.get("reasoning_log") or []
-        deviation_lookup_ids = {str(issue_id)}
+        canonical_issue_id = str(issue.get("id") or issue_id)
+        deviation_lookup_ids = {str(issue_id), canonical_issue_id}
         if issue.get("finding_id"):
             deviation_lookup_ids.add(str(issue["finding_id"]))
 
         # 1. Fetch Deviation Context from rounds
-        rounds_res = supabase.table("negotiation_rounds") \
+        rounds_res = state_client.table("negotiation_rounds") \
             .select("diff_snapshot") \
             .eq("contract_id", contract_id) \
             .eq("tenant_id", tenant_id) \
@@ -1611,7 +2111,7 @@ async def update_issue_status(
 
         # 2. Draft Accumulation (V3-Draft)
         draft_version = None
-        vs_res = supabase.table("contract_versions") \
+        vs_res = state_client.table("contract_versions") \
             .select("*") \
             .eq("contract_id", contract_id) \
             .eq("tenant_id", tenant_id) \
@@ -1638,7 +2138,7 @@ async def update_issue_status(
                 "risk_score": latest_v.get("risk_score", 0.0),
                 "risk_level": latest_v.get("risk_level", "Unknown"),
             }
-            res_insert = supabase.table("contract_versions").insert({**draft_payload, "tenant_id": tenant_id}).execute()
+            res_insert = state_client.table("contract_versions").insert({**draft_payload, "tenant_id": tenant_id}).execute()
             if res_insert.data:
                 draft_version = res_insert.data[0]
 
@@ -1701,7 +2201,7 @@ async def update_issue_status(
             elif payload.status == 'escalated':
                 # Create Kanban Approval Task
                 try:
-                    fetch_matter_id = supabase.table("contracts").select("matter_id").eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+                    fetch_matter_id = state_client.table("contracts").select("matter_id").eq("id", contract_id).eq("tenant_id", tenant_id).execute()
                     matter_id = fetch_matter_id.data[0].get("matter_id") if fetch_matter_id.data else None
                     task_payload = {
                         "tenant_id": tenant_id,
@@ -1711,16 +2211,16 @@ async def update_issue_status(
                         "status": "backlog",
                         "priority": "high",
                     }
-                    task_res = supabase.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
+                    task_res = state_client.table("tasks").insert({**task_payload, "tenant_id": tenant_id}).execute()
                     if task_res.data:
                         linked_task_id = task_res.data[0]["id"]
-                        supabase.table("negotiation_issues").update({"linked_task_id": linked_task_id}).eq("id", issue_id).eq("tenant_id", tenant_id).execute()
+                        state_client.table("negotiation_issues").update({"linked_task_id": linked_task_id}).eq("id", canonical_issue_id).eq("tenant_id", tenant_id).execute()
                 except Exception as e:
                     print(f"Failed to create escalation task: {e}")
 
             # Persist Draft Update State
             if draft_version:
-                supabase.table("contract_versions").update({
+                state_client.table("contract_versions").update({
                     "raw_text": draft_text,
                     "risk_score": draft_version.get("risk_score"),
                     "risk_level": draft_version.get("risk_level")
@@ -1753,15 +2253,15 @@ async def update_issue_status(
         if payload.status in ('accepted', 'rejected', 'resolved', 'dismissed'):
             update_payload["resolved_at"] = now
 
-        supabase.table("negotiation_issues") \
+        state_client.table("negotiation_issues") \
             .update(update_payload) \
-            .eq("id", issue_id) \
+            .eq("id", canonical_issue_id) \
             .eq("tenant_id", tenant_id) \
             .execute()
 
         # Log activity
         try:
-            supabase.table("activity_logs").insert({
+            state_client.table("activity_logs").insert({
 
                 "tenant_id": tenant_id,
                 "action": f"Issue status changed to {payload.status.upper()}: {issue.get('title', '')[:60]}",

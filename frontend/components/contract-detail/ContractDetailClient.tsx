@@ -541,7 +541,10 @@ export default function ContractDetailClient({
     const handleUploadV2 = async (file: File) => {
         if (!file || !contract?.id || !contract?.matter_id) return;
 
-        toast.loading("Uploading Version 2...", { id: "upload-v2" });
+        const isCounterpartyResponse = String(liveContract?.status || contract?.status || '').toLowerCase() === 'awaiting_counterparty';
+        const uploadLabel = isCounterpartyResponse ? 'counterparty response' : 'Version 2';
+
+        toast.loading(`Uploading ${uploadLabel}...`, { id: "upload-v2" });
 
         try {
             const formData = new FormData();
@@ -553,12 +556,18 @@ export default function ContractDetailClient({
                 return;
             }
 
-            toast.success("V2 uploaded and queued for AI processing.", { id: "upload-v2" });
+            toast.success(`${uploadLabel} uploaded and queued for AI processing.`, { id: "upload-v2" });
             router.refresh();
         } catch (err: any) {
-            toast.error(err.message || "Failed to upload V2.", { id: "upload-v2" });
+            toast.error(err.message || `Failed to upload ${uploadLabel}.`, { id: "upload-v2" });
         }
     };
+
+    useEffect(() => {
+        const triggerUpload = () => fileInputRef.current?.click()
+        window.addEventListener('contract-detail:upload-next-version', triggerUpload as EventListener)
+        return () => window.removeEventListener('contract-detail:upload-next-version', triggerUpload as EventListener)
+    }, [])
 
     const filteredNotes = useMemo(() => {
         if (!isLockedForReview) return [];
@@ -682,7 +691,9 @@ export default function ContractDetailClient({
                                     onClick={() => { setDropdownOpen(false); fileInputRef.current?.click(); }}
                                     className="w-full text-left px-4 py-2.5 hover:bg-neutral-800 text-neutral-300 hover:text-white text-[11px] uppercase tracking-widest font-semibold transition-colors"
                                 >
-                                    Upload Version 2
+                                    {String(liveContract?.status || '').toLowerCase() === 'awaiting_counterparty'
+                                        ? 'Upload Counterparty Response'
+                                        : 'Upload Next Version'}
                                 </button>
                                 <button
                                     onClick={() => { setDropdownOpen(false); router.push(`/dashboard/contracts/${liveContract.id}/review`); }}

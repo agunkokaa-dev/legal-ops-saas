@@ -317,7 +317,10 @@ export default function IntelligenceSidebar({
                                         currentContractId={contract?.id}
                                     />
                                 ) : (
-                                    <ContractGenealogyTab contractId={contract?.id} />
+                                    <ContractGenealogyTab
+                                        contractId={contract?.id}
+                                        contractStatus={contract?.status}
+                                    />
                                 )}
                             </div>
                         </motion.div>

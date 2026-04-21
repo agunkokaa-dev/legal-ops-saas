@@ -3,10 +3,14 @@
 import React, { useMemo } from 'react';
 import DiffMatchPatch from 'diff-match-patch';
 
-interface WordDiffProps {
+export interface WordDiffProps {
     oldText: string;
     newText: string;
     className?: string;
+    showStructuralChangeBadge?: boolean;
+    title?: string;
+    category?: string;
+    roundNumber?: number;
 }
 
 /**
@@ -86,6 +90,28 @@ function calculateChangeRatio(diffs: [number, string][]): number {
     return totalChars > 0 ? changedChars / totalChars : 0;
 }
 
+function renderTokenSpans(
+    text: string,
+    keyPrefix: string,
+    tokenClassName: string
+): React.ReactNode[] {
+    const tokens = text.match(/\S+|\s+/g) || [];
+
+    return tokens.map((token, index) => {
+        const key = `${keyPrefix}-${index}`;
+
+        if (/^\s+$/.test(token)) {
+            return <React.Fragment key={key}>{token}</React.Fragment>;
+        }
+
+        return (
+            <span key={key} className={tokenClassName}>
+                {token}
+            </span>
+        );
+    });
+}
+
 /**
  * WordDiff — True inline word-level diff visualization.
  *
@@ -95,11 +121,11 @@ function calculateChangeRatio(diffs: [number, string][]): number {
  *   - Added words:    green text with background highlight
  *   - Unchanged text: normal rendering
  *
- * If >80% of the text was rewritten, shows a [ HEAVILY REWRITTEN ] badge.
+ * The structural-change pill is owned by the parent War Room renderer.
  */
-export default function WordDiff({ oldText, newText, className = '' }: WordDiffProps) {
-    const { diffs, isHeavyRewrite } = useMemo(() => {
-        if (!oldText && !newText) return { diffs: [], isHeavyRewrite: false };
+export default function WordDiff({ oldText, newText, className = '', showStructuralChangeBadge = false, title, category, roundNumber = 1 }: WordDiffProps) {
+    const { diffs, isHeavyRewrite, addedCount, removedCount, totalChanges } = useMemo(() => {
+        if (!oldText && !newText) return { diffs: [], isHeavyRewrite: false, addedCount: 0, removedCount: 0, totalChanges: 0 };
 
         const dmp = new DiffMatchPatch();
 
@@ -118,12 +144,36 @@ export default function WordDiff({ oldText, newText, className = '' }: WordDiffP
         // Step 4: Decode back to human-readable words
         const wordDiffs = decodeDiffs(encodedDiffs, wordArray);
 
-        // Step 5: Detect heavy rewrites (>80% changed)
-        const changeRatio = calculateChangeRatio(wordDiffs);
+        // Step 5: Count metrics and detect heavy rewrites
+        let v1WordCount = 0;
+        let v2WordCount = 0;
+        let addedCount = 0;
+        let removedCount = 0;
+
+        for (const [op, text] of wordDiffs) {
+            const count = text.trim().length > 0 ? text.trim().split(/\s+/).length : 0;
+            if (op === -1) {
+                removedCount += count;
+                v1WordCount += count;
+            } else if (op === 1) {
+                addedCount += count;
+                v2WordCount += count;
+            } else {
+                v1WordCount += count;
+                v2WordCount += count;
+            }
+        }
+        
+        const totalChanges = addedCount + removedCount;
+        const maxWords = Math.max(v1WordCount, v2WordCount) || 1;
+        const isHeavyRewrite = (totalChanges / maxWords) > 0.4;
 
         return {
             diffs: wordDiffs,
-            isHeavyRewrite: changeRatio > 0.8
+            isHeavyRewrite,
+            addedCount,
+            removedCount,
+            totalChanges
         };
     }, [oldText, newText]);
 
@@ -136,53 +186,115 @@ export default function WordDiff({ oldText, newText, className = '' }: WordDiffP
     }
 
     return (
-        <div className={`text-[13px] leading-[1.8] font-sans ${className}`}>
-            {/* Heavy Rewrite Badge */}
-            {isHeavyRewrite && (
-                <div className="inline-flex items-center gap-1.5 bg-amber-500/10 border border-amber-500/30 text-amber-400 text-[9px] font-bold uppercase tracking-widest px-2.5 py-1 rounded mb-3">
-                    <span className="material-symbols-outlined text-[12px]">warning</span>
-                    Heavily Rewritten — Structure Fundamentally Changed
-                </div>
-            )}
-
-            {/* Inline Diff Render */}
-            <div>
-                {diffs.map((diff, index) => {
-                    const [operation, text] = diff;
-
-                    // DIFF_DELETE = -1 (word was in V1, removed in V2)
-                    if (operation === -1) {
-                        return (
-                            <span
-                                key={index}
-                                className="line-through text-zinc-500 bg-rose-950/30 px-1 rounded-sm"
-                                title="Removed from V1"
-                            >
-                                {text}
-                            </span>
-                        );
-                    }
-
-                    // DIFF_INSERT = 1 (word added in V2, not in V1)
-                    if (operation === 1) {
-                        return (
-                            <span
-                                key={index}
-                                className="no-underline text-zinc-200 bg-emerald-950/30 px-1 rounded-sm"
-                                title="Added in V2"
-                            >
-                                {text}
-                            </span>
-                        );
-                    }
-
-                    // DIFF_EQUAL = 0 (word survived between V1 and V2)
-                    return (
-                        <span key={index} className="text-zinc-400">
-                            {text}
+        <div className={`border border-zinc-700/60 rounded-lg overflow-hidden bg-[#0d0d0d] ${className}`}>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-700/60 bg-[#111]">
+                <span className="text-sm font-semibold text-zinc-100">
+                    {title || category || 'Word-Level Diff'}
+                </span>
+                
+                <div className="flex items-center gap-2">
+                    {(showStructuralChangeBadge || isHeavyRewrite) && (
+                        <span className="flex items-center gap-1 text-xs text-amber-400">
+                            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <line x1="12" y1="16" x2="12" y2="12"></line>
+                                <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                            </svg>
+                            Structural Change Detected
                         </span>
-                    );
-                })}
+                    )}
+                    
+                    {category && (
+                        <span className={`
+                            rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-xs font-semibold text-zinc-300
+                        `}>
+                            {category.toUpperCase()}
+                        </span>
+                    )}
+                </div>
+            </div>
+
+            <div className="grid grid-cols-2 divide-x divide-zinc-700/60">
+                <div className="px-4 py-2 bg-zinc-800/30 border-b border-zinc-700/60">
+                    <span className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
+                        Version 1 (Baseline)
+                    </span>
+                </div>
+                
+                <div className="px-4 py-2 bg-zinc-800/30 border-b border-zinc-700/60">
+                    <span className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
+                        Version 2 (Round {roundNumber})
+                    </span>
+                </div>
+            </div>
+
+            <div className="grid min-h-[200px] grid-cols-2 divide-x divide-zinc-700/60">
+                <div className="bg-zinc-900/30 px-4 py-4 text-sm leading-relaxed text-zinc-300 whitespace-pre-wrap">
+                    {diffs.map((diff, index) => {
+                        const [operation, text] = diff;
+                        if (operation === 1) return null; // Added in V2
+                        if (operation === -1) {
+                            return (
+                                <React.Fragment key={index}>
+                                    {renderTokenSpans(
+                                        text,
+                                        `v1-removed-${index}`,
+                                        'text-zinc-500 line-through decoration-red-400/60 decoration-[1px]'
+                                    )}
+                                </React.Fragment>
+                            );
+                        }
+                        return (
+                            <React.Fragment key={index}>
+                                {renderTokenSpans(text, `v1-stable-${index}`, 'text-zinc-200')}
+                            </React.Fragment>
+                        );
+                    })}
+                </div>
+                
+                <div className="bg-zinc-900/30 px-4 py-4 text-sm leading-relaxed text-zinc-300 whitespace-pre-wrap">
+                    {diffs.map((diff, index) => {
+                        const [operation, text] = diff;
+                        if (operation === -1) return null; // Removed in V1
+                        if (operation === 1) {
+                            return (
+                                <React.Fragment key={index}>
+                                    {renderTokenSpans(
+                                        text,
+                                        `v2-added-${index}`,
+                                        'rounded-sm bg-blue-500/15 px-0.5 text-zinc-100'
+                                    )}
+                                </React.Fragment>
+                            );
+                        }
+                        return (
+                            <React.Fragment key={index}>
+                                {renderTokenSpans(text, `v2-stable-${index}`, 'text-zinc-200')}
+                            </React.Fragment>
+                        );
+                    })}
+                </div>
+            </div>
+
+            <div className="flex items-center justify-between px-4 py-2 border-t border-zinc-700/60 bg-zinc-800/20">
+                <div className="flex items-center gap-4 text-xs text-zinc-500">
+                    <span className="flex items-center gap-1">
+                        <span className="w-3 h-3 rounded-sm border border-zinc-600 bg-zinc-800"/>
+                        Unchanged
+                    </span>
+                    <span className="flex items-center gap-1">
+                        <span className="w-3 h-0.5 bg-red-500/60"/>
+                        Removed
+                    </span>
+                    <span className="flex items-center gap-1">
+                        <span className="w-3 h-3 rounded-sm border border-blue-400/20 bg-blue-500/15"/>
+                        Added
+                    </span>
+                </div>
+                
+                <span className="text-xs text-zinc-500">
+                    {totalChanges} changes • {addedCount} added • {removedCount} removed
+                </span>
             </div>
         </div>
     );

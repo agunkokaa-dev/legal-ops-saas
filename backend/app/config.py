@@ -84,6 +84,8 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")
 qdrant = QdrantClient(url=QDRANT_URL)
 COLLECTION_NAME = "contracts_vectors"
 NATIONAL_LAWS_COLLECTION = "id_national_laws"
+LAW_QDRANT_ACTIVE_ALIAS = "id_national_laws_active"
+LAW_QDRANT_V2_COLLECTION = "id_national_laws_v2"
 
 # Ensure collections exist on startup
 def init_qdrant_collections():
@@ -104,30 +106,7 @@ def init_qdrant_collections():
             collection_name="clause_library_vectors",
             vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
         )
-    # Global Indonesian national law corpus — NO tenant isolation
-    if NATIONAL_LAWS_COLLECTION not in existing:
-        print(f"[QDRANT] Creating collection: {NATIONAL_LAWS_COLLECTION}")
-        qdrant.create_collection(
-            collection_name=NATIONAL_LAWS_COLLECTION,
-            vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
-        )
-        # Payload indexes for efficient filtered retrieval
-        qdrant.create_payload_index(
-            collection_name=NATIONAL_LAWS_COLLECTION,
-            field_name="source_law_short",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        qdrant.create_payload_index(
-            collection_name=NATIONAL_LAWS_COLLECTION,
-            field_name="category",
-            field_schema=PayloadSchemaType.KEYWORD,
-        )
-        qdrant.create_payload_index(
-            collection_name=NATIONAL_LAWS_COLLECTION,
-            field_name="is_active",
-            field_schema=PayloadSchemaType.BOOL,
-        )
-        print(f"[QDRANT] Collection '{NATIONAL_LAWS_COLLECTION}' created with payload indexes.")
+    # National law collections are provisioned explicitly by the sync/cutover scripts.
 
 # --- OpenAI ---
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))

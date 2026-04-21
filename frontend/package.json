@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "start:pm2:prod": "pm2 start ecosystem.config.js --only frontend --env production --update-env",
-    "lint": "eslint"
+    "lint": "eslint",
+    "check:laws-parser": "node scripts/check-law-citation-parser.mjs"
   },
   "dependencies": {
     "@clerk/nextjs": "^6.38.2",

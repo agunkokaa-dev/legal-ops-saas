@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from pydantic import BaseModel
 from redis.asyncio import Redis
 
 
@@ -59,6 +60,15 @@ class SSEEvent:
             "",
             "",
         ))
+
+
+class ContractRoundFinalizedEvent(BaseModel):
+    contract_id: str
+    tenant_id: str
+    version_from: str
+    version_to: str
+    round_number: int
+    finalized_at: str
 
 
 class EventBus:

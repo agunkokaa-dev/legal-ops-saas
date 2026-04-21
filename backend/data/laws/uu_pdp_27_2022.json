@@ -1,0 +1,197 @@
+{
+  "law": {
+    "short_name": "UU PDP",
+    "full_name": "UU No. 27 Tahun 2022 tentang Pelindungan Data Pribadi",
+    "law_type": "UU",
+    "number": "27",
+    "year": 2022,
+    "category": "data_protection",
+    "jurisdiction": "ID",
+    "promulgation_date": "2022-10-17",
+    "effective_date": "2022-10-17",
+    "legal_status": "berlaku",
+    "official_source_url": "https://jdih.komdigi.go.id/produk_hukum/view/id/832"
+  },
+  "version": {
+    "version_number": 1,
+    "effective_from": "2022-10-17",
+    "effective_to": null,
+    "amendment_notes": "Original version"
+  },
+  "structure": [
+    {
+      "type": "bab",
+      "identifier": "Bab II",
+      "heading": "Jenis Data Pribadi",
+      "sequence": 2,
+      "children": [
+        {
+          "type": "pasal",
+          "identifier": "Pasal 4",
+          "sequence": 1,
+          "body": "Pasal 4\n(1) Data Pribadi terdiri atas:\na. Data Pribadi yang bersifat spesifik; dan\nb. Data Pribadi yang bersifat umum.\n(2) Data Pribadi yang bersifat spesifik sebagaimana dimaksud pada ayat (1) huruf a meliputi:\na. data dan informasi kesehatan;\nb. data biometrik;\nc. data genetika;\nd. catatan kejahatan;\ne. data anak;\nf. data keuangan pribadi; dan/atau\ng. data lainnya sesuai dengan ketentuan peraturan perundang-undangan.\n(3) Data Pribadi yang bersifat umum sebagaimana dimaksud pada ayat (1) huruf b meliputi:\na. nama lengkap;\nb. jenis kelamin;\nc. kewarganegaraan;\nd. agama;\ne. status perkawinan; dan/atau\nf. Data Pribadi yang dikombinasikan untuk mengidentifikasi seseorang.",
+          "contract_relevance": "medium",
+          "topic_tags": ["definitions", "data_categories"],
+          "legal_status": "berlaku"
+        }
+      ]
+    },
+    {
+      "type": "bab",
+      "identifier": "Bab IV",
+      "heading": "Pemrosesan Data Pribadi",
+      "sequence": 4,
+      "children": [
+        {
+          "type": "pasal",
+          "identifier": "Pasal 16",
+          "sequence": 1,
+          "body": "Pasal 16\n(1) Pemrosesan Data Pribadi meliputi:\na. pemerolehan dan pengumpulan;\nb. pengolahan dan penganalisisan;\nc. penyimpanan;\nd. perbaikan dan pembaruan;\ne. penampilan, pengumuman, transfer, penyebarluasan, atau pengungkapan; dan/atau\nf. penghapusan atau pemusnahan.\n(2) Pemrosesan Data Pribadi dilakukan sesuai dengan prinsip Pelindungan Data Pribadi meliputi:\na. pengumpulan Data Pribadi dilakukan secara terbatas dan spesifik, sah secara hukum, dan transparan;\nb. pemrosesan Data Pribadi dilakukan sesuai dengan tujuannya;\nc. pemrosesan Data Pribadi dilakukan dengan menjamin hak Subjek Data Pribadi;\nd. pemrosesan Data Pribadi dilakukan secara akurat, lengkap, tidak menyesatkan, mutakhir, dan dapat dipertanggungjawabkan;\ne. pemrosesan Data Pribadi dilakukan dengan melindungi keamanan Data Pribadi dari pengaksesan yang tidak sah;\nf. pemrosesan Data Pribadi dilakukan dengan memberitahukan tujuan dan aktivitas pemrosesan, serta kegagalan Pelindungan Data Pribadi;\ng. Data Pribadi dimusnahkan dan/atau dihapus setelah masa retensi berakhir atau berdasarkan permintaan Subjek Data Pribadi;\nh. pemrosesan Data Pribadi dilakukan secara bertanggung jawab dan dapat dibuktikan secara jelas.",
+          "contract_relevance": "high",
+          "contract_types": ["saas", "vendor"],
+          "topic_tags": ["processing_principles"],
+          "legal_status": "berlaku"
+        },
+        {
+          "type": "pasal",
+          "identifier": "Pasal 24",
+          "sequence": 2,
+          "body": "Pasal 24\nPersetujuan sebagaimana dimaksud dalam Pasal 20 ayat (2) huruf a harus memenuhi ketentuan:\na. dinyatakan secara tegas, bukan tersirat;\nb. diminta terlebih dahulu sebelum pemrosesan dilakukan;\nc. dinyatakan dalam format yang dapat dipahami secara lengkap dan jelas;\nd. dapat ditarik kembali setelah diberikan; dan\ne. dalam hal terdapat perubahan tujuan pemrosesan Data Pribadi, Pengendali Data Pribadi wajib meminta persetujuan kembali kepada Subjek Data Pribadi.",
+          "contract_relevance": "high",
+          "contract_types": ["saas", "vendor"],
+          "topic_tags": ["consent"],
+          "legal_status": "berlaku"
+        }
+      ]
+    },
+    {
+      "type": "bab",
+      "identifier": "Bab VIII",
+      "heading": "Keamanan Data Pribadi",
+      "sequence": 8,
+      "children": [
+        {
+          "type": "pasal",
+          "identifier": "Pasal 35",
+          "sequence": 1,
+          "body": "Pasal 35\n(1) Pengendali Data Pribadi wajib melindungi dan memastikan keamanan Data Pribadi yang diprosesnya, dengan melakukan:\na. penyusunan dan penerapan langkah teknis operasional untuk melindungi Data Pribadi dari gangguan pemrosesan Data Pribadi yang bertentangan dengan ketentuan peraturan perundang-undangan; dan\nb. penentuan tingkat keamanan Data Pribadi dengan memperhatikan sifat dan risiko dari Data Pribadi yang harus dilindungi dalam pemrosesan Data Pribadi.\n(2) Langkah teknis operasional sebagaimana dimaksud pada ayat (1) paling sedikit meliputi:\na. penyelenggaraan tata kelola Pelindungan Data Pribadi;\nb. Pelindungan Data Pribadi dilakukan uji coba secara berkala;\nc. penjagaan kerahasiaan Data Pribadi.",
+          "contract_relevance": "high",
+          "contract_types": ["saas", "vendor"],
+          "topic_tags": ["security_controls"],
+          "legal_status": "berlaku"
+        },
+        {
+          "type": "pasal",
+          "identifier": "Pasal 40",
+          "sequence": 2,
+          "body": "Pasal 40\n(1) Dalam hal terjadi kegagalan Pelindungan Data Pribadi, Pengendali Data Pribadi wajib pemberitahuan secara tertulis paling lambat 3 x 24 (tiga kali dua puluh empat) jam kepada Subjek Data Pribadi dan lembaga.\n(2) Pemberitahuan tertulis sebagaimana dimaksud pada ayat (1) minimal memuat:\na. Data Pribadi yang terungkap;\nb. kapan dan bagaimana Data Pribadi terungkap;\nc. upaya penanganan dan pemulihan atas terungkapnya Data Pribadi oleh Pengendali Data Pribadi.",
+          "contract_relevance": "high",
+          "contract_types": ["saas", "vendor"],
+          "topic_tags": ["breach_notification"],
+          "legal_status": "berlaku"
+        }
+      ]
+    },
+    {
+      "type": "bab",
+      "identifier": "Bab IX",
+      "heading": "Transfer Data Pribadi",
+      "sequence": 9,
+      "children": [
+        {
+          "type": "pasal",
+          "identifier": "Pasal 56",
+          "sequence": 1,
+          "body": "Pasal 56\n(1) Pengendali Data Pribadi dapat melakukan transfer Data Pribadi kepada Pengendali Data Pribadi dan/atau Prosesor Data Pribadi di luar wilayah hukum Negara Republik Indonesia.\n(2) Transfer Data Pribadi sebagaimana dimaksud pada ayat (1) hanya dapat dilakukan apabila:\na. negara tujuan transfer memiliki tingkat Pelindungan Data Pribadi yang setara atau lebih tinggi dari yang diatur dalam Undang-Undang ini;\nb. terdapat Pelindungan Data Pribadi yang memadai dan bersifat mengikat antarpengendali Data Pribadi dan/atau Prosesor Data Pribadi; dan/atau\nc. terdapat persetujuan Subjek Data Pribadi untuk transfer Data Pribadi ke luar negeri.",
+          "contract_relevance": "high",
+          "contract_types": ["saas", "vendor"],
+          "topic_tags": ["cross_border_transfer"],
+          "legal_status": "berlaku",
+          "children": [
+            {
+              "type": "ayat",
+              "identifier": "Ayat (1)",
+              "sequence": 1,
+              "body": "Pengendali Data Pribadi dapat melakukan transfer Data Pribadi kepada Pengendali Data Pribadi dan/atau Prosesor Data Pribadi di luar wilayah hukum Negara Republik Indonesia.",
+              "legal_status": "berlaku"
+            },
+            {
+              "type": "ayat",
+              "identifier": "Ayat (2)",
+              "sequence": 2,
+              "body": "Transfer Data Pribadi sebagaimana dimaksud pada ayat (1) hanya dapat dilakukan apabila:",
+              "legal_status": "berlaku",
+              "children": [
+                {
+                  "type": "huruf",
+                  "identifier": "Huruf a",
+                  "sequence": 1,
+                  "body": "negara tujuan transfer memiliki tingkat Pelindungan Data Pribadi yang setara atau lebih tinggi dari yang diatur dalam Undang-Undang ini;",
+                  "legal_status": "berlaku"
+                },
+                {
+                  "type": "huruf",
+                  "identifier": "Huruf b",
+                  "sequence": 2,
+                  "body": "terdapat Pelindungan Data Pribadi yang memadai dan bersifat mengikat antarpengendali Data Pribadi dan/atau Prosesor Data Pribadi; dan/atau",
+                  "legal_status": "berlaku"
+                },
+                {
+                  "type": "huruf",
+                  "identifier": "Huruf c",
+                  "sequence": 3,
+                  "body": "terdapat persetujuan Subjek Data Pribadi untuk transfer Data Pribadi ke luar negeri.",
+                  "legal_status": "berlaku"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "bab",
+      "identifier": "Bab XIII",
+      "heading": "Sanksi Administratif",
+      "sequence": 13,
+      "children": [
+        {
+          "type": "pasal",
+          "identifier": "Pasal 57",
+          "sequence": 1,
+          "body": "Pasal 57\n(1) Penjatuhan Sanksi Administratif sebagaimana dimaksud dalam Pasal 56 diberikan oleh lembaga.\n(2) Sanksi administratif sebagaimana dimaksud pada ayat (1) berupa:\na. peringatan tertulis;\nb. penghentian sementara kegiatan pemrosesan Data Pribadi;\nc. penghapusan atau pemusnahan Data Pribadi; dan/atau\nd. denda administratif.\n(3) Denda administratif sebagaimana dimaksud pada ayat (2) huruf d paling tinggi 2% (dua persen) dari pendapatan tahunan atau penerimaan tahunan terhadap variabel pelanggaran.",
+          "contract_relevance": "medium",
+          "topic_tags": ["administrative_sanctions"],
+          "legal_status": "berlaku"
+        }
+      ]
+    },
+    {
+      "type": "bab",
+      "identifier": "Bab XIV",
+      "heading": "Ketentuan Pidana",
+      "sequence": 14,
+      "children": [
+        {
+          "type": "pasal",
+          "identifier": "Pasal 67",
+          "sequence": 1,
+          "body": "Pasal 67\n(1) Setiap Orang yang dengan sengaja dan melawan hukum memperoleh atau mengumpulkan Data Pribadi yang bukan miliknya dengan maksud untuk menguntungkan diri sendiri atau orang lain yang dapat mengakibatkan kerugian Subjek Data Pribadi sebagaimana dimaksud dalam Pasal 65 ayat (1) dipidana dengan pidana penjara paling lama 5 (lima) tahun dan/atau pidana denda paling banyak Rp5.000.000.000,00 (lima miliar rupiah).\n(2) Setiap Orang yang dengan sengaja dan melawan hukum mengungkapkan Data Pribadi yang bukan miliknya sebagaimana dimaksud dalam Pasal 65 ayat (2) dipidana dengan pidana penjara paling lama 4 (empat) tahun dan/atau pidana denda paling banyak Rp4.000.000.000,00 (empat miliar rupiah).",
+          "contract_relevance": "medium",
+          "topic_tags": ["criminal_sanctions"],
+          "legal_status": "berlaku"
+        },
+        {
+          "type": "pasal",
+          "identifier": "Pasal 68",
+          "sequence": 2,
+          "body": "Pasal 68\nSetiap Orang yang dengan sengaja dan melawan hukum menggunakan Data Pribadi yang bukan miliknya sebagaimana dimaksud dalam Pasal 65 ayat (3) dipidana dengan pidana penjara paling lama 5 (lima) tahun dan/atau pidana denda paling banyak Rp5.000.000.000,00 (lima miliar rupiah).",
+          "contract_relevance": "medium",
+          "topic_tags": ["criminal_sanctions"],
+          "legal_status": "berlaku"
+        }
+      ]
+    }
+  ]
+}
+
