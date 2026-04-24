@@ -17,7 +17,6 @@ from urllib.parse import urlparse
 from arq import create_pool
 from arq.connections import ArqRedis, RedisSettings
 
-from app.config import admin_supabase
 from app.event_bus import SSEEvent, event_bus
 
 
@@ -95,6 +94,9 @@ def _insert_task_log(
     version_id: Optional[str] = None,
     input_metadata: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
+    # CROSS-TENANT: queue bootstrap persists system-level execution logs before any tenant-scoped worker context exists.
+    from app.config import admin_supabase
+
     result = admin_supabase.table("task_execution_logs").insert({
         "tenant_id": tenant_id,
         "task_type": task_type,
@@ -118,6 +120,9 @@ def update_task_log(
     error: Optional[Exception] = None,
     arq_job_id: Optional[str] = None,
 ) -> None:
+    # CROSS-TENANT: queue status reconciliation updates system-level execution logs shared by all workers.
+    from app.config import admin_supabase
+
     payload: dict[str, Any] = {}
     if status is not None:
         payload["status"] = status
@@ -131,6 +136,7 @@ def update_task_log(
         payload["error_type"] = type(error).__name__
         payload["error_message"] = str(error)[:2000]
     if payload:
+        # CROSS-TENANT: queue status reconciliation updates system-level execution logs shared by all workers.
         admin_supabase.table("task_execution_logs").update(payload).eq("id", log_id).execute()
 
 

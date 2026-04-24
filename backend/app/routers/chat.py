@@ -34,7 +34,7 @@ from app.laws.schemas import LawSearchContext, LawSearchRequest
 from app.laws.service import LawRetrievalService, build_law_retrieval_service
 from app.rate_limiter import limiter
 from app.dependencies import TenantQdrantClient, get_tenant_qdrant, verify_clerk_token, get_tenant_supabase
-from app.schemas import ClauseAssistantRequest
+from app.schemas import ClauseAssistantContext, ClauseAssistantRequest
 
 router = APIRouter()
 chat_logger = logging.getLogger("pariana.chat.router")
@@ -220,11 +220,72 @@ CLAUSE_ASSISTANT_TOOLS = [
 ]
 
 
-def _build_clause_assistant_search_context(message: str) -> LawSearchContext:
+def _truncate_clause_assistant_text(value: str | None, limit: int) -> str | None:
+    if not value:
+        return None
+    cleaned = " ".join(value.split())
+    return cleaned[:limit] if cleaned else None
+
+
+def _build_clause_assistant_contract_query(
+    message: str,
+    clause_context: ClauseAssistantContext | None = None,
+) -> str:
+    if not clause_context:
+        return message
+
+    parts = [message.strip()]
+    title = _truncate_clause_assistant_text(clause_context.title, 160)
+    current_clause = _truncate_clause_assistant_text(clause_context.v2Text, 360)
+    impact = _truncate_clause_assistant_text(clause_context.impactAnalysis, 240)
+    playbook_violation = _truncate_clause_assistant_text(clause_context.playbookViolation, 200)
+
+    if title:
+        parts.append(f"Selected deviation title: {title}")
+    if current_clause:
+        parts.append(f"Selected deviation current text: {current_clause}")
+    if impact:
+        parts.append(f"Selected deviation impact: {impact}")
+    if playbook_violation:
+        parts.append(f"Potential playbook conflict: {playbook_violation}")
+
+    return "\n".join(part for part in parts if part)
+
+
+def _build_clause_assistant_search_context(
+    message: str,
+    clause_context: ClauseAssistantContext | None = None,
+) -> LawSearchContext:
     return LawSearchContext(
         source_type="clause_assistant",
-        impact_analysis=message,
+        title=clause_context.title if clause_context else None,
+        impact_analysis=(clause_context.impactAnalysis if clause_context else None) or message,
+        v1_text=clause_context.v1Text if clause_context else None,
+        v2_text=clause_context.v2Text if clause_context else None,
+        severity=clause_context.severity if clause_context else None,
+        playbook_violation=clause_context.playbookViolation if clause_context else None,
     )
+
+
+def _format_selected_deviation_context(clause_context: ClauseAssistantContext | None) -> str:
+    if not clause_context:
+        return "Tidak ada konteks deviasi spesifik yang dipilih."
+
+    lines: list[str] = []
+    if clause_context.title:
+        lines.append(f"- Judul deviasi: {clause_context.title}")
+    if clause_context.severity:
+        lines.append(f"- Severity: {clause_context.severity}")
+    if clause_context.impactAnalysis:
+        lines.append(f"- Impact analysis: {clause_context.impactAnalysis}")
+    if clause_context.playbookViolation:
+        lines.append(f"- Playbook concern: {clause_context.playbookViolation}")
+    if clause_context.v1Text:
+        lines.append(f"- Teks sebelumnya (V1): {clause_context.v1Text}")
+    if clause_context.v2Text:
+        lines.append(f"- Teks saat ini (V2): {clause_context.v2Text}")
+
+    return "\n".join(lines) if lines else "Tidak ada detail deviasi yang dikirim dari frontend."
 
 
 def _format_contract_excerpt_context(contract_results: list[Any], contract_titles: dict[str, str]) -> str:
@@ -648,7 +709,9 @@ async def chat_clause_assistant(
             print(f"Failed to fetch historical context: {err}")
 
         # 3. Embed User Query (NON-BLOCKING)
-        question_vector = await async_embed(body.message)
+        question_vector = await async_embed(
+            _build_clause_assistant_contract_query(body.message, body.context)
+        )
 
         # 4. Contract retrieval for clause-local context
         # SECURITY: Contract filter must include tenant_id to prevent cross-tenant vector access
@@ -659,7 +722,7 @@ async def chat_clause_assistant(
             ]
         )
         contract_task = async_qdrant_search(qdrant_client, COLLECTION_NAME, question_vector, limit=4, query_filter=contract_filter)
-        search_context = _build_clause_assistant_search_context(body.message)
+        search_context = _build_clause_assistant_search_context(body.message, body.context)
         playbook_task = law_service.search_playbook_rules(
             tenant_qdrant=qdrant_client,
             query=body.message,
@@ -729,6 +792,8 @@ async def chat_clause_assistant(
         except Exception as e:
             print(f"Error fetching full document texts: {e}")
 
+        combined_context += "=== SELECTED DEVIATION CONTEXT ===\n"
+        combined_context += f"{_format_selected_deviation_context(body.context)}\n\n"
         combined_context += "=== RELEVANT CONTRACT EXCERPTS ===\n"
         combined_context += f"{_format_contract_excerpt_context(contract_results, contract_titles)}\n\n"
         combined_context += "=== PLAYBOOK EVIDENCE ===\n"
@@ -757,6 +822,7 @@ ANALYSIS INSTRUCTIONS:
 10. If the initial retrieval bundle is insufficient, call the available retrieval tools before answering. Never guess.
 11. Format using clean Markdown with bold, bullet points, and numbered lists.
 12. Answer in professional Indonesian, maintaining legal terminology.
+13. If SELECTED DEVIATION CONTEXT is present, treat it as the focal clause for the analysis.
 
 HISTORICAL AGENT DATA:
 {historical_context}

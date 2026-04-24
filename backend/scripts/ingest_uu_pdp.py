@@ -78,6 +78,7 @@ INITIAL_COVERAGE = [
 
 
 def _repo() -> LawCorpusRepository:
+    # CROSS-TENANT: canonical law-corpus seeding writes global system-owned data, not tenant-owned business rows.
     from app.config import LAW_QDRANT_ACTIVE_ALIAS, LAW_QDRANT_V2_COLLECTION, NATIONAL_LAWS_COLLECTION, admin_supabase, qdrant
 
     return LawCorpusRepository(

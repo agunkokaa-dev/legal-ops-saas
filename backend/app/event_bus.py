@@ -114,6 +114,9 @@ class EventBus:
             self._redis = Redis.from_url(self._redis_url, decode_responses=True)
         return self._redis
 
+    async def get_redis(self) -> Redis:
+        return await self._get_redis()
+
     async def startup(self) -> None:
         self._bind_loop()
         redis = await self._get_redis()

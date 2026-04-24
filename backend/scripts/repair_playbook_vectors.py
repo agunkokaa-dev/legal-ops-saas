@@ -40,6 +40,7 @@ def build_clients() -> tuple[QdrantClient, Any]:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required")
 
     qdrant = QdrantClient(url=QDRANT_URL)
+    # CROSS-TENANT: repair script intentionally constructs a service-role client for operator-run global vector repair.
     supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
     return qdrant, supabase
 

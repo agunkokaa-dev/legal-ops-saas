@@ -5,7 +5,8 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('app/routers/contracts.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
       "Bash(python3 delete_ghosts.py)",
       "Bash(docker compose:*)",
-      "Bash(grep -r \"contracts\" /root/workspace-saas/backend/migrations/001*)"
+      "Bash(grep -r \"contracts\" /root/workspace-saas/backend/migrations/001*)",
+      "Bash(fuser -k 3000/tcp)"
     ],
     "additionalDirectories": [
       "/root/workspace-saas/frontend/app/dashboard/contracts/[id]"

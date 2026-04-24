@@ -11,11 +11,22 @@ class MatterCreate(BaseModel):
     description: str
 
 
+class ClauseAssistantContext(BaseModel):
+    deviationId: Optional[str] = None
+    title: Optional[str] = None
+    impactAnalysis: Optional[str] = None
+    v1Text: Optional[str] = None
+    v2Text: Optional[str] = None
+    severity: Optional[str] = None
+    playbookViolation: Optional[str] = None
+
+
 class ClauseAssistantRequest(BaseModel):
     message: str
     contractId: str
     matterId: str
-    userId: str = None
+    userId: Optional[str] = None
+    context: Optional[ClauseAssistantContext] = None
 
 
 class PlaybookVectorizeRequest(BaseModel):

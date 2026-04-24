@@ -57,11 +57,21 @@ export async function chatWithClause(question: string) {
 export async function chatWithClauseRAG({ 
     contractId, 
     matterId, 
-    message 
+    message,
+    context,
 }: { 
-    contractId: string, 
-    matterId?: string, 
-    message: string 
+    contractId: string;
+    matterId?: string;
+    message: string;
+    context?: {
+        deviationId?: string;
+        title?: string;
+        impactAnalysis?: string;
+        v1Text?: string;
+        v2Text?: string;
+        severity?: string;
+        playbookViolation?: string;
+    };
 }) {
     const { userId, orgId, getToken } = await auth();
     const tenantId = orgId || userId;
@@ -90,7 +100,8 @@ export async function chatWithClauseRAG({
                 message: message,
                 contractId: contractId,
                 matterId: matterId || "general",
-                userId: userId || null
+                userId: userId || null,
+                context: context || null,
             }),
         });
 
@@ -395,6 +406,58 @@ async function fetchLawsApi(path: string, init?: RequestInit) {
     }
 }
 
+type ActionResult<T> =
+    | {
+        success: true
+        data: T
+        error: null
+        statusCode: number
+    }
+    | {
+        success: false
+        data: null
+        error: string
+        statusCode: number
+    }
+
+type FinalizePreviewPayload = {
+    can_finalize: boolean
+    blocking_issues: Array<{
+        issue_id: string
+        deviation_id: string
+        title: string
+        severity: string
+        status: string
+    }>
+    decisions_summary: Record<string, number>
+    v3_text_preview: string
+    v3_text_length: number
+    v2_text_length: number
+    estimated_changes: number
+}
+
+type FinalizeRoundPayload = {
+    version_id: string
+    version_number: number
+    v3_text_preview: string
+    decisions_summary: Record<string, number>
+    next_action: string
+}
+
+function resolveActionError(payload: unknown, fallback: string) {
+    if (payload && typeof payload === 'object') {
+        const detail = (payload as { detail?: unknown }).detail
+        if (typeof detail === 'string' && detail.trim()) {
+            return detail
+        }
+        const message = (payload as { message?: unknown }).message
+        if (typeof message === 'string' && message.trim()) {
+            return message
+        }
+    }
+    return fallback
+}
+
 export async function searchLaws(
     query: string,
     filters?: { category?: string; law_short?: string; contract_relevance?: 'high' | 'medium' | 'low'; contract_type?: string },
@@ -445,51 +508,111 @@ export async function getLawCoverage() {
     })
 }
 
-export async function previewFinalizeRound(contractId: string) {
-    const { getToken } = await auth()
-    const token = await getToken()
+export async function previewFinalizeRound(contractId: string): Promise<ActionResult<FinalizePreviewPayload>> {
+    try {
+        const { getToken } = await auth()
+        const token = await getToken()
+        if (!token) {
+            return {
+                success: false,
+                data: null,
+                error: 'Authentication required to preview finalize round.',
+                statusCode: 401,
+            }
+        }
 
-    const response = await fetch(`${INTERNAL_API_URL}/api/v1/negotiation/${contractId}/finalize-preview`, {
-        method: 'GET',
-        headers: {
-            'Authorization': `Bearer ${token}`,
-        },
-        cache: 'no-store',
-    })
+        const response = await fetch(`${INTERNAL_API_URL}/api/v1/negotiation/${contractId}/finalize-preview`, {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+            },
+            cache: 'no-store',
+            next: { revalidate: 0 },
+        })
 
-    const payload = await response.json().catch(() => ({}))
-    if (!response.ok) {
-        throw new Error(payload?.detail || 'Failed to preview finalize round')
+        const payload: unknown = await response.json().catch(() => ({}))
+        if (!response.ok) {
+            return {
+                success: false,
+                data: null,
+                error: resolveActionError(payload, 'Failed to preview finalize round'),
+                statusCode: response.status,
+            }
+        }
+
+        return {
+            success: true,
+            data: payload as FinalizePreviewPayload,
+            error: null,
+            statusCode: response.status,
+        }
+    } catch (error: unknown) {
+        console.error('Preview finalize round action error:', error)
+        return {
+            success: false,
+            data: null,
+            error: error instanceof Error ? error.message : 'Failed to preview finalize round',
+            statusCode: 500,
+        }
     }
-    return payload
 }
 
 export async function finalizeRound(
     contractId: string,
     allowPartial: boolean = false,
     confirmationNote?: string,
-) {
-    const { getToken } = await auth()
-    const token = await getToken()
+): Promise<ActionResult<FinalizeRoundPayload>> {
+    try {
+        const { getToken } = await auth()
+        const token = await getToken()
+        if (!token) {
+            return {
+                success: false,
+                data: null,
+                error: 'Authentication required to finalize this round.',
+                statusCode: 401,
+            }
+        }
 
-    const response = await fetch(`${INTERNAL_API_URL}/api/v1/negotiation/${contractId}/finalize-round`, {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            allow_partial: allowPartial,
-            confirmation_note: confirmationNote || null,
-        }),
-        cache: 'no-store',
-    })
+        const response = await fetch(`${INTERNAL_API_URL}/api/v1/negotiation/${contractId}/finalize-round`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                allow_partial: allowPartial,
+                confirmation_note: confirmationNote || null,
+            }),
+            cache: 'no-store',
+            next: { revalidate: 0 },
+        })
 
-    const payload = await response.json().catch(() => ({}))
-    if (!response.ok) {
-        throw new Error(payload?.detail || 'Failed to finalize round')
+        const payload: unknown = await response.json().catch(() => ({}))
+        if (!response.ok) {
+            return {
+                success: false,
+                data: null,
+                error: resolveActionError(payload, 'Failed to finalize round'),
+                statusCode: response.status,
+            }
+        }
+
+        return {
+            success: true,
+            data: payload as FinalizeRoundPayload,
+            error: null,
+            statusCode: response.status,
+        }
+    } catch (error: unknown) {
+        console.error('Finalize round action error:', error)
+        return {
+            success: false,
+            data: null,
+            error: error instanceof Error ? error.message : 'Failed to finalize round',
+            statusCode: 500,
+        }
     }
-    return payload
 }
 
 export async function exportContractVersion(

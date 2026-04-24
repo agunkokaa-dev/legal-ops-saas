@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import jwt
 import logging
+import warnings
 from datetime import datetime, timezone
 from typing import Any
 
@@ -23,7 +24,6 @@ from app.config import (
     CLERK_PEM_KEY,
     SUPABASE_ANON_KEY,
     SUPABASE_URL,
-    admin_supabase,
     qdrant,
 )
 
@@ -37,6 +37,13 @@ def _normalized_claim_text(value: Any) -> str | None:
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def _require_tenant_id(tenant_id: str | None) -> str:
+    normalized = _normalized_claim_text(tenant_id)
+    if not normalized:
+        raise ValueError("tenant_id required")
+    return normalized
 
 
 def _extract_tenant_id(claims: dict[str, Any]) -> str | None:
@@ -255,7 +262,7 @@ class TenantSupabaseClient:
 
     def __init__(self, raw_client: Any, tenant_id: str):
         self._raw = raw_client
-        self.tenant_id = tenant_id
+        self.tenant_id = _require_tenant_id(tenant_id)
 
     def table(self, table_name: str) -> TenantTableQuery:
         return TenantTableQuery(self._raw, table_name, self.tenant_id)
@@ -273,10 +280,26 @@ class TenantSupabaseClient:
 
     @property
     def raw(self) -> Any:
+        """
+        Hazardous escape hatch for exceptional non-PostgREST operations only.
+
+        This exists for APIs like Supabase Storage that are outside the table/RPC
+        wrapper surface. Do not use `.raw.table(...)` or `.raw.rpc(...)`; tenant-
+        scoped PostgREST access must go through `table()` / `rpc()` on the wrapper.
+        Every `.raw` callsite requires an explicit reviewed exception.
+        """
         dependency_logger.warning(
             "TenantSupabaseClient.raw accessed for tenant_id=%s. "
-            "Document every raw usage with # CROSS-TENANT: <reason>.",
+            "This is a hazardous NON-POSTGREST escape hatch; .raw.table() and "
+            ".raw.rpc() are forbidden. Document every raw usage with "
+            "# NON-POSTGREST: <reason>.",
             self.tenant_id,
+        )
+        warnings.warn(
+            "TenantSupabaseClient.raw is a hazardous NON-POSTGREST escape hatch; "
+            ".raw.table() and .raw.rpc() are forbidden.",
+            RuntimeWarning,
+            stacklevel=2,
         )
         return self._raw
 
@@ -416,6 +439,9 @@ async def get_admin_supabase() -> Client:
     """
     Explicit privileged dependency for audited background/admin flows only.
     """
+    # CROSS-TENANT: explicit privileged dependency for reviewed cross-tenant or system-level flows.
+    from app.config import admin_supabase
+
     return admin_supabase
 
 
@@ -423,7 +449,10 @@ def get_tenant_admin_supabase(tenant_id: str) -> TenantSupabaseClient:
     """
     Creates a tenant-scoped privileged Supabase client for background tasks.
     """
-    return TenantSupabaseClient(admin_supabase, tenant_id)
+    # CROSS-TENANT: central tenant-scoped privileged factory wraps the service-role client before tenant-scoped use.
+    from app.config import admin_supabase
+
+    return TenantSupabaseClient(admin_supabase, _require_tenant_id(tenant_id))
 
 
 async def get_tenant_qdrant(

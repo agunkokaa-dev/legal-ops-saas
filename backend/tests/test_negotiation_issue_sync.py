@@ -127,41 +127,102 @@ def unwrap_async_handler(handler):
     return target
 
 
+def make_deviation(
+    *,
+    deviation_id: str,
+    title: str,
+    v1_text: str = "",
+    v2_text: str = "",
+    category: str = "Modified",
+    severity: str = "warning",
+    impact_analysis: str | None = None,
+    **extra,
+) -> dict[str, object]:
+    payload = {
+        "deviation_id": deviation_id,
+        "title": title,
+        "category": category,
+        "severity": severity,
+        "v1_text": v1_text,
+        "v2_text": v2_text,
+        "impact_analysis": impact_analysis or f"Test impact analysis for {title.lower()}.",
+    }
+    payload.update(extra)
+    return payload
+
+
+def make_batna_fallback(
+    *,
+    deviation_id: str,
+    fallback_clause: str,
+    reasoning: str = "Test reasoning for BATNA fallback.",
+    leverage_points: list[str] | None = None,
+    **extra,
+) -> dict[str, object]:
+    payload = {
+        "deviation_id": deviation_id,
+        "fallback_clause": fallback_clause,
+        "reasoning": reasoning,
+        "leverage_points": leverage_points or ["Point 1", "Point 2"],
+    }
+    payload.update(extra)
+    return payload
+
+
+def make_diff_result(
+    *,
+    deviations: list[dict[str, object]],
+    batna_fallbacks: list[dict[str, object]] | None = None,
+    risk_delta: float = 5.0,
+    summary: str = "Test diff summary.",
+    **extra,
+) -> dict[str, object]:
+    payload = {
+        "deviations": deviations,
+        "batna_fallbacks": batna_fallbacks or [],
+        "risk_delta": risk_delta,
+        "summary": summary,
+    }
+    payload.update(extra)
+    return payload
+
+
 def test_ensure_negotiation_issues_creates_rows_and_rewrites_diff_ids():
     fake = FakeSupabase({
         "negotiation_issues": [],
     })
-    diff_result = {
-        "deviations": [
-            {
-                "deviation_id": "dev-1",
-                "title": "Liability cap removed",
-                "impact_analysis": "Unlimited downside exposure.",
-                "severity": "critical",
-                "category": "Modified",
-                "v2_coordinates": {"start_char": 10, "end_char": 40},
-                "playbook_violation": "Liability cap required.",
-            },
-            {
-                "deviation_id": "dev-2",
-                "title": "Termination softened",
-                "impact_analysis": "Harder to exit for cause.",
-                "severity": "warning",
-                "category": "Modified",
-            },
+    diff_result = make_diff_result(
+        deviations=[
+            make_deviation(
+                deviation_id="dev-1",
+                title="Liability cap removed",
+                v1_text="Liability cap is 12 months of fees.",
+                v2_text="Liability is unlimited.",
+                impact_analysis="Unlimited downside exposure.",
+                severity="critical",
+                v2_coordinates={"start_char": 10, "end_char": 40},
+                playbook_violation="Liability cap required.",
+            ),
+            make_deviation(
+                deviation_id="dev-2",
+                title="Termination softened",
+                v1_text="Termination for cause is immediate.",
+                v2_text="Termination requires a cure period.",
+                impact_analysis="Harder to exit for cause.",
+            ),
         ],
-        "batna_fallbacks": [
-            {
-                "deviation_id": "dev-1",
-                "fallback_clause": "Liability is capped at 12 months of fees.",
-            }
+        batna_fallbacks=[
+            make_batna_fallback(
+                deviation_id="dev-1",
+                fallback_clause="Liability is capped at 12 months of fees.",
+            )
         ],
-        "debate_protocol": {
+        debate_protocol={
             "debate_results": [
                 {"deviation_id": "dev-2", "debate_triggered": True}
             ]
         },
-    }
+    )
 
     stats = negotiation._ensure_negotiation_issues(
         tenant_supabase_client=fake,
@@ -212,14 +273,29 @@ def test_ensure_negotiation_issues_is_idempotent_and_reuses_existing_rows():
             },
         ],
     })
-    diff_result = {
-        "deviations": [
-            {"deviation_id": "dev-1", "title": "Legacy finding id"},
-            {"deviation_id": "issue-2", "title": "Already canonical"},
+    diff_result = make_diff_result(
+        deviations=[
+            make_deviation(
+                deviation_id="dev-1",
+                title="Legacy finding id",
+                v1_text="Legacy clause.",
+                v2_text="Legacy clause updated.",
+            ),
+            make_deviation(
+                deviation_id="issue-2",
+                title="Already canonical",
+                v1_text="Canonical clause.",
+                v2_text="Canonical clause updated.",
+            ),
         ],
-        "batna_fallbacks": [{"deviation_id": "dev-1", "fallback_clause": "Fallback"}],
-        "debate_protocol": {"debate_results": [{"deviation_id": "issue-2"}]},
-    }
+        batna_fallbacks=[
+            make_batna_fallback(
+                deviation_id="dev-1",
+                fallback_clause="Fallback",
+            )
+        ],
+        debate_protocol={"debate_results": [{"deviation_id": "issue-2"}]},
+    )
 
     stats = negotiation._ensure_negotiation_issues(
         tenant_supabase_client=fake,
@@ -243,12 +319,24 @@ def test_list_negotiation_issues_filters_to_active_version_issue_ids():
                 "contract_id": "contract-1",
                 "tenant_id": "tenant-1",
                 "pipeline_output": {
-                    "diff_result": {
-                        "deviations": [
-                            {"deviation_id": "issue-1"},
-                            {"deviation_id": "issue-2"},
+                    "diff_result": make_diff_result(
+                        deviations=[
+                            make_deviation(
+                                deviation_id="issue-1",
+                                title="Current issue",
+                                v1_text="Clause 1 old.",
+                                v2_text="Clause 1 new.",
+                            ),
+                            make_deviation(
+                                deviation_id="issue-2",
+                                title="Current issue 2",
+                                v1_text="Clause 2 old.",
+                                v2_text="Clause 2 new.",
+                                severity="critical",
+                                impact_analysis="Clause 2 introduces higher risk.",
+                            ),
                         ]
-                    }
+                    )
                 },
             }
         ],
@@ -323,9 +411,16 @@ def test_list_negotiation_issues_falls_back_to_tenant_admin_client(monkeypatch):
                 "contract_id": "contract-1",
                 "tenant_id": "tenant-1",
                 "pipeline_output": {
-                    "diff_result": {
-                        "deviations": [{"deviation_id": "issue-1"}]
-                    }
+                    "diff_result": make_diff_result(
+                        deviations=[
+                            make_deviation(
+                                deviation_id="issue-1",
+                                title="Current issue",
+                                v1_text="Clause old.",
+                                v2_text="Clause new.",
+                            )
+                        ]
+                    )
                 },
             }
         ],
@@ -417,10 +512,18 @@ def test_get_smart_diff_returns_requested_version_when_version_id_is_provided():
                 "tenant_id": "tenant-1",
                 "version_number": 1,
                 "pipeline_output": {
-                    "diff_result": {
-                        "deviations": [{"deviation_id": "issue-1"}],
-                        "summary": "Version 1 diff",
-                    }
+                    "diff_result": make_diff_result(
+                        deviations=[
+                            make_deviation(
+                                deviation_id="issue-1",
+                                title="Version 1 issue",
+                                v1_text="Version 1 old.",
+                                v2_text="Version 1 new.",
+                            )
+                        ],
+                        risk_delta=1.0,
+                        summary="Version 1 diff",
+                    )
                 },
             },
             {
@@ -429,10 +532,18 @@ def test_get_smart_diff_returns_requested_version_when_version_id_is_provided():
                 "tenant_id": "tenant-1",
                 "version_number": 2,
                 "pipeline_output": {
-                    "diff_result": {
-                        "deviations": [{"deviation_id": "issue-2"}],
-                        "summary": "Version 2 diff",
-                    }
+                    "diff_result": make_diff_result(
+                        deviations=[
+                            make_deviation(
+                                deviation_id="issue-2",
+                                title="Version 2 issue",
+                                v1_text="Version 2 old.",
+                                v2_text="Version 2 new.",
+                            )
+                        ],
+                        risk_delta=2.0,
+                        summary="Version 2 diff",
+                    )
                 },
             },
         ],
@@ -447,5 +558,5 @@ def test_get_smart_diff_returns_requested_version_when_version_id_is_provided():
         supabase=fake,
     ))
 
-    assert response["summary"] == "Version 1 diff"
-    assert response["deviations"][0]["deviation_id"] == "issue-1"
+    assert response.summary == "Version 1 diff"
+    assert response.deviations[0].deviation_id == "issue-1"

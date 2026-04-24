@@ -7,6 +7,8 @@ import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
 import ScrollbarMarkers from './ScrollbarMarkers'
 import FindingPopover from './FindingPopover'
+import { sanitizeContractHtml } from '@/lib/contractHtml'
+import { DISALLOWED_MARKDOWN_ELEMENTS } from '@/lib/markdownSafety'
 
 interface TextCoordinate {
     start_char: number
@@ -211,6 +213,10 @@ export default function DocumentViewer({
         () => buildInjectedMarkdown(rawDocument, findings),
         [rawDocument, findings]
     )
+    const safeInjectedMarkdown = useMemo(
+        () => sanitizeContractHtml(injectedMarkdown),
+        [injectedMarkdown]
+    )
 
     // ── Auto-scroll to finding ──
     useEffect(() => {
@@ -269,6 +275,8 @@ export default function DocumentViewer({
                             <ReactMarkdown
                                 remarkPlugins={[remarkGfm]}
                                 rehypePlugins={[rehypeRaw]}
+                                disallowedElements={DISALLOWED_MARKDOWN_ELEMENTS}
+                                unwrapDisallowed
                                 components={{
                                     mark: ({ node, children, ...props }: any) => {
                                         const primaryId = props['data-finding-id']
@@ -326,7 +334,7 @@ export default function DocumentViewer({
                                     }
                                 }}
                             >
-                                {injectedMarkdown}
+                                {safeInjectedMarkdown}
                             </ReactMarkdown>
                         </div>
                     </div>

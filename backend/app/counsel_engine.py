@@ -34,7 +34,9 @@ from app.counsel_prompts import (
     build_prior_rounds_summary,
 )
 from app.dependencies import TenantQdrantClient
+from app.llm_output_sanitizer import sanitize_llm_text
 from app.review_schemas import CounselSessionType
+from app.pipeline_output_schema import parse_pipeline_output
 from app.token_budget import allocate_budget
 
 logger = logging.getLogger(__name__)
@@ -148,8 +150,8 @@ async def _load_latest_diff_version(
         .limit(10) \
         .execute()
     for version in result.data or []:
-        diff_result = (version.get("pipeline_output") or {}).get("diff_result")
-        if diff_result:
+        po = parse_pipeline_output(version.get("pipeline_output"))
+        if po.diff_result:
             return version
     return None
 
@@ -581,7 +583,8 @@ async def handle_counsel_message(
         yield _format_done()
         return
 
-    diff_result = (current_version.get("pipeline_output") or {}).get("diff_result")
+    po = parse_pipeline_output(current_version.get("pipeline_output"))
+    diff_result = po.diff_result.model_dump() if po.diff_result else None
     if not diff_result:
         yield _format_error("Diff result belum tersedia untuk kontrak ini. Jalankan Smart Diff terlebih dahulu.")
         yield _format_done()
@@ -717,10 +720,16 @@ async def handle_counsel_message(
         yield _format_done()
         return
 
+    safe_response = sanitize_llm_text(
+        full_response,
+        field_name="counsel_response",
+        strict=False,
+    )
+
     assistant_message = {
         "id": str(uuid.uuid4()),
         "role": "assistant",
-        "content": full_response,
+        "content": safe_response,
         "timestamp": _utcnow_iso(),
         "deviation_id": effective_deviation_id,
         "metadata": {

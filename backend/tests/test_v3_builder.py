@@ -67,6 +67,44 @@ def coords_for(text: str, snippet: str) -> dict[str, object]:
     return {"start_char": start, "end_char": end, "source_text": snippet}
 
 
+def make_deviation(
+    *,
+    deviation_id: str,
+    title: str,
+    v1_text: str,
+    v2_text: str,
+    v2_coordinates: dict[str, object] | None,
+    category: str = "Modified",
+    severity: str = "warning",
+    impact_analysis: str | None = None,
+) -> dict[str, object]:
+    return {
+        "deviation_id": deviation_id,
+        "title": title,
+        "category": category,
+        "severity": severity,
+        "v1_text": v1_text,
+        "v2_text": v2_text,
+        "v2_coordinates": v2_coordinates,
+        "impact_analysis": impact_analysis or f"Test impact analysis for {title.lower()}.",
+    }
+
+
+def make_batna_fallback(
+    *,
+    deviation_id: str,
+    fallback_clause: str,
+    reasoning: str = "Test reasoning for BATNA fallback.",
+    leverage_points: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "deviation_id": deviation_id,
+        "fallback_clause": fallback_clause,
+        "reasoning": reasoning,
+        "leverage_points": leverage_points or ["Point 1", "Point 2"],
+    }
+
+
 class V3BuilderTests(unittest.TestCase):
     maxDiff = None
 
@@ -101,6 +139,8 @@ class V3BuilderTests(unittest.TestCase):
                         "diff_result": {
                             "deviations": deviations,
                             "batna_fallbacks": batna_fallbacks or [],
+                            "risk_delta": 5.0,
+                            "summary": "Test diff summary.",
                         }
                     },
                 },
@@ -114,13 +154,13 @@ class V3BuilderTests(unittest.TestCase):
     def test_all_accepted_returns_v2_unchanged(self):
         v1_text = "Payment due in 30 days."
         v2_text = "Payment due in 45 days."
-        deviation = {
-            "deviation_id": "issue-1",
-            "title": "Payment term extended",
-            "v1_text": v1_text,
-            "v2_text": v2_text,
-            "v2_coordinates": coords_for(v2_text, v2_text),
-        }
+        deviation = make_deviation(
+            deviation_id="issue-1",
+            title="Payment term extended",
+            v1_text=v1_text,
+            v2_text=v2_text,
+            v2_coordinates=coords_for(v2_text, v2_text),
+        )
         supabase = self.make_supabase(
             v1_text=v1_text,
             v2_text=v2_text,
@@ -143,13 +183,13 @@ class V3BuilderTests(unittest.TestCase):
     def test_all_rejected_returns_v1_for_those_segments(self):
         v1_text = "Payment due in 30 days."
         v2_text = "Payment due in 45 days."
-        deviation = {
-            "deviation_id": "issue-1",
-            "title": "Payment term extended",
-            "v1_text": v1_text,
-            "v2_text": v2_text,
-            "v2_coordinates": coords_for(v2_text, v2_text),
-        }
+        deviation = make_deviation(
+            deviation_id="issue-1",
+            title="Payment term extended",
+            v1_text=v1_text,
+            v2_text=v2_text,
+            v2_coordinates=coords_for(v2_text, v2_text),
+        )
         supabase = self.make_supabase(
             v1_text=v1_text,
             v2_text=v2_text,
@@ -173,13 +213,14 @@ class V3BuilderTests(unittest.TestCase):
         v1_text = "Vendor liability cap is 12 months of fees."
         v2_text = "Vendor liability is unlimited."
         fallback = "Vendor liability cap is 18 months of fees."
-        deviation = {
-            "deviation_id": "issue-1",
-            "title": "Liability cap removed",
-            "v1_text": v1_text,
-            "v2_text": v2_text,
-            "v2_coordinates": coords_for(v2_text, v2_text),
-        }
+        deviation = make_deviation(
+            deviation_id="issue-1",
+            title="Liability cap removed",
+            v1_text=v1_text,
+            v2_text=v2_text,
+            v2_coordinates=coords_for(v2_text, v2_text),
+            severity="critical",
+        )
         supabase = self.make_supabase(
             v1_text=v1_text,
             v2_text=v2_text,
@@ -193,10 +234,12 @@ class V3BuilderTests(unittest.TestCase):
                 "status": "countered",
                 "suggested_revision": fallback,
             }],
-            batna_fallbacks=[{
-                "deviation_id": "issue-1",
-                "fallback_clause": fallback,
-            }],
+            batna_fallbacks=[
+                make_batna_fallback(
+                    deviation_id="issue-1",
+                    fallback_clause=fallback,
+                )
+            ],
         )
 
         merged_text, summary = self.build(supabase)
@@ -207,20 +250,20 @@ class V3BuilderTests(unittest.TestCase):
     def test_reverse_order_prevents_coordinate_shift(self):
         v1_text = "Alpha short. Beta short."
         v2_text = "Alpha long. Beta long."
-        deviation_a = {
-            "deviation_id": "issue-a",
-            "title": "Alpha changed",
-            "v1_text": "Alpha short.",
-            "v2_text": "Alpha long.",
-            "v2_coordinates": coords_for(v2_text, "Alpha long."),
-        }
-        deviation_b = {
-            "deviation_id": "issue-b",
-            "title": "Beta changed",
-            "v1_text": "Beta short.",
-            "v2_text": "Beta long.",
-            "v2_coordinates": coords_for(v2_text, "Beta long."),
-        }
+        deviation_a = make_deviation(
+            deviation_id="issue-a",
+            title="Alpha changed",
+            v1_text="Alpha short.",
+            v2_text="Alpha long.",
+            v2_coordinates=coords_for(v2_text, "Alpha long."),
+        )
+        deviation_b = make_deviation(
+            deviation_id="issue-b",
+            title="Beta changed",
+            v1_text="Beta short.",
+            v2_text="Beta long.",
+            v2_coordinates=coords_for(v2_text, "Beta long."),
+        )
         supabase = self.make_supabase(
             v1_text=v1_text,
             v2_text=v2_text,
@@ -244,10 +287,12 @@ class V3BuilderTests(unittest.TestCase):
                     "status": "rejected",
                 },
             ],
-            batna_fallbacks=[{
-                "deviation_id": "issue-a",
-                "fallback_clause": "Alpha replacement with much longer text.",
-            }],
+            batna_fallbacks=[
+                make_batna_fallback(
+                    deviation_id="issue-a",
+                    fallback_clause="Alpha replacement with much longer text.",
+                )
+            ],
         )
 
         merged_text, _ = self.build(supabase)
@@ -256,13 +301,13 @@ class V3BuilderTests(unittest.TestCase):
     def test_deterministic_same_input_same_output(self):
         v1_text = "Termination requires 30 days notice."
         v2_text = "Termination requires 60 days notice."
-        deviation = {
-            "deviation_id": "issue-1",
-            "title": "Termination notice increased",
-            "v1_text": v1_text,
-            "v2_text": v2_text,
-            "v2_coordinates": coords_for(v2_text, v2_text),
-        }
+        deviation = make_deviation(
+            deviation_id="issue-1",
+            title="Termination notice increased",
+            v1_text=v1_text,
+            v2_text=v2_text,
+            v2_coordinates=coords_for(v2_text, v2_text),
+        )
         supabase = self.make_supabase(
             v1_text=v1_text,
             v2_text=v2_text,
@@ -284,13 +329,13 @@ class V3BuilderTests(unittest.TestCase):
     def test_handles_deviation_without_coordinates(self):
         v1_text = "Governing law is Indonesia."
         v2_text = "Governing law is Singapore."
-        deviation = {
-            "deviation_id": "issue-1",
-            "title": "Governing law changed",
-            "v1_text": v1_text,
-            "v2_text": v2_text,
-            "v2_coordinates": None,
-        }
+        deviation = make_deviation(
+            deviation_id="issue-1",
+            title="Governing law changed",
+            v1_text=v1_text,
+            v2_text=v2_text,
+            v2_coordinates=None,
+        )
         supabase = self.make_supabase(
             v1_text=v1_text,
             v2_text=v2_text,
@@ -312,13 +357,13 @@ class V3BuilderTests(unittest.TestCase):
     def test_empty_issues_returns_v2_unchanged(self):
         v1_text = "Services begin on 1 May."
         v2_text = "Services begin on 15 May."
-        deviation = {
-            "deviation_id": "issue-1",
-            "title": "Start date changed",
-            "v1_text": v1_text,
-            "v2_text": v2_text,
-            "v2_coordinates": coords_for(v2_text, v2_text),
-        }
+        deviation = make_deviation(
+            deviation_id="issue-1",
+            title="Start date changed",
+            v1_text=v1_text,
+            v2_text=v2_text,
+            v2_coordinates=coords_for(v2_text, v2_text),
+        )
         supabase = self.make_supabase(
             v1_text=v1_text,
             v2_text=v2_text,
@@ -330,6 +375,74 @@ class V3BuilderTests(unittest.TestCase):
         self.assertEqual(merged_text, v2_text)
         self.assertEqual(summary["open"], 1)
         self.assertEqual(summary["applied_changes"], 0)
+
+    def test_filters_stale_issue_rows_and_matches_by_title(self):
+        v1_text = "Specification A. Payment in 30 days."
+        v2_text = "Specification B. Payment in 45 days."
+        deviation_a = make_deviation(
+            deviation_id="active-dev-a",
+            title="Specification Expansion",
+            v1_text="Specification A.",
+            v2_text="Specification B.",
+            v2_coordinates=coords_for(v2_text, "Specification B."),
+        )
+        deviation_b = make_deviation(
+            deviation_id="active-dev-b",
+            title="Payment Milestones Added",
+            v1_text="Payment in 30 days.",
+            v2_text="Payment in 45 days.",
+            v2_coordinates=coords_for(v2_text, "Payment in 45 days."),
+        )
+        supabase = self.make_supabase(
+            v1_text=v1_text,
+            v2_text=v2_text,
+            deviations=[deviation_a, deviation_b],
+            issues=[
+                {
+                    "id": "legacy-1",
+                    "finding_id": "001",
+                    "title": "Project Schedule Defined",
+                    "contract_id": "contract-1",
+                    "tenant_id": "tenant-1",
+                    "version_id": "version-2",
+                    "status": "open",
+                },
+                {
+                    "id": "legacy-2",
+                    "finding_id": "002",
+                    "title": "Scope of Work Expanded",
+                    "contract_id": "contract-1",
+                    "tenant_id": "tenant-1",
+                    "version_id": "version-2",
+                    "status": "under_review",
+                },
+                {
+                    "id": "issue-a",
+                    "finding_id": "11",
+                    "title": "Specification Expansion",
+                    "contract_id": "contract-1",
+                    "tenant_id": "tenant-1",
+                    "version_id": "version-2",
+                    "status": "accepted",
+                },
+                {
+                    "id": "issue-b",
+                    "finding_id": "12",
+                    "title": "Payment Milestones Added",
+                    "contract_id": "contract-1",
+                    "tenant_id": "tenant-1",
+                    "version_id": "version-2",
+                    "status": "rejected",
+                },
+            ],
+        )
+
+        merged_text, summary = self.build(supabase)
+        self.assertEqual(merged_text, "Specification B. Payment in 30 days.")
+        self.assertEqual(summary["accepted"], 1)
+        self.assertEqual(summary["rejected"], 1)
+        self.assertEqual(summary["open"], 0)
+        self.assertEqual(summary["under_review"], 0)
 
 
 if __name__ == "__main__":

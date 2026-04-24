@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { useLawsUI } from '@/components/laws/LawsUIProvider'
 import { splitTextWithCitationHints } from '@/lib/law-citation'
+import { assertSafeLlmText } from '@/lib/sanitize'
 
 interface TextCoordinate {
     start_char: number
@@ -68,11 +69,15 @@ export default function FindingCard({
     const [isConverting, setIsConverting] = useState(false)
     const [justAccepted, setJustAccepted] = useState(false)
     const config = SEVERITY_CONFIG[finding.severity] || SEVERITY_CONFIG.info
-    const descriptionParts = splitTextWithCitationHints(finding.description)
+    const safeDescription = assertSafeLlmText(finding.description, 'review_finding_description')
+    const safeSuggestedRevision = finding.suggested_revision
+        ? assertSafeLlmText(finding.suggested_revision, 'suggested_revision')
+        : null
+    const descriptionParts = splitTextWithCitationHints(safeDescription)
     const sourceTextParts = splitTextWithCitationHints(finding.coordinates.source_text)
 
     const handleAccept = async () => {
-        if (!finding.suggested_revision) return
+        if (!safeSuggestedRevision) return
         setIsAccepting(true)
         try {
             await onAcceptRedline(finding)
@@ -176,11 +181,11 @@ export default function FindingCard({
                 </Section>
 
                 {/* 💡 THE SOLUTION */}
-                {finding.suggested_revision && finding.status !== 'accepted' && (
+                {safeSuggestedRevision && finding.status !== 'accepted' && (
                     <Section icon="lightbulb" title="THE SOLUTION" color="text-green-400">
                         <div className="bg-[#0d1a0d] border-l-4 border-l-green-500/50 border border-green-500/10 rounded-r-xl p-4">
                             <p className="text-green-300/90 text-[12px] font-serif leading-relaxed whitespace-pre-wrap">
-                                {finding.suggested_revision}
+                                {safeSuggestedRevision}
                             </p>
                         </div>
                     </Section>
@@ -230,7 +235,7 @@ export default function FindingCard({
             {/* Sticky Footer Actions */}
             {finding.status === 'open' && !justAccepted && (
                 <div className="flex-shrink-0 p-4 border-t border-white/5 bg-[#0e0e0e] space-y-2">
-                    {finding.suggested_revision && (
+                    {safeSuggestedRevision && (
                         <button
                             onClick={handleAccept}
                             disabled={isAccepting}

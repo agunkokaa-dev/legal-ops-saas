@@ -9,6 +9,7 @@ Handles:
 import uuid
 import traceback
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -37,10 +38,16 @@ from app.review_schemas import (
     FinalizeRoundResponse,
     SmartDiffResult,
 )
+from app.pipeline_output_schema import (
+    PipelineOutput,
+    parse_pipeline_output,
+    serialize_pipeline_output,
+)
 from app.task_logger import TaskLogger
 from app.rate_limiter import limiter
 from app.token_budget import allocate_budget
 from app.event_bus import ContractRoundFinalizedEvent, SSEEvent, event_bus
+from app.llm_output_sanitizer import sanitize_diff_result, sanitize_llm_text
 from app.services.v3_builder import build_v3_merged_text, resolve_active_round_context
 from graph import run_smart_diff_with_debate
 import asyncio
@@ -48,6 +55,7 @@ from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from pydantic import BaseModel
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 async def publish_negotiation_event(
@@ -143,25 +151,27 @@ def _log_negotiation_activity(
 
 
 def _blocking_issues_from_context(context) -> list[BlockingIssue]:
+    from app.services.v3_builder import (
+        _build_issue_indexes,
+        _resolve_issue_for_deviation,
+        _normalize_issue_status,
+    )
+
     blocking_statuses = {"open", "under_review"}
-    issue_by_id = {
-        str(issue.get("id") or ""): issue
-        for issue in context.issues
-        if issue.get("id")
-    }
-    issue_by_finding_id = {
-        str(issue.get("finding_id") or ""): issue
-        for issue in context.issues
-        if issue.get("finding_id")
-    }
+    issue_by_id, issue_by_finding_id, issue_by_title = _build_issue_indexes(context.issues)
 
     blocking_issues: list[BlockingIssue] = []
     for deviation in context.deviations:
         deviation_id = str(deviation.get("deviation_id") or "").strip()
         if not deviation_id:
             continue
-        issue = issue_by_id.get(deviation_id) or issue_by_finding_id.get(deviation_id)
-        status = str((issue or {}).get("status") or "open").strip().lower()
+        issue = _resolve_issue_for_deviation(
+            deviation,
+            issue_by_id=issue_by_id,
+            issue_by_finding_id=issue_by_finding_id,
+            issue_by_title=issue_by_title,
+        )
+        status = _normalize_issue_status(issue)
         if status not in blocking_statuses:
             continue
         blocking_issues.append(BlockingIssue(
@@ -432,15 +442,21 @@ async def preview_finalize_round(
             supabase=supabase,
         )
         blocking_issues = _blocking_issues_from_context(context)
+        no_blocking = len(blocking_issues) == 0
+        resolved_total = decisions_summary.get("resolved_total", 0)
+        applied_changes = decisions_summary.get("applied_changes", 0)
+        # When all deviations are accepted, V3 == V2 (no text changes).
+        # This is still a valid finalize: user approves counterparty's V2 as-is.
+        all_resolved_no_changes = no_blocking and resolved_total > 0 and applied_changes == 0
 
         return FinalizePreviewResponse(
-            can_finalize=len(blocking_issues) == 0,
+            can_finalize=no_blocking,
             blocking_issues=blocking_issues,
             decisions_summary=decisions_summary,
             v3_text_preview=v3_text[:500],
             v3_text_length=len(v3_text),
             v2_text_length=len(str(context.source_version.get("raw_text") or "")),
-            estimated_changes=decisions_summary.get("applied_changes", 0),
+            estimated_changes=resolved_total if all_resolved_no_changes else applied_changes,
         )
     except HTTPException:
         raise
@@ -526,7 +542,14 @@ async def finalize_negotiation_round(
         )
         v2_text = str(context.source_version.get("raw_text") or "")
 
-        if v3_text == v2_text:
+        # When all deviations are accepted, V3 == V2 is expected and valid.
+        # When allow_partial is set, user explicitly opted to finalize despite open issues.
+        resolved_total = decisions_summary.get("resolved_total", 0)
+        all_accepted_no_changes = (
+            resolved_total > 0
+            and decisions_summary.get("blocking_total", 0) == 0
+        )
+        if v3_text == v2_text and not all_accepted_no_changes and not body.allow_partial:
             raise HTTPException(
                 status_code=400,
                 detail="Finalize would not change the active draft. Review the negotiation decisions first.",
@@ -564,7 +587,7 @@ async def finalize_negotiation_round(
             "version_number": new_version_number,
             "raw_text": v3_text[:500000],
             "uploaded_filename": uploaded_filename,
-            "pipeline_output": {},
+            "pipeline_output": serialize_pipeline_output(PipelineOutput()),
             "source": "internal_finalized",
             "parent_version_id": context.source_version["id"],
             "finalized_at": finalized_at,
@@ -577,7 +600,7 @@ async def finalize_negotiation_round(
                 supabase.table("contract_versions").update({
                     "raw_text": v3_text[:500000],
                     "uploaded_filename": uploaded_filename,
-                    "pipeline_output": {},
+                    "pipeline_output": serialize_pipeline_output(PipelineOutput()),
                     "source": "internal_finalized",
                     "parent_version_id": context.source_version["id"],
                     "finalized_at": finalized_at,
@@ -840,13 +863,12 @@ async def get_smart_diff(
             raise HTTPException(status_code=404, detail=detail)
 
         v2 = versions[0]
-        pipeline_output = v2.get("pipeline_output", {}) or {}
-        diff_result = pipeline_output.get("diff_result")
+        po = parse_pipeline_output(v2.get("pipeline_output"))
 
-        if not diff_result:
+        if not po.diff_result:
             raise HTTPException(status_code=404, detail="Diff result not generated yet.")
 
-        return diff_result
+        return po.diff_result
 
     except HTTPException:
         raise
@@ -915,8 +937,9 @@ def _load_version_diff_result(
     if not version_res.data:
         return {}
 
-    pipeline_output = version_res.data[0].get("pipeline_output") or {}
-    return pipeline_output.get("diff_result") or {}
+    po = parse_pipeline_output(version_res.data[0].get("pipeline_output"))
+    diff = po.diff_result
+    return diff.model_dump() if diff else {}
 
 
 def _extract_version_deviation_ids(
@@ -1045,6 +1068,16 @@ def _build_negotiation_issue_payload(
 ) -> dict[str, Any]:
     source_deviation_id = str(deviation.get("deviation_id") or "").strip()
     fallback = fallback_by_deviation_id.get(source_deviation_id) or {}
+    description = sanitize_llm_text(
+        deviation.get("impact_analysis", ""),
+        field_name="description",
+        strict=False,
+    )
+    suggested_revision = sanitize_llm_text(
+        fallback.get("fallback_clause", ""),
+        field_name="suggested_revision",
+        strict=False,
+    )
 
     return {
         "id": issue_id,
@@ -1053,12 +1086,12 @@ def _build_negotiation_issue_payload(
         "version_id": version_id,
         "finding_id": source_deviation_id,
         "title": deviation.get("title", "Untitled Deviation"),
-        "description": deviation.get("impact_analysis", ""),
+        "description": description,
         "severity": deviation.get("severity", "warning"),
         "category": deviation.get("category", "Negotiation"),
         "status": "open",
         "coordinates": deviation.get("v2_coordinates") or {},
-        "suggested_revision": fallback.get("fallback_clause"),
+        "suggested_revision": suggested_revision,
         "playbook_reference": deviation.get("playbook_violation", ""),
         "reasoning_log": [{
             "action": "open",
@@ -1072,7 +1105,7 @@ def _build_negotiation_issue_payload(
 
 def _ensure_negotiation_issues(
     *,
-    tenant_supabase_client: Client,
+    tenant_supabase_client: TenantSupabaseClient,
     contract_id: str,
     tenant_id: str,
     version_id: str,
@@ -1181,10 +1214,10 @@ def _resolve_deviation_snapshot(
         raise HTTPException(status_code=404, detail="No contract versions found.")
 
     version = version_res.data[0]
-    pipeline_output = version.get("pipeline_output") or {}
-    diff_result = pipeline_output.get("diff_result") or {}
-    deviations = diff_result.get("deviations") or []
-    batna_fallbacks = diff_result.get("batna_fallbacks") or []
+    po = parse_pipeline_output(version.get("pipeline_output"))
+    diff = po.diff_result
+    deviations = diff.deviations if diff else []
+    batna_fallbacks = diff.batna_fallbacks if diff else []
 
     issue_rows_res = supabase_client.table("negotiation_issues") \
         .select("id, finding_id") \
@@ -1341,7 +1374,7 @@ async def _execute_diff_and_persist(
         f"Total={v1_tokens + v2_tokens + playbook_tokens + rounds_tokens:,}"
     )
 
-    diff_result_dict = await run_smart_diff_with_debate(
+    raw_diff_result = await run_smart_diff_with_debate(
         v1_text=safe_v1,
         v2_text=safe_v2,
         v1_risk_score=v1_score,
@@ -1352,6 +1385,12 @@ async def _execute_diff_and_persist(
         enable_debate=enable_debate,
         event_bus=event_bus_ref or event_bus,
     )
+    diff_result_dict = raw_diff_result.model_dump() if hasattr(raw_diff_result, "model_dump") else dict(raw_diff_result)
+
+    try:
+        diff_result_dict = sanitize_diff_result(diff_result_dict, strict=False)
+    except Exception:
+        logger.exception("[DIFF] Failed to sanitize diff output for contract=%s", contract_id)
 
     issue_sync_stats = {"created_count": 0, "rewritten_count": 0}
     try:
@@ -1370,12 +1409,13 @@ async def _execute_diff_and_persist(
     except Exception as sync_err:
         print(f"Warning: Failed to sync deviations to DB: {sync_err}")
 
-    pipeline_output = v2.get("pipeline_output") or {}
-    pipeline_output["diff_result"] = diff_result_dict
+    po = parse_pipeline_output(v2.get("pipeline_output"))
+    po.diff_result = diff_result_dict
+    serialized_po = serialize_pipeline_output(po)
 
     tenant_sb.table("contract_versions") \
         .update({
-            "pipeline_output": pipeline_output,
+            "pipeline_output": serialized_po,
             "is_truncated": safe_v2 != v2_text,
         }) \
         .eq("id", v2.get("id")) \

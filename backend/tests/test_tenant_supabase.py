@@ -2,6 +2,7 @@ import importlib.util
 import sys
 import types
 import unittest
+import warnings
 from pathlib import Path
 
 
@@ -206,12 +207,16 @@ class TenantSupabaseTests(unittest.TestCase):
 
     def test_raw_access_logs_warning(self):
         with self.assertLogs("pariana.dependencies", level="WARNING") as log_context:
-            returned = self.wrapper.raw
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                returned = self.wrapper.raw
 
         self.assertIs(returned, self.raw)
         self.assertTrue(
             any("TenantSupabaseClient.raw accessed" in entry for entry in log_context.output)
         )
+        self.assertTrue(caught)
+        self.assertIn("hazardous NON-POSTGREST escape hatch", str(caught[0].message))
 
     def test_upsert_validates_rows(self):
         with self.assertRaisesRegex(ValueError, "Tenant ID mismatch: expected 'tenant_A', got 'tenant_B'"):
@@ -227,6 +232,26 @@ class TenantSupabaseTests(unittest.TestCase):
             self.raw.rpc_calls,
             [("refresh_contract_metrics", {"contract_id": "contract_1", "tenant_id": "tenant_A"})],
         )
+
+    def test_constructor_rejects_missing_tenant_id(self):
+        with self.assertRaisesRegex(ValueError, "tenant_id required"):
+            self.deps.TenantSupabaseClient(self.raw, "")
+
+        with self.assertRaisesRegex(ValueError, "tenant_id required"):
+            self.deps.TenantSupabaseClient(self.raw, "   ")
+
+        with self.assertRaisesRegex(ValueError, "tenant_id required"):
+            self.deps.TenantSupabaseClient(self.raw, None)
+
+    def test_factory_rejects_missing_tenant_id(self):
+        with self.assertRaisesRegex(ValueError, "tenant_id required"):
+            self.deps.get_tenant_admin_supabase("")
+
+        with self.assertRaisesRegex(ValueError, "tenant_id required"):
+            self.deps.get_tenant_admin_supabase("   ")
+
+        with self.assertRaisesRegex(ValueError, "tenant_id required"):
+            self.deps.get_tenant_admin_supabase(None)
 
 
 if __name__ == "__main__":

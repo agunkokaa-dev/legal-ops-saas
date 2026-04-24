@@ -13,6 +13,7 @@ import ClauseLibraryPanel from "../contract-detail/ClauseLibraryPanel";
 import HistoryPanel from "./HistoryPanel";
 import { toast, Toaster } from 'sonner';
 import type { RevisionSnapshot, DraftRevisionsPayload } from '@/types/history';
+import { sanitizeContractHtml } from '@/lib/contractHtml';
 import { getPublicApiBase } from '@/lib/public-api-base';
 
 interface NegotiationIssue {
@@ -39,8 +40,20 @@ interface SmartComposerProps {
   contractId?: string;
   focusFindingId?: string;
   draftId?: string;
+  source?: string;
   onClose: () => void;
 }
+
+type WarRoomComposerPrefill = {
+  text: string;
+  source: 'war_room';
+  contractId: string;
+  matterId: string;
+  title?: string;
+  versionLabel?: string;
+};
+
+const WAR_ROOM_COMPOSER_PREFILL_KEY = 'war_room:composer_prefill';
 
 export default function SmartComposer({
   matterId,
@@ -50,6 +63,7 @@ export default function SmartComposer({
   contractId,
   focusFindingId,
   draftId,
+  source,
   onClose,
 }: SmartComposerProps) {
   const { getToken } = useAuth();
@@ -76,6 +90,11 @@ export default function SmartComposer({
   const [revisionHistory, setRevisionHistory] = useState<RevisionSnapshot[]>([]);
   const [previewText, setPreviewText] = useState<string | null>(null);
   const [isSaved, setIsSaved] = useState(false);
+  const [warRoomSourceMeta, setWarRoomSourceMeta] = useState<{ title?: string; versionLabel: string } | null>(
+    mode === 'warroom' && source === 'war_room'
+      ? { title: taskTitle, versionLabel: 'V3 Working Draft' }
+      : null
+  );
   const router = useRouter();
 
   const parseHtml = async (text: string) => {
@@ -149,6 +168,43 @@ export default function SmartComposer({
     "Drafting clause suggestions..."
   ];
 
+  const consumeWarRoomPrefill = useCallback(async () => {
+    if (typeof window === 'undefined' || mode !== 'warroom' || source !== 'war_room' || !contractId) {
+      return null;
+    }
+
+    try {
+      const stored = window.sessionStorage.getItem(WAR_ROOM_COMPOSER_PREFILL_KEY);
+      if (!stored) {
+        return null;
+      }
+
+      window.sessionStorage.removeItem(WAR_ROOM_COMPOSER_PREFILL_KEY);
+      const parsed = JSON.parse(stored) as Partial<WarRoomComposerPrefill>;
+
+      if (parsed.source !== 'war_room' || parsed.contractId !== contractId) {
+        return null;
+      }
+
+      if (typeof parsed.text !== 'string' || !parsed.text.trim()) {
+        return null;
+      }
+
+      setWarRoomSourceMeta({
+        title: typeof parsed.title === 'string' && parsed.title.trim() ? parsed.title : taskTitle,
+        versionLabel: typeof parsed.versionLabel === 'string' && parsed.versionLabel.trim()
+          ? parsed.versionLabel
+          : 'V3 Working Draft',
+      });
+
+      return parsed.text;
+    } catch (error) {
+      console.error('[SmartComposer] Failed to consume War Room prefill.', error);
+      window.sessionStorage.removeItem(WAR_ROOM_COMPOSER_PREFILL_KEY);
+      return null;
+    }
+  }, [contractId, mode, source, taskTitle]);
+
   React.useEffect(() => {
     const loadExistingDraft = async () => {
       try {
@@ -157,8 +213,11 @@ export default function SmartComposer({
         
         if (mode === 'warroom' && contractId) {
           // ── War Room → Composer Bridge ──
-          // 1. Fetch the V3 draft text from contract_versions
-          if (draftId) {
+          const sessionPrefill = await consumeWarRoomPrefill();
+          if (sessionPrefill) {
+            setDraftText(await parseHtml(sessionPrefill));
+          } else if (draftId) {
+            // 1. Fetch the V3 draft text from contract_versions
             const vRes = await fetch(`${baseUrl}/api/v1/negotiation/${contractId}/versions`, {
               headers: { Authorization: `Bearer ${token}` }
             });
@@ -268,7 +327,7 @@ export default function SmartComposer({
       }
     };
     loadExistingDraft();
-  }, [matterId, mode, contractId, focusFindingId, draftId]);
+  }, [consumeWarRoomPrefill, draftId, focusFindingId, getToken, matterId, mode, contractId]);
 
   React.useEffect(() => {
     const fetchPlaybooks = async () => {
@@ -762,6 +821,15 @@ export default function SmartComposer({
 
         {/* Column 2: The Live Document */}
         <section className="flex-1 bg-[#0a0a0a] p-8 overflow-y-auto custom-scrollbar flex flex-col items-center relative">
+          {mode === 'warroom' && source === 'war_room' && warRoomSourceMeta && (
+            <div className="mb-4 flex w-full max-w-[750px] items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+              <span className="material-symbols-outlined text-base text-amber-300">info</span>
+              <span>
+                Editing {warRoomSourceMeta.versionLabel} from War Room
+                {warRoomSourceMeta.title ? ` — ${warRoomSourceMeta.title}` : ''}
+              </span>
+            </div>
+          )}
           <div className="max-w-[750px] w-full bg-white text-black border border-zinc-200 rounded-xl shadow-2xl p-16 min-h-[1000px] mb-12 flex flex-col">
             <header className="text-center mb-8">
               <h1 className="font-serif text-3xl mb-2 tracking-tight uppercase">{templateName}</h1>
@@ -776,7 +844,7 @@ export default function SmartComposer({
                     PREVIEWING OLD VERSION
                   </div>
                   <div
-                    dangerouslySetInnerHTML={{ __html: previewText }}
+                    dangerouslySetInnerHTML={{ __html: sanitizeContractHtml(previewText) }}
                     className="w-full h-full min-h-[700px] bg-zinc-100 border-none text-zinc-600 font-serif text-[15px] leading-relaxed resize-none focus:ring-0 overflow-y-auto px-8 custom-scrollbar outline-none pt-12 pb-8 cursor-not-allowed prose max-w-none prose-zinc"
                   />
                   <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-3">

@@ -16,6 +16,8 @@ import rehypeRaw from 'rehype-raw';
 import { createNote } from '@/app/actions/noteActions';
 import { useContractSSE } from '@/hooks/useContractSSE';
 import { SSEStatusBadge } from '@/components/status/SSEStatusBadge';
+import { sanitizeContractHtml } from '@/lib/contractHtml';
+import { DISALLOWED_MARKDOWN_ELEMENTS } from '@/lib/markdownSafety';
 import { getPublicApiBase } from '@/lib/public-api-base';
 
 export default function ContractDetailClient({
@@ -294,6 +296,10 @@ export default function ContractDetailClient({
 
         return modified;
     }, [parsedDraftText, notes, plainText, plainToRaw]);
+    const safeInjectedDraftText = useMemo(
+        () => sanitizeContractHtml(injectedDraftText),
+        [injectedDraftText]
+    );
 
     const handleApplySuggestion = async (originalIssue: string, neutralRewrite: string) => {
         if (!contract?.id) return;
@@ -849,8 +855,10 @@ export default function ContractDetailClient({
                                     <ReactMarkdown
                                         remarkPlugins={[remarkGfm]}
                                         rehypePlugins={[rehypeRaw as any]}
+                                        disallowedElements={DISALLOWED_MARKDOWN_ELEMENTS}
+                                        unwrapDisallowed
                                     >
-                                        {injectedDraftText}
+                                        {safeInjectedDraftText}
                                     </ReactMarkdown>
                                 </div>
                             </div>

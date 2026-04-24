@@ -6,8 +6,8 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from supabase import Client
 
-from app.dependencies import get_tenant_supabase, verify_clerk_token
-from app.config import admin_supabase, openai_client
+from app.dependencies import TenantSupabaseClient, get_tenant_admin_supabase, get_tenant_supabase, verify_clerk_token
+from app.config import openai_client
 
 from app.bilingual_schemas import (
     ClauseSyncRequest,
@@ -35,11 +35,8 @@ def handle_bilingual_task_result(task: asyncio.Task, contract_id: str):
 def assemble_bilingual_contract_texts(
     contract_id: str,
     tenant_id: str,
-    supabase_client: Optional[Client] = None,
+    supabase_client: Client | TenantSupabaseClient,
 ) -> tuple[str, str, list[dict]]:
-    if supabase_client is None:
-        # AUDITED: Requires service-role only for shared internal/background callers without request context.
-        supabase_client = admin_supabase
     clauses_res = supabase_client.table("bilingual_clauses").select("*") \
         .eq("contract_id", contract_id).eq("tenant_id", tenant_id).eq("status", "active").execute()
     clauses = clauses_res.data or []
@@ -59,11 +56,8 @@ def assemble_bilingual_contract_texts(
 def generate_bilingual_pdf_bytes(
     contract_id: str,
     tenant_id: str,
-    supabase_client: Optional[Client] = None,
+    supabase_client: Client | TenantSupabaseClient,
 ) -> bytes:
-    if supabase_client is None:
-        # AUDITED: Requires service-role only for shared internal/background callers without request context.
-        supabase_client = admin_supabase
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle, Spacer
@@ -226,6 +220,7 @@ async def process_bilingual_validate_background(
     existing_log_id: str | None = None,
     task_input_metadata: dict | None = None,
 ) -> dict:
+    tenant_sb = get_tenant_admin_supabase(tenant_id)  # TenantSupabaseClient
     logger = TaskLogger(
         tenant_id=tenant_id,
         task_type="bilingual_validate",
@@ -235,7 +230,7 @@ async def process_bilingual_validate_background(
     )
     logger.log_agent_start("bilingual_validate")
 
-    clauses_res = admin_supabase.table("bilingual_clauses").select("*") \
+    clauses_res = tenant_sb.table("bilingual_clauses").select("*") \
         .eq("contract_id", contract_id).eq("tenant_id", tenant_id).eq("status", "active").execute()
     clauses = clauses_res.data or []
     clauses.sort(key=lambda c: float(c.get("clause_number", "0") or "0"))

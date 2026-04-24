@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { assertSafeLlmText } from '@/lib/sanitize'
 
 interface BannerData {
     critical_count: number
@@ -167,7 +168,7 @@ export default function HeroOverlay({
                                                 <span className="text-red-400 font-bold text-sm mt-0.5 flex-shrink-0 w-5 text-center">{i + 1}.</span>
                                                 <div className="min-w-0">
                                                     <p className="text-white text-[13px] font-semibold leading-snug">{f.title}</p>
-                                                    <p className="text-zinc-500 text-[11px] mt-0.5 line-clamp-1">{f.description}</p>
+                                                    <p className="text-zinc-500 text-[11px] mt-0.5 line-clamp-1">{assertSafeLlmText(f.description, 'review_finding_description')}</p>
                                                 </div>
                                             </div>
                                         ))}

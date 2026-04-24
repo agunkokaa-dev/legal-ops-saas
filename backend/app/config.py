@@ -3,11 +3,12 @@ Pariana Backend - Application Configuration
 Centralized environment variable loading and client initialization.
 """
 import os
+
 from dotenv import load_dotenv
-from supabase import create_client, Client
+from openai import OpenAI
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Distance, VectorParams, PayloadSchemaType
-from openai import OpenAI
+from supabase import Client, create_client
 
 load_dotenv(override=False)
 
@@ -77,7 +78,13 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv(
 if not SUPABASE_URL or not SUPABASE_ANON_KEY or not SUPABASE_SERVICE_ROLE_KEY:
     raise ValueError("CRITICAL SECURITY ERROR: SUPABASE_URL, SUPABASE_ANON_KEY or SUPABASE_SERVICE_ROLE_KEY is missing. Halting startup to prevent RLS bypass.")
 
-admin_supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+def _build_admin_supabase() -> Client:
+    # CROSS-TENANT: create the canonical service-role singleton only once for explicitly reviewed privileged flows.
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+
+admin_supabase: Client = _build_admin_supabase()
 
 # --- Qdrant ---
 QDRANT_URL = os.getenv("QDRANT_URL", "http://qdrant:6333")

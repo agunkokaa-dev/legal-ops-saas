@@ -139,6 +139,44 @@ def coords_for(text: str, snippet: str) -> dict[str, object]:
     return {"start_char": start, "end_char": end, "source_text": snippet}
 
 
+def make_deviation(
+    *,
+    deviation_id: str,
+    title: str,
+    severity: str,
+    v1_text: str,
+    v2_text: str,
+    v2_coordinates: dict[str, object] | None,
+    category: str = "Modified",
+    impact_analysis: str | None = None,
+) -> dict[str, object]:
+    return {
+        "deviation_id": deviation_id,
+        "title": title,
+        "category": category,
+        "severity": severity,
+        "v1_text": v1_text,
+        "v2_text": v2_text,
+        "v2_coordinates": v2_coordinates,
+        "impact_analysis": impact_analysis or f"Test impact analysis for {title.lower()}.",
+    }
+
+
+def make_batna_fallback(
+    *,
+    deviation_id: str,
+    fallback_clause: str,
+    reasoning: str = "Test reasoning for BATNA fallback.",
+    leverage_points: list[str] | None = None,
+) -> dict[str, object]:
+    return {
+        "deviation_id": deviation_id,
+        "fallback_clause": fallback_clause,
+        "reasoning": reasoning,
+        "leverage_points": leverage_points or ["Point 1", "Point 2"],
+    }
+
+
 async def read_streaming_body(response) -> bytes:
     return b"".join([chunk async for chunk in response.body_iterator])
 
@@ -188,31 +226,31 @@ class FinalizeRoundRouteTests(unittest.TestCase):
                 "pipeline_output": {
                     "diff_result": {
                         "deviations": [
-                            {
-                                "deviation_id": "issue-payment",
-                                "title": "Payment term extended",
-                                "severity": "warning",
-                                "category": "Modified",
-                                "v1_text": "Payment due in 30 days.",
-                                "v2_text": payment_v2,
-                                "v2_coordinates": coords_for(v2_text, payment_v2),
-                            },
-                            {
-                                "deviation_id": "issue-liability",
-                                "title": "Liability cap removed",
-                                "severity": "critical",
-                                "category": "Modified",
-                                "v1_text": "Liability cap is 12 months of fees.",
-                                "v2_text": liability_v2,
-                                "v2_coordinates": coords_for(v2_text, liability_v2),
-                            },
+                            make_deviation(
+                                deviation_id="issue-payment",
+                                title="Payment term extended",
+                                severity="warning",
+                                v1_text="Payment due in 30 days.",
+                                v2_text=payment_v2,
+                                v2_coordinates=coords_for(v2_text, payment_v2),
+                            ),
+                            make_deviation(
+                                deviation_id="issue-liability",
+                                title="Liability cap removed",
+                                severity="critical",
+                                v1_text="Liability cap is 12 months of fees.",
+                                v2_text=liability_v2,
+                                v2_coordinates=coords_for(v2_text, liability_v2),
+                            ),
                         ],
                         "batna_fallbacks": [
-                            {
-                                "deviation_id": "issue-liability",
-                                "fallback_clause": "Liability cap is 18 months of fees.",
-                            }
+                            make_batna_fallback(
+                                deviation_id="issue-liability",
+                                fallback_clause="Liability cap is 18 months of fees.",
+                            )
                         ],
+                        "risk_delta": 8.0,
+                        "summary": "Test diff summary for finalize round routes.",
                     }
                 },
                 "risk_score": 54.0,

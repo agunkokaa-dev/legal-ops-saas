@@ -1,8 +1,8 @@
 'use client'
 
-import { useAuth } from '@clerk/nextjs'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getPublicApiBase } from '@/lib/public-api-base'
+import { useSSESession } from '@/hooks/useSSESession'
 
 export interface TenantSSEEvent {
     event_id: string
@@ -45,7 +45,7 @@ export function useTenantSSE({
     onContractExecuted,
     onTaskCreated,
 }: UseTenantSSEOptions) {
-    const { getToken } = useAuth()
+    const { sseToken, refresh: refreshSession } = useSSESession()
     const eventSourceRef = useRef<EventSource | null>(null)
     const handlersRef = useRef({
         onEvent,
@@ -99,20 +99,15 @@ export function useTenantSSE({
         }
     }, [])
 
-    const connect = useCallback(async () => {
-        if (!enabled) {
-            return
-        }
-
-        const token = await getToken()
-        if (!token) {
+    const connect = useCallback(() => {
+        if (!enabled || !sseToken) {
             return
         }
 
         eventSourceRef.current?.close()
 
         const source = new EventSource(
-            `${getApiUrl()}/api/v1/events/tenant/stream?token=${encodeURIComponent(token)}`
+            `${getApiUrl()}/api/v1/events/tenant/stream?sse_token=${encodeURIComponent(sseToken)}`
         )
         eventSourceRef.current = source
 
@@ -134,29 +129,38 @@ export function useTenantSSE({
             handlersRef.current.onConnected?.()
         }
         source.onerror = () => {
+            if (eventSourceRef.current !== source) {
+                return
+            }
+
             setIsConnected(false)
             handlersRef.current.onDisconnected?.()
+            source.close()
+            eventSourceRef.current = null
+            void refreshSession()
         }
-    }, [enabled, getToken, routeEvent])
+    }, [enabled, refreshSession, routeEvent, sseToken])
 
     useEffect(() => {
         if (!enabled) {
             eventSourceRef.current?.close()
+            eventSourceRef.current = null
+            setIsConnected(false)
             return
         }
 
-        void connect()
-        const refreshTimer = window.setInterval(() => {
-            void connect()
-        }, 50 * 60 * 1000)
+        if (!sseToken) {
+            return
+        }
+
+        connect()
 
         return () => {
-            window.clearInterval(refreshTimer)
             eventSourceRef.current?.close()
             eventSourceRef.current = null
             setIsConnected(false)
         }
-    }, [connect, enabled])
+    }, [connect, enabled, sseToken])
 
     return { isConnected: enabled && isConnected }
 }

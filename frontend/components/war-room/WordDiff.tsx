@@ -71,25 +71,6 @@ function decodeDiffs(
     });
 }
 
-/**
- * Calculates the percentage of text that was changed (deleted + inserted)
- * relative to the total text volume.
- */
-function calculateChangeRatio(diffs: [number, string][]): number {
-    let changedChars = 0;
-    let totalChars = 0;
-
-    for (const [op, text] of diffs) {
-        const len = text.length;
-        totalChars += len;
-        if (op !== 0) {
-            changedChars += len;
-        }
-    }
-
-    return totalChars > 0 ? changedChars / totalChars : 0;
-}
-
 function renderTokenSpans(
     text: string,
     keyPrefix: string,
@@ -110,6 +91,34 @@ function renderTokenSpans(
             </span>
         );
     });
+}
+
+function collectTokens(
+    diffs: [number, string][],
+    includeOperation: -1 | 0 | 1,
+    stableClassName: string,
+    changedClassName: string,
+    keyPrefix: string
+): React.ReactNode[] {
+    const nodes: React.ReactNode[] = [];
+
+    diffs.forEach(([operation, text], index) => {
+        if (operation !== includeOperation && operation !== 0) {
+            return;
+        }
+
+        nodes.push(
+            <React.Fragment key={`${keyPrefix}-${index}`}>
+                {renderTokenSpans(
+                    text,
+                    `${keyPrefix}-${index}`,
+                    operation === includeOperation ? changedClassName : stableClassName
+                )}
+            </React.Fragment>
+        );
+    });
+
+    return nodes;
 }
 
 /**
@@ -186,8 +195,8 @@ export default function WordDiff({ oldText, newText, className = '', showStructu
     }
 
     return (
-        <div className={`border border-zinc-700/60 rounded-lg overflow-hidden bg-[#0d0d0d] ${className}`}>
-            <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-700/60 bg-[#111]">
+        <div className={`overflow-hidden rounded-lg border border-zinc-700/60 bg-zinc-900/60 ${className}`}>
+            <div className="flex items-center justify-between border-b border-zinc-700/60 bg-[#111115] px-4 py-3">
                 <span className="text-sm font-semibold text-zinc-100">
                     {title || category || 'Word-Level Diff'}
                 </span>
@@ -205,89 +214,65 @@ export default function WordDiff({ oldText, newText, className = '', showStructu
                     )}
                     
                     {category && (
-                        <span className={`
-                            rounded border border-zinc-700 bg-zinc-900 px-2 py-0.5 text-xs font-semibold text-zinc-300
-                        `}>
+                        <span className="rounded border border-amber-500/30 bg-amber-500/20 px-2 py-0.5 text-xs font-semibold text-amber-400">
                             {category.toUpperCase()}
                         </span>
                     )}
                 </div>
             </div>
 
-            <div className="grid grid-cols-2 divide-x divide-zinc-700/60">
-                <div className="px-4 py-2 bg-zinc-800/30 border-b border-zinc-700/60">
-                    <span className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
-                        Version 1 (Baseline)
+            <div className="border-b border-zinc-800/60 bg-zinc-950/40 px-4 py-2">
+                <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                    Version 2 (Round {roundNumber}) revision summary
+                </span>
+            </div>
+
+            <div className="divide-y divide-zinc-800/60">
+                <div className="flex items-start gap-3 border-b border-zinc-800/60 px-4 py-3">
+                    <div className="flex-1 whitespace-pre-wrap text-sm leading-relaxed">
+                        {collectTokens(
+                            diffs,
+                            -1,
+                            'text-zinc-200',
+                            'text-red-400 line-through decoration-red-400/70 decoration-[1px]',
+                            'removed'
+                        )}
+                    </div>
+                    <span className="shrink-0 rounded bg-red-500/20 px-2 py-1 text-[10px] font-semibold text-red-400">
+                        Removed
                     </span>
+                    <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-red-500" />
                 </div>
-                
-                <div className="px-4 py-2 bg-zinc-800/30 border-b border-zinc-700/60">
-                    <span className="text-xs uppercase tracking-wider text-zinc-500 font-medium">
-                        Version 2 (Round {roundNumber})
+
+                <div className="flex items-start gap-3 px-4 py-3">
+                    <div className="flex-1 whitespace-pre-wrap text-sm leading-relaxed">
+                        {collectTokens(
+                            diffs,
+                            1,
+                            'text-zinc-200',
+                            'text-emerald-400',
+                            'added'
+                        )}
+                    </div>
+                    <span className="shrink-0 rounded bg-emerald-500/20 px-2 py-1 text-[10px] font-semibold text-emerald-400">
+                        Added
                     </span>
+                    <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
                 </div>
             </div>
 
-            <div className="grid min-h-[200px] grid-cols-2 divide-x divide-zinc-700/60">
-                <div className="bg-zinc-900/30 px-4 py-4 text-sm leading-relaxed text-zinc-300 whitespace-pre-wrap">
-                    {diffs.map((diff, index) => {
-                        const [operation, text] = diff;
-                        if (operation === 1) return null; // Added in V2
-                        if (operation === -1) {
-                            return (
-                                <React.Fragment key={index}>
-                                    {renderTokenSpans(
-                                        text,
-                                        `v1-removed-${index}`,
-                                        'text-zinc-500 line-through decoration-red-400/60 decoration-[1px]'
-                                    )}
-                                </React.Fragment>
-                            );
-                        }
-                        return (
-                            <React.Fragment key={index}>
-                                {renderTokenSpans(text, `v1-stable-${index}`, 'text-zinc-200')}
-                            </React.Fragment>
-                        );
-                    })}
-                </div>
-                
-                <div className="bg-zinc-900/30 px-4 py-4 text-sm leading-relaxed text-zinc-300 whitespace-pre-wrap">
-                    {diffs.map((diff, index) => {
-                        const [operation, text] = diff;
-                        if (operation === -1) return null; // Removed in V1
-                        if (operation === 1) {
-                            return (
-                                <React.Fragment key={index}>
-                                    {renderTokenSpans(
-                                        text,
-                                        `v2-added-${index}`,
-                                        'rounded-sm bg-blue-500/15 px-0.5 text-zinc-100'
-                                    )}
-                                </React.Fragment>
-                            );
-                        }
-                        return (
-                            <React.Fragment key={index}>
-                                {renderTokenSpans(text, `v2-stable-${index}`, 'text-zinc-200')}
-                            </React.Fragment>
-                        );
-                    })}
-                </div>
-            </div>
-
-            <div className="flex items-center justify-between px-4 py-2 border-t border-zinc-700/60 bg-zinc-800/20">
+            <div className="flex items-center justify-between border-t border-zinc-700/60 bg-[#111115] px-4 py-2">
                 <div className="flex items-center gap-4 text-xs text-zinc-500">
                     <span className="flex items-center gap-1">
-                        <span className="w-3 h-3 rounded-sm border border-zinc-600 bg-zinc-800"/>
+                        <span className="h-3 w-3 rounded-sm border border-zinc-600 bg-zinc-800" />
                         Unchanged
                     </span>
                     <span className="flex items-center gap-1">
-                        <span className="w-3 h-0.5 bg-red-500/60"/>
+                        <span className="h-0.5 w-3 bg-red-500/60" />
                         Removed
                     </span>
                     <span className="flex items-center gap-1">
-                        <span className="w-3 h-3 rounded-sm border border-blue-400/20 bg-blue-500/15"/>
+                        <span className="h-3 w-3 rounded-sm border border-emerald-500/20 bg-emerald-500/15" />
                         Added
                     </span>
                 </div>

@@ -18,6 +18,7 @@ from app.config import openai_client
 from app.rate_limiter import limiter
 from app.dependencies import TenantQdrantClient, get_tenant_qdrant, get_tenant_supabase, verify_clerk_token
 from app.schemas import DraftGenerateRequest, DraftAuditRequest, DraftChatRequest, DraftSaveRequest
+from app.pipeline_output_schema import PipelineOutput, serialize_pipeline_output
 from app.routers.contracts import _schedule_contract_processing, publish_contract_event
 
 router = APIRouter()
@@ -133,7 +134,7 @@ async def audit_draft(
                 "version_number": 1,
                 "raw_text": payload.draft_text[:500000],
                 "uploaded_filename": payload.title,
-                "pipeline_output": {},
+                "pipeline_output": serialize_pipeline_output(PipelineOutput()),
             }).execute()
         except Exception as e:
             print(f"🚨 SUPABASE INSERT ERROR (contract_versions table - drafting audit): {e}")

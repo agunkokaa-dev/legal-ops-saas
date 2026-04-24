@@ -4,9 +4,24 @@ import traceback
 import time
 from datetime import datetime, timezone
 from typing import Optional
-from uuid import UUID
 
-from app.config import admin_supabase  # The global admin client
+
+def _insert_task_log_row(record: dict) -> dict:
+    # CROSS-TENANT: task execution logs are system-level operational records, not tenant-owned business tables.
+    from app.config import admin_supabase
+
+    result = admin_supabase.table("task_execution_logs").insert(record).execute()
+    return result.data[0]
+
+
+def _update_task_log_row(log_id: str, payload: dict) -> None:
+    if not payload:
+        return
+
+    # CROSS-TENANT: task execution logs are system-level operational records, not tenant-owned business tables.
+    from app.config import admin_supabase
+
+    admin_supabase.table("task_execution_logs").update(payload).eq("id", log_id).execute()
 
 
 class TaskLogger:
@@ -50,7 +65,7 @@ class TaskLogger:
 
         if existing_log_id is not None:
             self.log_id = str(existing_log_id)
-            admin_supabase.table("task_execution_logs").update({
+            _update_task_log_row(self.log_id, {
                 "tenant_id": tenant_id,
                 "task_type": task_type,
                 "contract_id": contract_id,
@@ -68,7 +83,7 @@ class TaskLogger:
                 "error_message": None,
                 "error_traceback": None,
                 "result_summary": {},
-            }).eq("id", self.log_id).execute()
+            })
             return
         
         # Insert the initial "running" record
@@ -85,8 +100,7 @@ class TaskLogger:
             "agent_progress": [],
         }
         
-        result = admin_supabase.table("task_execution_logs").insert(record).execute()
-        self.log_id = result.data[0]["id"]
+        self.log_id = _insert_task_log_row(record)["id"]
     
     def log_agent_start(self, agent_name: str):
         """Call before each agent runs."""
@@ -139,19 +153,19 @@ class TaskLogger:
         """Call when the entire task succeeds."""
         duration_ms = int((time.time() - self.start_time) * 1000)
         
-        admin_supabase.table("task_execution_logs").update({
+        _update_task_log_row(self.log_id, {
             "status": "completed",
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": duration_ms,
             "agent_progress": self.agent_progress,
             "result_summary": result_summary or {},
-        }).eq("id", self.log_id).execute()
+        })
     
     def fail(self, error: Exception):
         """Call when the entire task fails."""
         duration_ms = int((time.time() - self.start_time) * 1000)
         
-        admin_supabase.table("task_execution_logs").update({
+        _update_task_log_row(self.log_id, {
             "status": "failed",
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": duration_ms,
@@ -159,30 +173,30 @@ class TaskLogger:
             "error_message": str(error)[:2000],
             "error_traceback": traceback.format_exc()[:5000],
             "agent_progress": self.agent_progress,
-        }).eq("id", self.log_id).execute()
+        })
     
     def mark_retrying(self):
         """Call before spawning a retry attempt."""
-        admin_supabase.table("task_execution_logs").update({
+        _update_task_log_row(self.log_id, {
             "status": "retrying",
             "completed_at": datetime.now(timezone.utc).isoformat(),
-        }).eq("id", self.log_id).execute()
+        })
 
     def update_input_metadata(self, values: dict):
         """Merge additional metadata into the task log."""
         self.input_metadata.update(values or {})
         try:
-            admin_supabase.table("task_execution_logs").update({
+            _update_task_log_row(self.log_id, {
                 "input_metadata": self.input_metadata,
-            }).eq("id", self.log_id).execute()
+            })
         except Exception:
             pass
     
     def _sync_progress(self):
         """Persist agent_progress to database (called after each agent state change)."""
         try:
-            admin_supabase.table("task_execution_logs").update({
+            _update_task_log_row(self.log_id, {
                 "agent_progress": self.agent_progress,
-            }).eq("id", self.log_id).execute()
+            })
         except Exception:
             pass  # Don't let logging failures break the pipeline

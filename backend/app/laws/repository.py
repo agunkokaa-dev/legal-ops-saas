@@ -328,6 +328,7 @@ class LawCorpusRepository:
 
 
 def build_law_corpus_repository() -> LawCorpusRepository:
+    # CROSS-TENANT: law corpus storage is global system-owned data and is not tenant-scoped.
     from app.config import (
         LAW_QDRANT_ACTIVE_ALIAS,
         LAW_QDRANT_V2_COLLECTION,

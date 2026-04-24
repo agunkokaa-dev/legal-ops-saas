@@ -27,6 +27,7 @@ export default async function WarRoomPage({ params }: { params: Promise<{ id: st
             matterId={contract.matter_id}
             contractTitle={contract.title || 'Untitled Contract'}
             contractStatus={contract.status || null}
+            fileUrl={contract.file_url || null}
         />
     );
 }

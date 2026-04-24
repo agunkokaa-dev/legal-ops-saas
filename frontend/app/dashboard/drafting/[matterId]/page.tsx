@@ -13,6 +13,7 @@ export default function DraftingWorkspacePage({ params }: { params: Promise<{ ma
     const contractId = searchParams.get('contract_id') || undefined;
     const focusFinding = searchParams.get('focus_finding') || undefined;
     const draftId = searchParams.get('draft_id') || undefined;
+    const source = searchParams.get('source') || undefined;
 
     const taskTitle = mode === 'warroom' 
         ? "War Room — Working Draft" 
@@ -33,6 +34,7 @@ export default function DraftingWorkspacePage({ params }: { params: Promise<{ ma
             contractId={contractId}
             focusFindingId={focusFinding}
             draftId={draftId}
+            source={source}
         />
     );
 }

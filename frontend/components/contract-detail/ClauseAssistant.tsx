@@ -10,6 +10,12 @@ import { createNote } from '@/app/actions/noteActions'
 import { chatWithClauseRAG } from '@/app/actions/backend'
 import { toast } from 'sonner'
 import { LuxuryThinkingStepper } from '@/components/ui/LuxuryThinkingStepper'
+import {
+    BlockedMarkdownImage,
+    DISALLOWED_MARKDOWN_ELEMENTS,
+    safeExternalHref,
+} from '@/lib/markdownSafety'
+import { assertSafeLlmText } from '@/lib/sanitize'
 
 interface Message {
     id: string;
@@ -18,12 +24,24 @@ interface Message {
     citations?: { contract_id: string; file_name?: string }[];
 }
 
+export interface ClauseAssistantContext {
+    deviationId?: string;
+    title?: string;
+    impactAnalysis?: string;
+    v1Text?: string;
+    v2Text?: string;
+    severity?: string;
+    playbookViolation?: string;
+}
+
 export default function ClauseAssistant({
     contractId,
-    matterId
+    matterId,
+    context,
 }: {
-    contractId: string,
-    matterId: string | null
+    contractId: string;
+    matterId: string | null;
+    context?: ClauseAssistantContext;
 }) {
     const { user } = useUser();
     const [messages, setMessages] = useState<Message[]>([
@@ -97,7 +115,8 @@ export default function ClauseAssistant({
             const data = await chatWithClauseRAG({
                 contractId: contractId,
                 matterId: matterId || "general",
-                message: userMsg
+                message: userMsg,
+                context,
             });
 
             console.log("✅ SERVER ACTION SUCCESS! Response:", data);
@@ -154,7 +173,12 @@ export default function ClauseAssistant({
         <div className="flex flex-col h-full w-full bg-transparent overflow-hidden">
             {/* Chat Messages Area */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-hide">
-                {messages.map((msg) => (
+                {messages.map((msg) => {
+                    const safeContent = msg.role === 'ai'
+                        ? assertSafeLlmText(msg.content, 'clause_assistant_response')
+                        : msg.content
+
+                    return (
                     <motion.div
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
@@ -174,6 +198,8 @@ export default function ClauseAssistant({
                                 <>
                                     <div className="text-sm text-gray-200 leading-relaxed space-y-3">
                                         <ReactMarkdown 
+                                            disallowedElements={DISALLOWED_MARKDOWN_ELEMENTS}
+                                            unwrapDisallowed
                                             components={{
                                             p: ({node, ...props}) => <p className="mb-2" {...props} />,
                                             strong: ({node, ...props}) => <strong className="font-bold text-white tracking-wide" {...props} />,
@@ -214,11 +240,18 @@ export default function ClauseAssistant({
                                                         </span>
                                                     );
                                                 }
-                                                return <a href={href} className="text-blue-400 hover:underline" {...props}>{children}</a>;
-                                            }
+                                                return <a href={safeExternalHref(hrefStr)} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline" {...props}>{children}</a>;
+                                            },
+                                            img: ({ alt, src }) => (
+                                                <BlockedMarkdownImage
+                                                    alt={alt}
+                                                    src={typeof src === 'string' ? src : undefined}
+                                                    className="text-zinc-500"
+                                                />
+                                            ),
                                         }}
                                     >
-                                        {processContent(msg.content)}
+                                        {processContent(safeContent)}
                                     </ReactMarkdown>
                                     </div>
                                     <button 
@@ -234,7 +267,7 @@ export default function ClauseAssistant({
                             )}
                         </div>
                     </motion.div>
-                ))}
+                )})}
                 <div ref={messagesEndRef} />
             </div>
 

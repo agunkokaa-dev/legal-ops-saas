@@ -5,13 +5,14 @@ CRITICAL SECURITY TEST SUITE — Tenant Isolation Enforcement
 
 This suite is composed of two complementary approaches:
 
-  Approach A: Static Analysis (Regex/AST Scan)
+  Approach A: Legacy Regex Static Analysis
     - Scans every router file for Supabase query patterns.
     - Asserts that every SELECT, INSERT, UPDATE, UPSERT, and DELETE on a
       tenant-scoped table includes a tenant_id filter.
     - **LIMITATION:** Uses a 15-line forward lookahead window. The payload or
       filter MUST be visible within 15 lines of the `.table()` call.
-    - Breaking this test = a PR cannot be merged.
+    - This is now a secondary guardrail. The primary deny-by-default policy
+      gate lives in `tests/policy/test_service_role_policy.py`.
 
   Approach B: Runtime / Signature Tests
     - Validates that verify_clerk_token() has no x_tenant_id parameter.
@@ -73,14 +74,6 @@ TENANT_SCOPED_TABLES = [
     "matter_documents",
     "contract_reviews",
     "intake_requests",
-]
-
-# Tables used in background tasks where tenant_id is a function parameter (not claims).
-# The static scanner may produce false positives on these — they are reviewed manually.
-BACKGROUND_TASK_EXEMPT_PATTERNS = [
-    "process_contract_background",
-    "handle_task_result",
-    "async_clm_graph_invoke",
 ]
 
 # =====================================================================
@@ -190,12 +183,6 @@ def test_all_tenant_scoped_queries_have_tenant_filter(filepath):
 
     for line_num, table_name, operation, chain_text, context_fn in queries:
         if table_name not in TENANT_SCOPED_TABLES:
-            continue
-
-        # Background task functions pass tenant_id as a parameter — the scanner
-        # may miss it because it appears as a variable, not a JWT claim. These are
-        # audited manually and noted in the audit report.
-        if context_fn in BACKGROUND_TASK_EXEMPT_PATTERNS:
             continue
 
         if not has_tenant_filter(chain_text):

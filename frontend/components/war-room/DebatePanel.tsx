@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useEffect, useMemo, useState } from 'react'
+import { assertSafeLlmText } from '@/lib/sanitize'
 
 type DebatePerspective = 'client_advocate' | 'counterparty_advocate' | 'neutral_arbiter'
 type DebatePosition = 'upgrade_severity' | 'downgrade_severity' | 'maintain_severity'
@@ -189,6 +190,15 @@ export default function DebatePanel({
     const initialSeverity = verdict?.original_severity || selectedDeviation.pre_debate_severity || selectedDeviation.severity
     const finalSeverity = verdict?.final_severity || selectedDeviation.severity
     const confidence = verdict?.confidence_score || 0
+    const safeVerdictReasoning = verdict
+        ? assertSafeLlmText(verdict.verdict_reasoning, 'reasoning')
+        : ''
+    const safeAdjustedImpactAnalysis = verdict
+        ? assertSafeLlmText(verdict.adjusted_impact_analysis, 'impact_analysis')
+        : ''
+    const safeAdjustedBatna = verdict?.adjusted_batna
+        ? assertSafeLlmText(verdict.adjusted_batna, 'fallback_clause')
+        : null
 
     return (
         <div className="rounded-2xl border border-zinc-800/70 bg-[#101010] shadow-[0_18px_50px_rgba(0,0,0,0.28)]">
@@ -268,15 +278,15 @@ export default function DebatePanel({
                                     </span>
                                 )}
                             </div>
-                            <p className="mt-3 text-[13px] leading-6 text-zinc-300">{verdict.verdict_reasoning}</p>
+                            <p className="mt-3 whitespace-pre-wrap text-[13px] leading-6 text-zinc-300">{safeVerdictReasoning}</p>
                             <div className="mt-4 rounded-xl border border-zinc-800 bg-[#0d0d0d] p-3">
                                 <p className="text-[10px] uppercase tracking-[0.22em] text-zinc-500">Adjusted Impact Analysis</p>
-                                <p className="mt-2 text-[12px] leading-5 text-zinc-300">{verdict.adjusted_impact_analysis}</p>
+                                <p className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-zinc-300">{safeAdjustedImpactAnalysis}</p>
                             </div>
-                            {verdict.adjusted_batna && (
+                            {safeAdjustedBatna && (
                                 <div className="mt-3 rounded-xl border border-[#D4AF37]/20 bg-[#D4AF37]/5 p-3">
                                     <p className="text-[10px] uppercase tracking-[0.22em] text-[#D4AF37]">Adjusted BATNA</p>
-                                    <p className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-[#f2ca50]/90">{verdict.adjusted_batna}</p>
+                                    <p className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-[#f2ca50]/90">{safeAdjustedBatna}</p>
                                 </div>
                             )}
                             <div className="mt-4">
@@ -327,14 +337,14 @@ export default function DebatePanel({
                                         </span>
                                     </div>
 
-                                    <p className="mt-3 whitespace-pre-wrap text-[13px] leading-6 text-zinc-300">{argument.reasoning}</p>
+                                    <p className="mt-3 whitespace-pre-wrap text-[13px] leading-6 text-zinc-300">{assertSafeLlmText(argument.reasoning, 'reasoning')}</p>
 
                                     {argument.key_points?.length > 0 && (
                                         <ul className="mt-4 space-y-2">
                                             {argument.key_points.map((point, index) => (
                                                 <li key={`${argument.perspective}-point-${index}`} className="flex gap-2 text-[12px] leading-5 text-zinc-300">
                                                     <span className="mt-1 h-1.5 w-1.5 rounded-full bg-zinc-500" />
-                                                    <span>{point}</span>
+                                                    <span className="whitespace-pre-wrap">{assertSafeLlmText(point, 'leverage_points_item')}</span>
                                                 </li>
                                             ))}
                                         </ul>

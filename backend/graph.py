@@ -36,6 +36,7 @@ from app.review_schemas import (
     assess_pipeline_output_quality,
 )
 from app.event_bus import SSEEvent
+from app.llm_output_sanitizer import sanitize_llm_text, sanitize_review_finding
 from app.token_budget import allocate_budget, count_tokens, get_budget, preflight_check, truncate_to_budget
 
 
@@ -641,12 +642,24 @@ def negotiation_agent(state: ContractState) -> ContractState:
             "negotiation",
             duration_ms=int((time.time() - started_at) * 1000),
         )
-        return {"counter_proposal": result.counter_proposal}
+        return {
+            "counter_proposal": sanitize_llm_text(
+                result.counter_proposal,
+                field_name="counter_proposal",
+                strict=False,
+            )
+        }
     except Exception as e:
         print(f"Negotiation Agent Error: {e}")
         if _logger: _logger.log_agent_failed('negotiation', e)
         _emit_pipeline_event(state, "pipeline.agent_failed", "negotiation", error=str(e))
-        return {"counter_proposal": "Error formulating negotiation strategy."}
+        return {
+            "counter_proposal": sanitize_llm_text(
+                "Error formulating negotiation strategy.",
+                field_name="counter_proposal",
+                strict=False,
+            )
+        }
 
 
 # ==========================================
@@ -1007,6 +1020,7 @@ def review_aggregator(state: ContractState) -> ContractState:
 
     # ── Sort by position in document ──
     findings.sort(key=lambda f: (f.get('coordinates') or {}).get('start_char', 0))
+    findings = [sanitize_review_finding(finding, strict=False) for finding in findings]
 
     # ── 4. Compute BannerData ──
     critical_count = sum(1 for f in findings if f.get('severity') == 'critical')

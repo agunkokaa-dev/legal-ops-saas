@@ -7,6 +7,12 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useRouter } from 'next/navigation'
 import { LuxuryThinkingStepper } from '@/components/ui/LuxuryThinkingStepper'
+import {
+    BlockedMarkdownImage,
+    DISALLOWED_MARKDOWN_ELEMENTS,
+    safeExternalHref,
+} from '@/lib/markdownSafety'
+import { assertSafeLlmText } from '@/lib/sanitize'
 
 interface Message {
     id: string
@@ -90,7 +96,12 @@ export default function AssistantSidebar() {
                 <h2 className="text-[10px] uppercase tracking-widest text-text-muted font-semibold">Clause Assistant</h2>
             </div>
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 relative">
-                {messages.map(msg => (
+                {messages.map(msg => {
+                    const safeContent = msg.role === 'assistant'
+                        ? assertSafeLlmText(msg.content, 'assistant_sidebar_response')
+                        : msg.content
+
+                    return (
                     <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                         <div className={`flex flex-col max-w-[90%]`}>
                             <div className={`p-4 text-sm leading-relaxed ${msg.role === 'assistant'
@@ -100,6 +111,8 @@ export default function AssistantSidebar() {
                                 {msg.role === 'assistant' ? (
                                     <div className="text-sm text-gray-200 leading-relaxed space-y-3">
                                         <ReactMarkdown 
+                                            disallowedElements={DISALLOWED_MARKDOWN_ELEMENTS}
+                                            unwrapDisallowed
                                             components={{
                                                 p: ({node, ...props}) => <p className="mb-2" {...props} />,
                                                 strong: ({node, ...props}) => <strong className="font-bold text-white tracking-wide" {...props} />,
@@ -136,15 +149,22 @@ export default function AssistantSidebar() {
                                                                 title={`Open Document: ${linkText}`}
                                                             >
                                                                 <FileText size={12} className="shrink-0" />
-                                                                {linkText}
-                                                            </span>
-                                                        );
-                                                    }
-                                                    return <a href={href} className="text-blue-400 hover:underline" {...props}>{children}</a>;
+                                                            {linkText}
+                                                        </span>
+                                                    );
                                                 }
+                                                    return <a href={safeExternalHref(hrefStr)} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline" {...props}>{children}</a>;
+                                                },
+                                                img: ({ alt, src }) => (
+                                                    <BlockedMarkdownImage
+                                                        alt={alt}
+                                                        src={typeof src === 'string' ? src : undefined}
+                                                        className="text-zinc-500"
+                                                    />
+                                                ),
                                             }}
                                         >
-                                            {processContent(msg.content)}
+                                            {processContent(safeContent)}
                                         </ReactMarkdown>
                                     </div>
                                 ) : (
@@ -176,7 +196,7 @@ export default function AssistantSidebar() {
                             )}
                         </div>
                     </div>
-                ))}
+                )})}
 
                 {isLoading && (
                     <div className="flex justify-start">

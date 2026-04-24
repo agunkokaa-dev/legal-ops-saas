@@ -1,8 +1,8 @@
 'use client'
 
-import { useAuth } from '@clerk/nextjs'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getPublicApiBase } from '@/lib/public-api-base'
+import { useSSESession } from '@/hooks/useSSESession'
 
 export interface ContractSSEEvent {
     event_id: string
@@ -91,7 +91,7 @@ export function useContractSSE({
     pollFallback,
     fallbackIntervalMs = 5000,
 }: UseContractSSEOptions) {
-    const { getToken } = useAuth()
+    const { sseToken, refresh: refreshSession } = useSSESession()
     const eventSourceRef = useRef<EventSource | null>(null)
     const failCountRef = useRef(0)
     const handlersRef = useRef({
@@ -197,20 +197,15 @@ export function useContractSSE({
         }
     }, [])
 
-    const connect = useCallback(async () => {
-        if (!enabled || !contractId || isFallbackPolling) {
-            return
-        }
-
-        const token = await getToken()
-        if (!token) {
+    const connect = useCallback(() => {
+        if (!enabled || !contractId || isFallbackPolling || !sseToken) {
             return
         }
 
         eventSourceRef.current?.close()
 
         const source = new EventSource(
-            `${getApiUrl()}/api/v1/events/contracts/${contractId}/stream?token=${encodeURIComponent(token)}`
+            `${getApiUrl()}/api/v1/events/contracts/${contractId}/stream?sse_token=${encodeURIComponent(sseToken)}`
         )
         eventSourceRef.current = source
 
@@ -235,44 +230,46 @@ export function useContractSSE({
             handlersRef.current.onConnected?.()
         }
         source.onerror = () => {
+            if (eventSourceRef.current !== source) {
+                return
+            }
+
             failCountRef.current += 1
             setIsConnected(false)
             handlersRef.current.onDisconnected?.()
+            source.close()
+            eventSourceRef.current = null
 
             if (failCountRef.current > 3) {
                 console.warn('[SSE] Falling back to polling for contract stream', contractId)
-                source.close()
                 setFallbackContractId(contractId)
+                return
             }
+
+            void refreshSession()
         }
-    }, [contractId, enabled, getToken, isFallbackPolling, routeEvent])
+    }, [contractId, enabled, isFallbackPolling, refreshSession, routeEvent, sseToken])
 
     useEffect(() => {
         failCountRef.current = 0
         if (!enabled || !contractId) {
             eventSourceRef.current?.close()
+            eventSourceRef.current = null
+            setIsConnected(false)
             return
         }
 
-        void connect()
+        if (!sseToken) {
+            return
+        }
+
+        connect()
         return () => {
             eventSourceRef.current?.close()
             eventSourceRef.current = null
             setIsConnected(false)
         }
-    }, [connect, contractId, enabled])
-
-    useEffect(() => {
-        if (!enabled || isFallbackPolling || !contractId) {
-            return
-        }
-
-        const refreshTimer = window.setInterval(() => {
-            void connect()
-        }, 50 * 60 * 1000)
-
-        return () => window.clearInterval(refreshTimer)
-    }, [connect, contractId, enabled, isFallbackPolling])
+    }, [connect, contractId, enabled, sseToken])
 
     useEffect(() => {
         if (!enabled || !isFallbackPolling || !pollFallback) {

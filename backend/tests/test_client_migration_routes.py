@@ -31,7 +31,8 @@ def test_tasks_router_supports_legacy_personal_task_compatibility():
 
     assert "def _get_allowed_task_tenant_ids" in source
     assert '.in_("tenant_id", allowed_tenant_ids)' in source
-    assert "Depends(get_admin_supabase)" in source
+    assert "def get_cross_tenant_tasks_admin_client" in source
+    assert "Depends(get_cross_tenant_tasks_admin_client)" in source
 
 
 def test_templates_router_supports_list_and_delete():

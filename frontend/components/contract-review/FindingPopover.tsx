@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { motion } from 'framer-motion'
+import { assertSafeLlmText } from '@/lib/sanitize'
 
 interface TextCoordinate {
     start_char: number
@@ -47,10 +48,14 @@ export default function FindingPopover({
     const [isFixing, setIsFixing] = useState(false)
     const [isTasking, setIsTasking] = useState(false)
     const style = SEVERITY_STYLES[finding.severity] || SEVERITY_STYLES.info
+    const safeDescription = assertSafeLlmText(finding.description, 'review_finding_description')
+    const safeSuggestedRevision = finding.suggested_revision
+        ? assertSafeLlmText(finding.suggested_revision, 'suggested_revision')
+        : null
 
     const handleFix = async (e: React.MouseEvent) => {
         e.stopPropagation()
-        if (!finding.suggested_revision) return
+        if (!safeSuggestedRevision) return
         setIsFixing(true)
         try {
             await onAcceptRedline(finding)
@@ -121,12 +126,12 @@ export default function FindingPopover({
                     </button>
                 </div>
                 <p className="text-white text-xs font-semibold leading-snug mb-1">{finding.title}</p>
-                <p className="text-zinc-400 text-[11px] leading-relaxed line-clamp-2">{finding.description}</p>
+                <p className="text-zinc-400 text-[11px] leading-relaxed line-clamp-2">{safeDescription}</p>
             </div>
 
             {/* Action Bar */}
             <div className="flex items-center gap-1.5 p-2.5 pt-0 border-t border-white/5 mt-1">
-                {finding.suggested_revision && finding.status === 'open' && (
+                {safeSuggestedRevision && finding.status === 'open' && (
                     <button
                         onClick={handleFix}
                         disabled={isFixing}

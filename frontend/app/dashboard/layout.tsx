@@ -101,7 +101,7 @@ export default function DashboardLayout({
             <Sidebar />
 
             {/* Main Dashboard Panel */}
-            <div className="flex-1 flex flex-col overflow-hidden relative">
+            <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative">
                 {children}
 
                 {/* ==================== BOTTOM STATUS RAIL ==================== */}

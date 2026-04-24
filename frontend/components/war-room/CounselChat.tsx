@@ -4,7 +4,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '@clerk/nextjs';
 import ReactMarkdown from 'react-markdown';
 import { toast } from 'sonner';
+import {
+    BlockedMarkdownImage,
+    DISALLOWED_MARKDOWN_ELEMENTS,
+    safeExternalHref,
+} from '@/lib/markdownSafety';
 import { getPublicApiBase } from '@/lib/public-api-base';
+import { assertSafeLlmText } from '@/lib/sanitize';
 
 interface Message {
     id: string;
@@ -271,7 +277,12 @@ export default function CounselChat({
                     </div>
                 ) : (
                     <div className="space-y-4 pb-4">
-                        {messages.map((msg) => (
+                        {messages.map((msg) => {
+                            const safeContent = msg.role === 'assistant'
+                                ? assertSafeLlmText(msg.content, 'counsel_response')
+                                : msg.content;
+
+                            return (
                             <div key={msg.id} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
                                 {msg.role === 'assistant' && (
                                     <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold mb-1 ml-1">Clause Assistant</span>
@@ -281,7 +292,31 @@ export default function CounselChat({
                                         : 'bg-zinc-800/30 text-zinc-300 border border-zinc-800/60 rounded-tl-sm'
                                     }`}>
                                     <div className="prose prose-sm prose-invert max-w-none">
-                                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                        <ReactMarkdown
+                                            disallowedElements={DISALLOWED_MARKDOWN_ELEMENTS}
+                                            unwrapDisallowed
+                                            components={{
+                                                a: ({ href, children, ...props }) => (
+                                                    <a
+                                                        href={safeExternalHref(href)}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        {...props}
+                                                    >
+                                                        {children}
+                                                    </a>
+                                                ),
+                                                img: ({ alt, src }) => (
+                                                    <BlockedMarkdownImage
+                                                        alt={alt}
+                                                        src={typeof src === 'string' ? src : undefined}
+                                                        className="text-zinc-500"
+                                                    />
+                                                ),
+                                            }}
+                                        >
+                                            {safeContent}
+                                        </ReactMarkdown>
                                     </div>
                                     {msg.role === 'assistant' && msg.content === '' && isStreaming && (
                                         <div className="flex gap-1 items-center mt-1 h-2 text-zinc-500">
@@ -292,7 +327,7 @@ export default function CounselChat({
                                     )}
                                 </div>
                             </div>
-                        ))}
+                        )})}
                         <div ref={messagesEndRef} />
                     </div>
                 )}
@@ -325,4 +360,3 @@ export default function CounselChat({
         </div>
     );
 }
-

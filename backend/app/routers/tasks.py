@@ -19,7 +19,6 @@ from app.config import openai_client, qdrant, COLLECTION_NAME
 from app.rate_limiter import limiter
 from app.dependencies import (
     TenantQdrantClient,
-    get_admin_supabase,
     get_tenant_qdrant,
     get_tenant_supabase,
     verify_clerk_token,
@@ -27,6 +26,13 @@ from app.dependencies import (
 from app.schemas import ApplyTemplateRequest, TaskAssistantRequest
 
 router = APIRouter()
+
+
+async def get_cross_tenant_tasks_admin_client() -> Client:
+    # CROSS-TENANT: legacy personal-workspace task routes intentionally span multiple allowed tenant ids.
+    from app.dependencies import get_admin_supabase
+
+    return await get_admin_supabase()
 
 
 # =====================================================================
@@ -290,7 +296,7 @@ async def ask_task_assistant(
     request: Request,
     req: TaskAssistantRequest,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_admin_supabase),
+    supabase: Client = Depends(get_cross_tenant_tasks_admin_client),
     qdrant_client: TenantQdrantClient = Depends(get_tenant_qdrant),
 ):
     try:
@@ -596,7 +602,7 @@ async def get_tasks(
     status: Optional[str] = None,
     matter_id: Optional[str] = None,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_admin_supabase),
+    supabase: Client = Depends(get_cross_tenant_tasks_admin_client),
 ):
     allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
     query = (
@@ -618,7 +624,7 @@ async def create_task(
     request: Request,
     req: TaskCreate,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_admin_supabase),
+    supabase: Client = Depends(get_cross_tenant_tasks_admin_client),
 ):
     tenant_id = claims["verified_tenant_id"]
     payload = req.dict(exclude_unset=True)
@@ -633,7 +639,7 @@ async def get_task_details(
     task_id: str,
     include_details: bool = False,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_admin_supabase),
+    supabase: Client = Depends(get_cross_tenant_tasks_admin_client),
 ):
     allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
     t_res = (
@@ -673,7 +679,7 @@ async def update_task(
     task_id: str,
     req: TaskUpdate,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_admin_supabase),
+    supabase: Client = Depends(get_cross_tenant_tasks_admin_client),
 ):
     allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
     task = _assert_task_belongs_to_allowed_tenants(supabase, task_id, allowed_tenant_ids)
@@ -699,7 +705,7 @@ async def delete_task(
     request: Request,
     task_id: str,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_admin_supabase),
+    supabase: Client = Depends(get_cross_tenant_tasks_admin_client),
 ):
     allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
     task = _assert_task_belongs_to_allowed_tenants(supabase, task_id, allowed_tenant_ids)
@@ -713,7 +719,7 @@ async def create_sub_task(
     task_id: str,
     req: SubTaskCreate,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_admin_supabase),
+    supabase: Client = Depends(get_cross_tenant_tasks_admin_client),
 ):
     allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
     _assert_task_belongs_to_allowed_tenants(supabase, task_id, allowed_tenant_ids)
@@ -732,7 +738,7 @@ async def update_sub_task(
     sub_task_id: str,
     req: SubTaskUpdate,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_admin_supabase),
+    supabase: Client = Depends(get_cross_tenant_tasks_admin_client),
 ):
     allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
     _assert_sub_task_belongs_to_allowed_tenants(supabase, sub_task_id, allowed_tenant_ids)
@@ -748,7 +754,7 @@ async def delete_sub_task(
     request: Request,
     sub_task_id: str,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_admin_supabase),
+    supabase: Client = Depends(get_cross_tenant_tasks_admin_client),
 ):
     allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
     _assert_sub_task_belongs_to_allowed_tenants(supabase, sub_task_id, allowed_tenant_ids)
@@ -761,7 +767,7 @@ async def delete_attachment(
     request: Request,
     attachment_id: str,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_admin_supabase),
+    supabase: Client = Depends(get_cross_tenant_tasks_admin_client),
 ):
     allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
     _assert_attachment_belongs_to_allowed_tenants(supabase, attachment_id, allowed_tenant_ids)
@@ -781,7 +787,7 @@ async def create_attachment(
     task_id: str,
     req: AttachmentCreate,
     claims: dict = Depends(verify_clerk_token),
-    supabase: Client = Depends(get_admin_supabase),
+    supabase: Client = Depends(get_cross_tenant_tasks_admin_client),
 ):
     allowed_tenant_ids = _get_allowed_task_tenant_ids(claims)
     _assert_task_belongs_to_allowed_tenants(supabase, task_id, allowed_tenant_ids)

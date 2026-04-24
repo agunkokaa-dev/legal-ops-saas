@@ -11,6 +11,12 @@ import { supabaseClient } from "@/lib/supabase";
 import ReactMarkdown from 'react-markdown';
 import { toast, Toaster } from 'sonner';
 import {
+    BlockedMarkdownImage,
+    DISALLOWED_MARKDOWN_ELEMENTS,
+    safeExternalHref,
+} from '@/lib/markdownSafety';
+import { assertSafeLlmText } from '@/lib/sanitize';
+import {
     Search,
     Plus,
     BellRing,
@@ -1481,13 +1487,20 @@ export default function TasksDashboardPage() {
                             )}
 
                             {/* Mapped Messages */}
-                            {aiMessages.map((msg, idx) => (
+                            {aiMessages.map((msg, idx) => {
+                                const safeContent = msg.role === 'ai'
+                                    ? assertSafeLlmText(msg.content, 'task_assistant_response')
+                                    : msg.content;
+
+                                return (
                                 <div key={idx} className={`p-3.5 rounded-xl max-w-[85%] shadow-lg ${msg.role === 'user' ? 'bg-clause-gold/20 border border-clause-gold/30 self-end text-white' : 'bg-white/5 border border-white/10 self-start text-white/90'}`}>
                                     {msg.role === 'user' ? (
                                         <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
                                     ) : (
                                         <div className="text-sm">
                                             <ReactMarkdown
+                                                disallowedElements={DISALLOWED_MARKDOWN_ELEMENTS}
+                                                unwrapDisallowed
                                                 components={{
                                                     p: ({ node, ...props }) => <p className="mb-3 last:mb-0 leading-relaxed" {...props} />,
                                                     strong: ({ node, ...props }) => <strong className="font-bold text-clause-gold" {...props} />,
@@ -1524,16 +1537,23 @@ export default function TasksDashboardPage() {
                                                         }
 
                                                         // Fallback for normal links
-                                                        return <a href={href} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline" onClick={(e) => e.preventDefault()} {...props}>{children}</a>;
-                                                    }
+                                                        return <a href={safeExternalHref(href)} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline" onClick={(e) => e.preventDefault()} {...props}>{children}</a>;
+                                                    },
+                                                    img: ({ alt, src }) => (
+                                                        <BlockedMarkdownImage
+                                                            alt={alt}
+                                                            src={typeof src === 'string' ? src : undefined}
+                                                            className="text-zinc-500"
+                                                        />
+                                                    ),
                                                 }}
                                             >
-                                                {msg.content}
+                                                {safeContent}
                                             </ReactMarkdown>
                                         </div>
                                     )}
                                 </div>
-                            ))}
+                            )})}
 
                             {/* Premium Typing Indicator */}
                             {isAiTyping && (

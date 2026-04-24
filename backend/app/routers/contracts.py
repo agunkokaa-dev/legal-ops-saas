@@ -29,7 +29,7 @@ from PyPDF2 import PdfReader
 from dotenv import load_dotenv
 import os
 
-from app.config import openai_client, qdrant, COLLECTION_NAME, admin_supabase  # CROSS-TENANT: request-path storage uploads still use privileged storage client.
+from app.config import openai_client, qdrant, COLLECTION_NAME
 from app.rate_limiter import limiter
 from app.task_logger import TaskLogger
 from app.token_budget import count_tokens, truncate_to_budget
@@ -42,9 +42,16 @@ from app.dependencies import (
     get_tenant_supabase,
 )
 from app.review_schemas import resolve_contract_status
+from app.pipeline_output_schema import (
+    PipelineOutput,
+    TruncationWarning as TruncationWarningModel,
+    parse_pipeline_output,
+    serialize_pipeline_output,
+)
 from app.schemas import ExtractObligationsRequest, ArchiveContractRequest, ConfirmVersionLinkRequest
 from app.utils import chunk_text
 from app.event_bus import SSEEvent, event_bus
+from app.llm_output_sanitizer import sanitize_llm_text, sanitize_review_finding
 from difflib import SequenceMatcher
 from graph import clm_graph
 from app.task_logger import TaskLogger
@@ -216,25 +223,48 @@ def _get_next_version_number(supabase_client: Client, contract_id: str, tenant_i
 
 
 def _build_pipeline_snapshot(final_state: dict) -> dict:
-    pipeline_snapshot = {}
-    for key in [
-        "risk_score", "risk_level", "risk_flags_v2", "compliance_findings_v2",
-        "draft_revisions_v2", "obligations_v2", "classified_clauses_v2",
-        "review_findings", "quick_insights", "banner", "pipeline_output_quality",
-        "contract_value", "currency", "end_date", "effective_date",
-        "jurisdiction", "governing_law", "counter_proposal",
-    ]:
-        if key in final_state:
-            pipeline_snapshot[key] = final_state[key]
-    return pipeline_snapshot
+    """Build a typed PipelineOutput from the LangGraph final state and serialize it."""
+    review_findings = [
+        sanitize_review_finding(finding, strict=False)
+        for finding in final_state.get("review_findings", [])
+    ]
+    output = PipelineOutput(
+        risk_score=final_state.get("risk_score"),
+        risk_level=final_state.get("risk_level"),
+        risk_flags_v2=final_state.get("risk_flags_v2", []),
+        compliance_findings_v2=final_state.get("compliance_findings_v2", []),
+        draft_revisions_v2=final_state.get("draft_revisions_v2", []),
+        obligations_v2=final_state.get("obligations_v2", []),
+        classified_clauses_v2=final_state.get("classified_clauses_v2", []),
+        review_findings=review_findings,
+        quick_insights=final_state.get("quick_insights", []),
+        banner=final_state.get("banner"),
+        pipeline_output_quality=final_state.get("pipeline_output_quality"),
+        contract_value=final_state.get("contract_value"),
+        currency=final_state.get("currency"),
+        end_date=final_state.get("end_date"),
+        effective_date=final_state.get("effective_date"),
+        jurisdiction=final_state.get("jurisdiction"),
+        governing_law=final_state.get("governing_law"),
+        counter_proposal=(
+            sanitize_llm_text(
+                final_state.get("counter_proposal"),
+                field_name="counter_proposal",
+                strict=False,
+            )
+            if final_state.get("counter_proposal") is not None
+            else None
+        ),
+    )
+    return serialize_pipeline_output(output)
 
 
 def _extract_pending_file_metadata(version_row: dict) -> dict:
-    pipeline_output = version_row.get("pipeline_output") or {}
+    po = parse_pipeline_output(version_row.get("pipeline_output"))
     return {
-        "file_url": pipeline_output.get("_pending_file_path"),
-        "file_type": pipeline_output.get("_pending_file_type"),
-        "file_size": pipeline_output.get("_pending_file_size"),
+        "file_url": po.pending_file_path,
+        "file_type": po.pending_file_type,
+        "file_size": po.pending_file_size,
     }
 
 
@@ -743,7 +773,15 @@ async def _execute_pipeline_and_persist(
         "governing_law": final_state.get("governing_law", None),
         "risk_level": risk_level,
         "currency": final_state.get("currency", "IDR"),
-        "counter_proposal": final_state.get("counter_proposal"),
+        "counter_proposal": (
+            sanitize_llm_text(
+                final_state.get("counter_proposal"),
+                field_name="counter_proposal",
+                strict=False,
+            )
+            if final_state.get("counter_proposal") is not None
+            else None
+        ),
         "is_truncated": is_truncated,
         "draft_revisions": draft_revisions_payload,
     }
@@ -830,7 +868,15 @@ async def _execute_pipeline_and_persist(
                 "contract_id": contract_id,
                 "clause_type": cl.get("clause_type", "Other"),
                 "original_text": cl.get("original_text", ""),
-                "ai_summary": cl.get("ai_summary"),
+                "ai_summary": (
+                    sanitize_llm_text(
+                        cl.get("ai_summary"),
+                        field_name="ai_summary",
+                        strict=False,
+                    )
+                    if cl.get("ai_summary") is not None
+                    else None
+                ),
             }
             for cl in clauses if cl.get("original_text")
         ]
@@ -1167,8 +1213,10 @@ async def upload_contract(
         file_content_type = file.content_type or "application/pdf"
         file_size = len(contents)
 
+        storage_client = get_tenant_admin_supabase(tenant_id)
         file_path = _upload_to_storage(
-            admin_supabase,  # CROSS-TENANT: storage API is outside the table wrapper; tenant isolation is enforced by the storage path.
+            # NON-POSTGREST: storage API is outside the PostgREST table wrapper; tenant isolation is enforced by the storage path.
+            storage_client.raw,
             path=file_path,
             file_bytes=contents,
             content_type=file_content_type,
@@ -1197,7 +1245,7 @@ async def upload_contract(
                 "version_number": next_version,
                 "raw_text": text_content[:500000],
                 "uploaded_filename": file.filename,
-                "pipeline_output": {},
+                "pipeline_output": serialize_pipeline_output(PipelineOutput()),
             }).execute()
 
             update_data = {
@@ -1267,6 +1315,13 @@ async def upload_contract(
 
         if best_match:
             pending_version_id = str(uuid.uuid4())
+            pending_po = PipelineOutput(
+                pending=True,
+                pending_file_path=file_path,
+                pending_file_type=file_content_type,
+                pending_file_size=file_size,
+                pending_matter_id=matter_id,
+            )
             supabase.table("contract_versions").insert({
                 "id": pending_version_id,
                 "tenant_id": tenant_id,
@@ -1274,13 +1329,7 @@ async def upload_contract(
                 "version_number": 0,
                 "raw_text": text_content[:500000],
                 "uploaded_filename": file.filename,
-                "pipeline_output": {
-                    "_pending": True,
-                    "_pending_file_path": file_path,
-                    "_pending_file_type": file_content_type,
-                    "_pending_file_size": file_size,
-                    "_pending_matter_id": matter_id,
-                },
+                "pipeline_output": serialize_pipeline_output(pending_po),
             }).execute()
 
             return {
@@ -1322,7 +1371,7 @@ async def upload_contract(
             "version_number": 1,
             "raw_text": text_content[:500000],
             "uploaded_filename": file.filename,
-            "pipeline_output": {},
+            "pipeline_output": serialize_pipeline_output(PipelineOutput()),
             },
         )
 
@@ -1426,19 +1475,20 @@ async def confirm_version_link(
                 raise HTTPException(status_code=404, detail="Pending version not found.")
 
             pending_version = pending_res.data[0]
-            if not (pending_version.get("pipeline_output") or {}).get("_pending"):
+            pending_po = parse_pipeline_output(pending_version.get("pipeline_output"))
+            if not pending_po.pending:
                 raise HTTPException(status_code=400, detail="Version candidate has already been resolved.")
             text_content = pending_version.get("raw_text", "")
             filename = pending_version.get("uploaded_filename") or "uploaded.pdf"
             file_meta = _extract_pending_file_metadata(pending_version)
-            resolved_matter_id = matter_id or pending_version.get("pipeline_output", {}).get("_pending_matter_id") or parent.get("matter_id")
+            resolved_matter_id = matter_id or pending_po.pending_matter_id or parent.get("matter_id")
 
             if action == "confirm":
                 next_version = _get_next_version_number(supabase, matched_contract_id, tenant_id)
                 supabase.table("contract_versions").update({
                     "contract_id": matched_contract_id,
                     "version_number": next_version,
-                    "pipeline_output": {},
+                    "pipeline_output": serialize_pipeline_output(PipelineOutput()),
                 }).eq("id", pending_version_id).eq("tenant_id", tenant_id).execute()
 
                 contract_update = {
@@ -1491,7 +1541,7 @@ async def confirm_version_link(
                     version_id=pending_version_id,
                     version_update_data={
                         "version_number": 1,
-                        "pipeline_output": {},
+                        "pipeline_output": serialize_pipeline_output(PipelineOutput()),
                     },
                 )
 

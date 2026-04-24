@@ -16,10 +16,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from pydantic import BaseModel, Field
 from supabase import Client
 
-from app.config import CLERK_PEM_KEY, SIGNING_WEBHOOK_BASE_URL, admin_supabase  # CROSS-TENANT: webhook bootstrap and storage fallbacks require privileged access before a request JWT exists.
+from app.config import CLERK_PEM_KEY, SIGNING_WEBHOOK_BASE_URL
 from app.dependencies import (
     _create_rls_supabase_client,
     _extract_tenant_id,
+    TenantSupabaseClient,
     get_tenant_admin_supabase,  # TenantSupabaseClient factory
     get_tenant_supabase,
     verify_clerk_token,
@@ -104,7 +105,7 @@ def _log_signing_event(
 
 
 def _log_activity_event(
-    supabase_client: Optional[Client] = None,
+    supabase_client: Client | TenantSupabaseClient,
     *,
     tenant_id: str,
     action: str,
@@ -114,8 +115,6 @@ def _log_activity_event(
     matter_id: Optional[str] = None,
     task_id: Optional[str] = None,
 ) -> None:
-    if supabase_client is None:
-        supabase_client = admin_supabase  # CROSS-TENANT: background/webhook callers without a request JWT need privileged logging access.
     rich_payload = {
         "tenant_id": tenant_id,
         "contract_id": contract_id,
@@ -223,6 +222,18 @@ def _document_preview_url(contract_id: str, session: dict) -> Optional[str]:
     return session.get("provider_document_url")
 
 
+def _bootstrap_signing_session_by_provider_document_id(provider_document_id: str) -> dict | None:
+    # CROSS-TENANT: webhook bootstrap must resolve tenant_id from provider_document_id before a tenant wrapper can exist.
+    from app.config import admin_supabase
+
+    session_res = (
+        # CROSS-TENANT: signing webhook bootstrap looks up tenant ownership before a tenant wrapper can be constructed.
+        admin_supabase.table("signing_sessions").select("*")
+        .eq("provider_document_id", provider_document_id).single().execute()
+    )
+    return session_res.data if session_res.data else None
+
+
 async def _generate_final_pdf(
     contract_id: str,
     tenant_id: str,
@@ -288,10 +299,8 @@ async def _generate_final_pdf(
 def _store_pdf_to_storage(
     storage_path: str,
     pdf_bytes: bytes,
-    supabase_client: Optional[Client] = None,
+    supabase_client: Client,
 ) -> Optional[str]:
-    if supabase_client is None:
-        supabase_client = admin_supabase  # CROSS-TENANT: storage API fallback is required for background/webhook flows without a request-bound client.
     try:
         supabase_client.storage.from_("matter-files").upload(
             path=storage_path,
@@ -563,7 +572,7 @@ async def _handle_signing_complete(
     signed_document_path = None
     if signed_pdf:
         timestamp = _utc_now().strftime("%Y%m%d_%H%M%S")
-        # CROSS-TENANT: storage API is outside the PostgREST table wrapper; tenant isolation is enforced by the storage path.
+        # NON-POSTGREST: storage API is outside the PostgREST table wrapper; tenant isolation is enforced by the storage path.
         signed_document_path = _store_pdf_to_storage(
             f"signed-contracts/{tenant_id}/{contract_id}/signed_{timestamp}.pdf",
             signed_pdf,
@@ -1199,15 +1208,11 @@ async def handle_signing_webhook(provider: str, request: Request):
     if not provider_document_id:
         raise HTTPException(status_code=400, detail="Missing document identifier in webhook payload")
 
-    session_res = (
-        admin_supabase.table("signing_sessions").select("*")  # CROSS-TENANT: webhook bootstrap must resolve tenant_id from provider_document_id before a tenant wrapper can exist.
-        .eq("provider_document_id", provider_document_id).single().execute()
-    )
-    if not session_res.data:
+    session = _bootstrap_signing_session_by_provider_document_id(provider_document_id)
+    if not session:
         logger.warning("signing_webhook_unknown_document | provider=%s | doc_id=%s", provider, provider_document_id)
         return {"status": "ignored", "reason": "Unknown document"}
 
-    session = session_res.data
     session_id = session["id"]
     tenant_id = session["tenant_id"]
     contract_id = session["contract_id"]
