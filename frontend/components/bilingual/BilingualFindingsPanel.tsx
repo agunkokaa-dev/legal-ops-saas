@@ -37,7 +37,7 @@ export default function BilingualFindingsPanel({ report, isLoading, onClose, onF
           <h2 className="text-lg font-semibold text-white">Consistency Audit</h2>
         </div>
         <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4">
-          <div className="w-10 h-10 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+          <div className="w-10 h-10 border-4 border-[#3A3A3A] border-t-transparent rounded-full animate-spin"></div>
           <p className="text-gray-400 text-sm">Analyzing semantic equivalence across dual languages...</p>
         </div>
       </div>
@@ -81,9 +81,9 @@ export default function BilingualFindingsPanel({ report, isLoading, onClose, onF
             <div className="space-y-4">
               {report.findings.map((f, i) => (
                 <div key={i} className="bg-[#1a1a1a] rounded-lg border border-gray-800 p-4 space-y-2 relative overflow-hidden">
-                  <div className={`absolute left-0 top-0 bottom-0 w-1 ${f.severity === 'critical' ? 'bg-red-500' : f.severity === 'warning' ? 'bg-amber-500' : 'bg-blue-500'}`} />
+                  <div className={`absolute left-0 top-0 bottom-0 w-1 ${f.severity === 'critical' ? 'bg-red-500' : f.severity === 'warning' ? 'bg-amber-500' : 'bg-[#B8B8B8]'}`} />
                   <div className="flex justify-between items-start">
-                    <span className={`text-xs font-bold uppercase tracking-wider ${f.severity === 'critical' ? 'text-red-400' : f.severity === 'warning' ? 'text-amber-400' : 'text-blue-400'}`}>
+                    <span className={`text-xs font-bold uppercase tracking-wider ${f.severity === 'critical' ? 'text-red-400' : f.severity === 'warning' ? 'text-amber-400' : 'text-[#B8B8B8]'}`}>
                       {f.severity}
                     </span>
                     <button 

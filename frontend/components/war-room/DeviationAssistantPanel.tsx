@@ -130,8 +130,8 @@ export default function DeviationAssistantPanel({
                                 {/* Risk Card */}
                                 <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/40 p-4">
                                     <div className="flex items-start gap-3">
-                                        <div className="w-8 h-8 rounded-lg bg-amber-500/15 flex items-center justify-center flex-shrink-0">
-                                            <AlertTriangle className="w-4 h-4 text-amber-400" />
+                                        <div className="w-8 h-8 rounded-lg bg-red-500/15 flex items-center justify-center flex-shrink-0">
+                                            <AlertTriangle className="w-4 h-4 text-red-400" />
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center justify-between mb-1.5">
@@ -141,7 +141,7 @@ export default function DeviationAssistantPanel({
                                                 <span className={`flex-shrink-0 text-[10px] px-2 py-0.5 rounded-full font-semibold
                                                     ${selectedDev.severity === 'critical'
                                                         ? 'bg-red-500/20 text-red-400'
-                                                        : 'bg-amber-500/20 text-amber-400'}`}>
+                                                        : 'bg-orange-500/20 text-orange-400'}`}>
                                                     {selectedDev.severity === 'critical' ? 'High' : 'Medium'}
                                                 </span>
                                             </div>
@@ -153,7 +153,7 @@ export default function DeviationAssistantPanel({
                                             <div className="grid grid-cols-3 gap-2 mt-3 pt-3 border-t border-zinc-800/60">
                                                 <div className="text-center">
                                                     <div className="text-[10px] text-zinc-600 mb-0.5">Impact</div>
-                                                    <div className="text-xs font-semibold text-amber-400">High</div>
+                                                    <div className="text-xs font-semibold text-red-400">High</div>
                                                 </div>
                                                 <div className="text-center border-x border-zinc-800/60">
                                                     <div className="text-[10px] text-zinc-600 mb-0.5">Confidence</div>
@@ -189,12 +189,12 @@ export default function DeviationAssistantPanel({
                                 {selectedBATNA && (
                                     <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/40 p-4">
                                         <div className="flex items-center gap-2 mb-2">
-                                            <Zap className="w-3.5 h-3.5 text-amber-400" />
-                                            <span className="text-[10px] font-semibold text-amber-400 uppercase tracking-wider">
+                                            <Zap className="w-3.5 h-3.5 text-[#B8B8B8]" />
+                                            <span className="text-[10px] font-semibold text-[#B8B8B8] uppercase tracking-wider">
                                                 BATNA Strategy
                                             </span>
                                         </div>
-                                        <p className="text-xs text-amber-300/70 italic leading-relaxed mb-3">
+                                        <p className="text-xs text-zinc-400 italic leading-relaxed mb-3">
                                             {safeBatnaReasoning}
                                         </p>
                                         <div className="rounded-lg bg-zinc-800/60 p-3 mb-3">
@@ -210,8 +210,8 @@ export default function DeviationAssistantPanel({
                                             onClick={() => handleApplyBATNA(selectedBATNA)}
                                             disabled={!selectedIssue || isSelectedIssuePending}
                                             className="w-full flex items-center justify-center gap-2 py-2
-                                                       bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30
-                                                       text-amber-300 text-xs font-semibold rounded-lg transition
+                                                       bg-[#1C1C1C] hover:bg-[#1C1C1C] border border-[#3A3A3A]
+                                                       text-[#B8B8B8] text-xs font-semibold rounded-lg transition
                                                        disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
                                             <Zap className="w-3 h-3" />
@@ -250,8 +250,8 @@ export default function DeviationAssistantPanel({
                                                 },
                                                 {
                                                     icon: ArrowLeftRight,
-                                                    color: 'text-amber-400',
-                                                    bg: 'bg-amber-500/15',
+                                                    color: 'text-[#B8B8B8]',
+                                                    bg: 'bg-[#1C1C1C]',
                                                     label: 'Counter & Negotiate',
                                                     sublabel: 'Tolak perluasan scope ini',
                                                     action: () => {

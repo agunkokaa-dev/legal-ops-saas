@@ -1,13 +1,15 @@
 from datetime import datetime
 from typing import Optional
 import asyncio
+import time
 
 from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from supabase import Client
 
 from app.dependencies import TenantSupabaseClient, get_tenant_admin_supabase, get_tenant_supabase, verify_clerk_token
-from app.config import openai_client
+from app.ai_usage import log_openai_response_sync
+from app.config import OUTPUT_TOKEN_CAPS, admin_supabase, openai_client
 
 from app.bilingual_schemas import (
     ClauseSyncRequest,
@@ -193,14 +195,26 @@ async def process_bilingual_sync_background(
             f"Return your output strictly complying to the JSON schema."
         )
 
+        started_at = time.perf_counter()
         response = await asyncio.to_thread(
             openai_client.beta.chat.completions.parse,
             model="gpt-4o",
+            max_tokens=OUTPUT_TOKEN_CAPS["bilingual"],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": source_text},
             ],
             response_format=ClauseSyncResponse,
+        )
+        log_openai_response_sync(
+            admin_supabase,
+            tenant_id,
+            "bilingual_sync",
+            "gpt-4o",
+            response,
+            int((time.perf_counter() - started_at) * 1000),
+            contract_id=contract_id,
+            metadata={"clause_id": clause_id, "source_language": source_language},
         )
         result = response.choices[0].message.parsed
         result_dict = result.model_dump()
@@ -242,7 +256,7 @@ async def process_bilingual_validate_background(
         raise error
 
     try:
-        report = await asyncio.to_thread(run_bilingual_consistency_agent, clauses)
+        report = await asyncio.to_thread(run_bilingual_consistency_agent, clauses, tenant_id, contract_id)
         report_dict = report.model_dump()
         logger.log_agent_complete("bilingual_validate", {"clauses_checked": len(clauses)})
         logger.complete(result_summary={"clauses_checked": len(clauses), "report": report_dict})

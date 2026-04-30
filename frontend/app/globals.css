@@ -2,38 +2,49 @@
 @plugin "@tailwindcss/typography";
 
 @theme {
-  --color-primary: #c59f59;
+  --color-primary: #B8B8B8;
   --color-background: #050505;
   --color-surface: #09090b;
   --color-surface-border: #27272A;
   --color-text-muted: #a1a1aa;
 
-  /* Luxury Deal Genealogy Palette */
+  /* Neutral + silver system */
   --color-lux-black: #020617;
   --color-lux-sidebar: #09090b;
   --color-lux-card: #0f172a;
-  --color-lux-gold: #d4af37;
-  --color-lux-amber: #fbbf24;
-  --color-lux-amber-dim: #b45309;
-  --color-lux-text-head: #fde68a;
+  --color-lux-accent: #B8B8B8;
+  --color-lux-accent-soft: #B8B8B8;
+  --color-lux-accent-deep: #888888;
+  --color-lux-text-head: #f4f4f5;
   --color-lux-text-body: #d4d4d8;
   --color-lux-text-muted: #71717a;
   --color-lux-border: #1e293b;
-  --color-lux-border-active: #451a03;
+  --color-lux-border-active: #666666;
 
   /* Clause Task Management Colors */
   --color-clause-black: #0a0a0a;
-  --color-clause-gold: #c9a84c;
-  --color-clause-gold-muted: #8a7134;
-  --color-clause-border: rgba(201, 168, 76, 0.15);
+  --color-clause-accent: #B8B8B8;
+  --color-clause-accent-muted: #666666;
+  --color-clause-border: rgba(184, 184, 184, 0.18);
   --color-urgent-red: #ef4444;
   --color-due-soon-orange: #f97316;
 
-  --shadow-glow: 0 0 15px -3px rgba(251, 191, 36, 0.15);
+  --shadow-glow: 0 0 15px -3px rgba(184, 184, 184, 0.16);
 
   --font-display: "Playfair Display", serif;
   --font-mono: "JetBrains Mono", monospace;
   --font-sans: "Inter", sans-serif;
+}
+
+:root {
+  /* Silver accent system */
+  --accent-primary: #B8B8B8;
+  --accent-secondary: #888888;
+  --accent-bright: #D4D4D4;
+  --accent-subtle: #666666;
+  --accent-surface: #1C1C1C;
+  --accent-border: #3A3A3A;
+  --accent-border-subtle: #2A2A2A;
 }
 
 ::-webkit-scrollbar {
@@ -67,8 +78,8 @@
     border: 1px solid rgba(255, 255, 255, 0.07);
   }
 
-  .glass-border-gold {
-    border: 1px solid rgba(201, 168, 76, 0.2);
+  .glass-border-zinc {
+    border: 1px solid rgba(63, 63, 70, 0.7);
   }
 
   .etched-border {
@@ -85,7 +96,7 @@
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: #C9A84C33;
+    background: #3f3f46;
     border-radius: 10px;
   }
 
@@ -120,8 +131,40 @@
     animation: pulse-subtle 2.5s ease-in-out infinite;
   }
 
-  .gold-checkbox:checked {
-    background-color: #C9A84C;
-    border-color: #C9A84C;
+  .silver-checkbox:checked {
+    background-color: #B8B8B8;
+    border-color: #B8B8B8;
+  }
+
+  @keyframes support-tooltip-in {
+    from {
+      opacity: 0;
+      transform: translateX(8px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  @keyframes support-modal-in {
+    from {
+      opacity: 0;
+      transform: translateY(16px);
+    }
+
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .support-tooltip-in {
+    animation: support-tooltip-in 180ms ease-out;
+  }
+
+  .support-modal-in {
+    animation: support-modal-in 220ms ease-out;
   }
 }

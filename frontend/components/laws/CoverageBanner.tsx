@@ -87,17 +87,17 @@ export default function CoverageBanner({
   }
 
   return (
-    <div className="mb-5 rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-3 text-sm text-sky-100">
+    <div className="mb-5 rounded-2xl border border-[#2A2A2A] bg-[#1C1C1C] px-4 py-3 text-sm text-[#E8E8E8]">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-[11px] uppercase tracking-[0.22em] text-sky-300">Coverage Notice</p>
+          <p className="text-[11px] uppercase tracking-[0.22em] text-[#B8B8B8]">Coverage Notice</p>
           <p className="mt-2">
             The regulation dataset for {categoryCoverage.category_label_en || resolvedCategory} is still in development.
             {' '}
             {categoryCoverage.ingested_laws} of {categoryCoverage.total_planned_laws} planned law(s) are currently in the corpus.
           </p>
           {categoryCoverage.coverage_notes ? (
-            <p className="mt-1 text-xs text-sky-100/80">{categoryCoverage.coverage_notes}</p>
+            <p className="mt-1 text-xs text-[#E8E8E8]/80">{categoryCoverage.coverage_notes}</p>
           ) : null}
         </div>
         <button
@@ -107,7 +107,7 @@ export default function CoverageBanner({
             }
             setDismissed(true)
           }}
-          className="rounded-full border border-sky-300/20 px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-sky-200 transition hover:border-sky-200/40 hover:text-white"
+          className="rounded-full border border-[#2A2A2A] px-3 py-1 text-[10px] uppercase tracking-[0.2em] text-[#D4D4D4] transition hover:border-[#3A3A3A] hover:text-white"
         >
           Dismiss
         </button>

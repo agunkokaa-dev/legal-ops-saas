@@ -184,7 +184,7 @@ function DraftingGatekeeperContent() {
             <button
               onClick={handleInitialize}
               disabled={!isFormValid || isLoading}
-              className="bg-primary px-6 py-2.5 rounded text-sm text-black font-medium hover:bg-primary/90 transition-all disabled:opacity-50 flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(var(--primary),0.3)] group"
+              className="bg-primary px-6 py-2.5 rounded text-sm text-[#0A0A0A] font-medium hover:bg-primary/90 transition-all disabled:opacity-50 flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(var(--primary),0.3)] group"
             >
               {isLoading ? 'INITIALIZING...' : 'INITIALIZE WORKSPACE '}
             </button>

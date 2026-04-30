@@ -116,15 +116,15 @@ export default async function MattersDashboard(props: { searchParams?: Promise<{
         const lower = area?.toLowerCase() || '';
         if (lower.includes('litigation')) return 'bg-red-500/10 text-red-500 border-red-500/20';
         if (lower.includes('m&a') || lower.includes('merger')) return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
-        if (lower.includes('ip') || lower.includes('intellectual')) return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
-        return 'bg-amber-500/10 text-amber-500 border-amber-500/20'; // Default / Corporate
+        if (lower.includes('ip') || lower.includes('intellectual')) return 'bg-[#1C1C1C] text-[#B8B8B8] border-[#2A2A2A]';
+        return 'bg-zinc-800/70 text-zinc-300 border-zinc-700'; // Default / Corporate
     }
 
     const getStatusStyle = (status: string) => {
         const lower = status?.toLowerCase() || '';
         if (lower === 'open' || lower === 'active' || lower === 'ready') return 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
         if (lower === 'action' || lower === 'critical') return 'bg-red-500/10 text-red-400 border border-red-500/20';
-        if (lower === 'review' || lower === 'drafting') return 'bg-blue-500/10 text-blue-400 border border-blue-500/20';
+        if (lower === 'review' || lower === 'drafting') return 'bg-[#1C1C1C] text-[#B8B8B8] border border-[#2A2A2A]';
         return 'bg-surface-border/50 text-text-muted border border-surface-border'; // Default / Closed / On Hold
     }
 
@@ -235,7 +235,7 @@ export default async function MattersDashboard(props: { searchParams?: Promise<{
                                                     </Link>
                                                 </td>
                                                 <td className="px-4 py-4 flex items-center gap-3">
-                                                    <div className="w-6 h-6 rounded-full bg-blue-900/40 border border-blue-500/30 flex items-center justify-center text-[10px] font-bold text-blue-400">
+                                                    <div className="w-6 h-6 rounded-full bg-[#1C1C1C] border border-[#3A3A3A] flex items-center justify-center text-[10px] font-bold text-[#B8B8B8]">
                                                         {(matter.client_name)?.substring(0, 2).toUpperCase() || 'CL'}
                                                     </div>
                                                     <span className="text-white text-sm">{matter.client_name || 'Unknown Client'}</span>

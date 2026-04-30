@@ -13,7 +13,7 @@ class EmptyOutputGuardTests(unittest.TestCase):
         quality, sentinels = assess_pipeline_output_quality({})
 
         self.assertEqual(quality.value, "empty")
-        self.assertEqual(len(sentinels), 5)
+        self.assertEqual(len(sentinels), 4)
 
     def test_partial_agents_empty_returns_quality_partial(self):
         quality, sentinels = assess_pipeline_output_quality({

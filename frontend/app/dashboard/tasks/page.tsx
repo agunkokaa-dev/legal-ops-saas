@@ -202,8 +202,8 @@ export default function TasksDashboardPage() {
             console.log("✅ [DEBUG] Berhasil insert via API:", data);
             toast.success('Sub-task Created', {
                 description: `⚡ ${cleanTitle} has been added to Procedural Steps.`,
-                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' },
-                icon: <span className="text-clause-gold">✦</span>
+                style: { background: '#1a1a1a', border: '1px solid #B8B8B8', color: '#fff' },
+                icon: <span className="text-[#B8B8B8]">✦</span>
             });
 
             // Refresh side panel if it's open for this task
@@ -499,7 +499,7 @@ export default function TasksDashboardPage() {
                         </div>
                         <button
                             onClick={() => setIsSopModalOpen(true)}
-                            className="bg-clause-gold text-black text-xs font-bold px-4 py-2 rounded flex items-center gap-2 hover:bg-clause-gold/90 transition-all cursor-pointer"
+                            className="bg-[#B8B8B8] text-[#0A0A0A] text-xs font-bold px-4 py-2 rounded flex items-center gap-2 hover:bg-[#B8B8B8]/90 transition-all cursor-pointer"
                         >
                             <Plus className="w-4 h-4 stroke-[3px]" /> NEW TASK
                         </button>
@@ -512,16 +512,16 @@ export default function TasksDashboardPage() {
                     {/* BEGIN: Daily Brief Banner */}
                     {isDailyBriefOpen && (
                         <section
-                            className="glass-card glass-border-gold rounded-lg p-5 flex items-center gap-4 relative overflow-hidden group"
+                            className="glass-card border border-zinc-700/60 rounded-lg p-5 flex items-center gap-4 relative overflow-hidden group"
                             data-purpose="daily-brief"
                         >
-                            <div className="absolute inset-0 bg-gradient-to-r from-clause-gold/10 to-transparent pointer-events-none"></div>
-                            <div className="w-10 h-10 shrink-0 rounded-full bg-clause-gold/20 flex items-center justify-center text-clause-gold">
+                            <div className="absolute inset-0 bg-gradient-to-r from-[#B8B8B8]/10 to-transparent pointer-events-none"></div>
+                            <div className="w-10 h-10 shrink-0 rounded-full bg-[#B8B8B8]/20 flex items-center justify-center text-[#B8B8B8]">
                                 <BellRing className="w-5 h-5 animate-bounce" />
                             </div>
                             <div className="flex-1">
                                 <h3 className="font-serif text-white text-sm">DAILY BRIEF</h3>
-                                <p className="text-xs text-clause-gold">
+                                <p className="text-xs text-[#B8B8B8]">
                                     {tasksThisWeekCount > 0
                                         ? <>{tasksThisWeekCount} task{tasksThisWeekCount > 1 ? 's' : ''} scheduled in your <span className="font-bold underline">THIS WEEK</span> pipeline.{tasksUrgentCount > 0 ? ` ${tasksUrgentCount} flagged as high priority.` : ''}</>
                                         : <>Your pipeline for this week is clear. Great job!</>}
@@ -529,7 +529,7 @@ export default function TasksDashboardPage() {
                             </div>
                             <button
                                 onClick={() => setIsDailyBriefOpen(false)}
-                                className="text-[10px] shrink-0 font-mono border border-clause-gold/40 px-3 py-1 rounded hover:bg-clause-gold/10 transition-colors cursor-pointer"
+                                className="text-[10px] shrink-0 font-mono border border-[#3A3A3A] px-3 py-1 rounded hover:bg-[#B8B8B8]/10 transition-colors cursor-pointer"
                             >
                                 DISMISS BRIEF
                             </button>
@@ -543,7 +543,7 @@ export default function TasksDashboardPage() {
                             <h4 className="font-serif text-xs uppercase tracking-widest text-white/60">
                                 Matter Progress
                             </h4>
-                            <span className="text-[10px] font-mono text-clause-gold cursor-pointer hover:underline">
+                            <span className="text-[10px] font-mono text-[#B8B8B8] cursor-pointer hover:underline">
                                 VIEW ALL MATTERS →
                             </span>
                         </div>
@@ -554,11 +554,11 @@ export default function TasksDashboardPage() {
                                 </div>
                             ) : (
                                 matters.slice(0, 3).map((matter, index) => {
-                                    const borderColors = ['border-l-blue-400', 'border-l-emerald-400', 'border-l-amber-400'];
-                                    const bgColors = ['bg-blue-500/10', 'bg-emerald-500/10', 'bg-amber-500/10'];
-                                    const textColors = ['text-blue-400', 'text-emerald-400', 'text-amber-400'];
-                                    const tagBorderColors = ['border-blue-500/20', 'border-emerald-500/20', 'border-amber-500/20'];
-                                    const barColors = ['bg-blue-400', 'bg-emerald-400', 'bg-amber-400'];
+                                    const borderColors = ['border-l-[#B8B8B8]', 'border-l-emerald-400', 'border-l-[#B8B8B8]'];
+                                    const bgColors = ['bg-[#1C1C1C]', 'bg-emerald-500/10', 'bg-[#1C1C1C]'];
+                                    const textColors = ['text-[#B8B8B8]', 'text-emerald-400', 'text-[#B8B8B8]'];
+                                    const tagBorderColors = ['border-[#2A2A2A]', 'border-emerald-500/20', 'border-[#2A2A2A]'];
+                                    const barColors = ['bg-[#B8B8B8]', 'bg-emerald-400', 'bg-[#B8B8B8]'];
 
                                     const borderColor = borderColors[index % 3];
                                     const bgColor = bgColors[index % 3];
@@ -963,7 +963,7 @@ export default function TasksDashboardPage() {
                 >
                     <div className="p-6 border-b border-white/5 space-y-4">
                         <div className="flex justify-between items-center">
-                            <span className="text-[10px] font-mono text-clause-gold tracking-widest px-2 py-0.5 border border-clause-gold/30 rounded">
+                            <span className="text-[10px] font-mono text-[#B8B8B8] tracking-widest px-2 py-0.5 border border-[#3A3A3A] rounded">
                                 {selectedTask?.id?.substring(0, 8).toUpperCase() || 'T-0000'}
                             </span>
                             <div className="flex items-center gap-2">
@@ -993,7 +993,7 @@ export default function TasksDashboardPage() {
                         <div className="flex items-center gap-2 text-[10px] font-medium tracking-wide mb-3 flex-wrap">
                             {/* Matter Pill */}
                             <div className="flex items-center gap-1.5 text-gray-400 bg-white/5 px-2 py-1 rounded border border-white/5 cursor-pointer hover:bg-white/10 hover:text-white transition-colors">
-                                <Folder size={12} className="text-clause-gold" />
+                                <Folder size={12} className="text-[#B8B8B8]" />
                                 <span className="truncate max-w-[150px]">
                                     {selectedTask?.matters?.title || "Unknown Matter"}
                                 </span>
@@ -1004,7 +1004,7 @@ export default function TasksDashboardPage() {
                             {/* Source Document Pill */}
                             {selectedTask?.is_ai_generated && selectedTask?.source_document_name ? (
                                 <div
-                                    className="flex items-center gap-1.5 text-clause-gold bg-clause-gold/10 px-2 py-1 rounded border border-clause-gold/20 cursor-pointer hover:bg-clause-gold/20 transition-colors"
+                                    className="flex items-center gap-1.5 text-[#B8B8B8] bg-[#B8B8B8]/10 px-2 py-1 rounded border border-[#2A2A2A] cursor-pointer hover:bg-[#B8B8B8]/20 transition-colors"
                                     title="Click to view source document"
                                 >
                                     <FileText size={12} />
@@ -1023,7 +1023,7 @@ export default function TasksDashboardPage() {
                                     <span className="text-gray-600">•</span>
                                     <Link
                                         href={`/dashboard/contracts/${selectedTask.contract_notes?.contract_id || selectedTask.matter_id}?noteId=${selectedTask.source_note_id}`}
-                                        className="flex items-center gap-1.5 text-blue-400 bg-blue-500/10 px-2 py-1 rounded border border-blue-500/20 hover:bg-blue-500/20 hover:text-blue-300 transition-colors"
+                                        className="flex items-center gap-1.5 text-[#B8B8B8] bg-[#1C1C1C] px-2 py-1 rounded border border-[#2A2A2A] hover:bg-[#B8B8B8]/20 hover:text-[#D4D4D4] transition-colors"
                                         title="View the original AI insight that generated this task"
                                     >
                                         <LinkIcon className="w-3 h-3" />
@@ -1048,7 +1048,7 @@ export default function TasksDashboardPage() {
                                 <option value="urgent" className="bg-clause-black">Urgent</option>
                             </select>
                             {selectedTask?.is_ai_generated && (
-                                <span className="text-[9px] font-mono px-2 py-1 bg-clause-gold/10 text-clause-gold rounded border border-clause-gold/20 flex items-center gap-1">
+                                <span className="text-[9px] font-mono px-2 py-1 bg-[#B8B8B8]/10 text-[#B8B8B8] rounded border border-[#2A2A2A] flex items-center gap-1">
                                     <ShieldCheck className="w-2.5 h-2.5" /> AI Verified
                                 </span>
                             )}
@@ -1058,7 +1058,7 @@ export default function TasksDashboardPage() {
                                 e.stopPropagation();
                                 setDraftingTask({ matterId: selectedTask.matter_id || selectedTask.id, title: selectedTask.title });
                             }}
-                            className="mt-4 w-full bg-[#d4af37]/10 hover:bg-[#d4af37]/20 border border-[#d4af37]/30 text-[#d4af37] py-2 px-4 rounded-lg text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all"
+                            className="mt-4 w-full bg-[#B8B8B8]/10 hover:bg-[#B8B8B8]/20 border border-[#B8B8B8]/30 text-[#B8B8B8] py-2 px-4 rounded-lg text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 transition-all"
                         >
                             ✨ Open Smart Composer
                         </button>
@@ -1073,11 +1073,11 @@ export default function TasksDashboardPage() {
                             <div className="relative flex justify-between items-center">
                                 <div className="absolute h-[1px] bg-white/10 top-1/2 left-0 right-0 -z-10"></div>
                                 <div className="flex flex-col items-center gap-2">
-                                    <div className="w-2 h-2 rounded-full bg-clause-gold"></div>
+                                    <div className="w-2 h-2 rounded-full bg-[#B8B8B8]"></div>
                                     <span className="text-[9px] font-mono opacity-50">Created</span>
                                 </div>
                                 <div className="flex flex-col items-center gap-2">
-                                    <div className="w-2 h-2 rounded-full bg-clause-gold"></div>
+                                    <div className="w-2 h-2 rounded-full bg-[#B8B8B8]"></div>
                                     <span className="text-[9px] font-mono opacity-50">Started</span>
                                 </div>
                                 <div className="flex flex-col items-center gap-2">
@@ -1106,7 +1106,7 @@ export default function TasksDashboardPage() {
                             <button
                                 onClick={() => setIsAiMode(true)}
                                 className={isAiMode
-                                    ? "bg-[#0a0a0a] text-[#D4AF37] border border-[#D4AF37]/20 shadow-sm rounded-md flex-1 py-2 text-xs font-semibold tracking-wide transition-all cursor-pointer"
+                                    ? "bg-[#0a0a0a] text-[#B8B8B8] border border-[#B8B8B8]/20 shadow-sm rounded-md flex-1 py-2 text-xs font-semibold tracking-wide transition-all cursor-pointer"
                                     : "text-zinc-500 hover:text-zinc-300 flex-1 py-2 text-xs font-semibold tracking-wide transition-all cursor-pointer"}
                             >
                                 Clause Assistant
@@ -1117,7 +1117,7 @@ export default function TasksDashboardPage() {
                             <div className="flex flex-col h-[500px] bg-[#0a0a0a] border border-zinc-800/50 rounded-xl p-4">
                                 <div className="flex-1 overflow-y-auto flex flex-col gap-4 pr-2 custom-scrollbar">
                                     {messages.map((msg, idx) => (
-                                        <div key={idx} className={msg.role === "ai" ? "bg-[#0a0a0a] border border-zinc-700/50 text-zinc-300 text-xs p-3.5 rounded-2xl rounded-tl-sm leading-relaxed self-start w-[85%]" : "bg-[#D4AF37]/10 border border-[#D4AF37]/20 text-[#e5e5e5] text-xs p-3.5 rounded-2xl rounded-tr-sm self-end w-[85%]"}>
+                                        <div key={idx} className={msg.role === "ai" ? "bg-[#0a0a0a] border border-zinc-700/50 text-zinc-300 text-xs p-3.5 rounded-2xl rounded-tl-sm leading-relaxed self-start w-[85%]" : "bg-[#B8B8B8]/10 border border-[#B8B8B8]/20 text-[#e5e5e5] text-xs p-3.5 rounded-2xl rounded-tr-sm self-end w-[85%]"}>
                                             {msg.content}
                                         </div>
                                     ))}
@@ -1143,12 +1143,12 @@ export default function TasksDashboardPage() {
                                         onKeyDown={(e) => {
                                             if (e.key === 'Enter') handleSendMessage();
                                         }}
-                                        className="w-full bg-[#18181B] border border-zinc-700/60 rounded-xl pl-4 pr-12 py-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-[#D4AF37]/50 focus:ring-1 focus:ring-[#D4AF37]/50 transition-all"
+                                        className="w-full bg-[#18181B] border border-zinc-700/60 rounded-xl pl-4 pr-12 py-3 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-[#B8B8B8]/50 focus:ring-1 focus:ring-[#B8B8B8]/50 transition-all"
                                         placeholder="Ask a question or request drafting assistance..."
                                     />
                                     <button
                                         onClick={handleSendMessage}
-                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[#D4AF37] hover:text-[#b08d2b] transition-colors cursor-pointer"
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-[#B8B8B8] hover:text-[#888888] transition-colors cursor-pointer"
                                     >
                                         <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
                                     </button>
@@ -1162,7 +1162,7 @@ export default function TasksDashboardPage() {
                                         {/* TITLE & PERCENTAGE TEXT */}
                                         <div className="flex justify-between items-center mb-4">
                                             <h4 className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Procedural Steps & Checklists</h4>
-                                            <span className="text-[10px] font-bold text-clause-gold">
+                                            <span className="text-[10px] font-bold text-[#B8B8B8]">
                                                 {proceduralSteps.length === 0 ? 0 : Math.round((proceduralSteps.filter(s => s.is_completed).length / proceduralSteps.length) * 100)}%
                                             </span>
                                         </div>
@@ -1170,7 +1170,7 @@ export default function TasksDashboardPage() {
                                         {/* THE SLEEK PROGRESS BAR */}
                                         <div className="w-full h-0.5 bg-white/10 rounded-full mb-4 overflow-hidden">
                                             <div
-                                                className="h-full bg-clause-gold transition-all duration-500 ease-out"
+                                                className="h-full bg-[#B8B8B8] transition-all duration-500 ease-out"
                                                 style={{ width: `${proceduralSteps.length === 0 ? 0 : Math.round((proceduralSteps.filter(s => s.is_completed).length / proceduralSteps.length) * 100)}%` }}
                                             ></div>
                                         </div>
@@ -1184,7 +1184,7 @@ export default function TasksDashboardPage() {
                                                             type="checkbox"
                                                             checked={step.is_completed}
                                                             onChange={async () => await handleToggleStep(step.id, !step.is_completed)}
-                                                            className="mt-1 accent-clause-gold w-4 h-4 cursor-pointer rounded border-white/10 bg-white/5 shrink-0"
+                                                            className="mt-1 accent-[#B8B8B8] w-4 h-4 cursor-pointer rounded border-white/10 bg-white/5 shrink-0"
                                                         />
                                                         <span className={`text-sm tracking-wide flex-1 transition-colors ${step.is_completed ? "line-through text-gray-600" : "text-gray-300"}`}>
                                                             {step.title}
@@ -1212,7 +1212,7 @@ export default function TasksDashboardPage() {
                                                 placeholder="+ Add ad-hoc sub-task and press Enter"
                                                 value={newSubTask}
                                                 onChange={(e) => setNewSubTask(e.target.value)}
-                                                className="w-full bg-black/50 border border-white/10 rounded-lg p-2.5 text-xs text-white outline-none focus:border-clause-gold transition-colors placeholder:text-gray-600 placeholder:italic"
+                                                className="w-full bg-black/50 border border-white/10 rounded-lg p-2.5 text-xs text-white outline-none focus:border-[#3A3A3A] transition-colors placeholder:text-gray-600 placeholder:italic"
                                                 onKeyDown={async (e) => {
                                                     if (e.key === 'Enter' && newSubTask.trim() !== '') {
                                                         try {
@@ -1242,12 +1242,12 @@ export default function TasksDashboardPage() {
                                         ) : (
                                             taskDetails.attachments.map((file: any) => (
                                                 <div key={file.id} className="flex items-center gap-3 p-3 border border-white/10 rounded-md bg-white/5 relative group">
-                                                    <div className="text-clause-gold shrink-0">
+                                                    <div className="text-[#B8B8B8] shrink-0">
                                                         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
                                                     </div>
                                                     <div className="overflow-hidden">
                                                         <p className="text-[10px] text-white truncate w-full">{file.file_name}</p>
-                                                        <p className="text-[8px] font-mono text-clause-gold/60 mt-0.5">{file.source?.toUpperCase() || 'UPLOADED'}</p>
+                                                        <p className="text-[8px] font-mono text-[#888888]/60 mt-0.5">{file.source?.toUpperCase() || 'UPLOADED'}</p>
                                                     </div>
                                                     {/* Delete Button for files */}
                                                     <button
@@ -1268,7 +1268,7 @@ export default function TasksDashboardPage() {
                                             ))
                                         )}
                                     </div>
-                                    <label className="mt-3 border border-dashed border-white/10 rounded-lg p-4 flex flex-col items-center justify-center gap-2 hover:border-clause-gold/30 transition-all cursor-pointer">
+                                    <label className="mt-3 border border-dashed border-white/10 rounded-lg p-4 flex flex-col items-center justify-center gap-2 hover:border-[#3A3A3A] transition-all cursor-pointer">
                                         <UploadCloud className="w-5 h-5 opacity-20" />
                                         <span className="text-[10px] opacity-40 font-mono">
                                             CLICK OR DRAG TO UPLOAD
@@ -1287,7 +1287,7 @@ export default function TasksDashboardPage() {
                                             <span className="text-red-400 font-bold uppercase tracking-tighter">
                                                 Blocked by
                                             </span>
-                                            <span className="text-white/60 hover:text-clause-gold cursor-pointer">
+                                            <span className="text-white/60 hover:text-[#B8B8B8] cursor-pointer">
                                                 T-1088 (Evidence Audit)
                                             </span>
                                         </div>
@@ -1295,7 +1295,7 @@ export default function TasksDashboardPage() {
                                             <span className="text-emerald-400 font-bold uppercase tracking-tighter">
                                                 Blocking
                                             </span>
-                                            <span className="text-white/60 hover:text-clause-gold cursor-pointer">
+                                            <span className="text-white/60 hover:text-[#B8B8B8] cursor-pointer">
                                                 T-1104 (Final Partner Approval)
                                             </span>
                                         </div>
@@ -1314,8 +1314,8 @@ export default function TasksDashboardPage() {
                                         ) : (
                                             taskDetails.logs.map((log: any, idx: number) => (
                                                 <div key={log.id} className="flex gap-4 relative">
-                                                    <div className={`w-4 h-4 rounded-full ${idx === 0 ? 'bg-clause-gold/20' : 'bg-white/10'} flex items-center justify-center shrink-0 z-10`}>
-                                                        <div className={`w-1.5 h-1.5 ${idx === 0 ? 'bg-clause-gold' : 'bg-white/40'} rounded-full`}></div>
+                                                    <div className={`w-4 h-4 rounded-full ${idx === 0 ? 'bg-[#B8B8B8]/20' : 'bg-white/10'} flex items-center justify-center shrink-0 z-10`}>
+                                                        <div className={`w-1.5 h-1.5 ${idx === 0 ? 'bg-[#B8B8B8]' : 'bg-white/40'} rounded-full`}></div>
                                                     </div>
                                                     <div>
                                                         <p className="text-xs text-white/80">
@@ -1364,7 +1364,7 @@ export default function TasksDashboardPage() {
                         <div className="px-6 pt-6 -mb-2">
                             <label className="text-xs font-mono uppercase text-white/40 mb-2 block">Link to Matter</label>
                             <select
-                                className="bg-white/5 border border-white/10 text-white rounded p-2 w-full mb-4 focus:ring-1 focus:ring-clause-gold/50 outline-none"
+                                className="bg-white/5 border border-white/10 text-white rounded p-2 w-full mb-4 focus:ring-1 focus:ring-[#888888]/50 outline-none"
                                 value={selectedMatterId}
                                 onChange={(e) => setSelectedMatterId(e.target.value)}
                             >
@@ -1378,9 +1378,9 @@ export default function TasksDashboardPage() {
                         </div>
                         <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-4 h-96 overflow-y-auto custom-scrollbar">
                             {/* Template Option */}
-                            <div className="glass-card p-5 rounded-md border-white/5 hover:border-clause-gold/50 cursor-pointer transition-all flex flex-col">
+                            <div className="glass-card p-5 rounded-md border-white/5 hover:border-[#3A3A3A] cursor-pointer transition-all flex flex-col">
                                 <div className="flex justify-between mb-4">
-                                    <FilePlus className="w-6 h-6 text-clause-gold opacity-50" />
+                                    <FilePlus className="w-6 h-6 text-[#B8B8B8] opacity-50" />
                                     <span className="text-[9px] font-mono px-2 py-1 bg-white/5 rounded">
                                         GENERIC
                                     </span>
@@ -1391,7 +1391,7 @@ export default function TasksDashboardPage() {
                                     verification gates.
                                 </p>
                                 <button
-                                    className="mt-auto pt-4 text-xs font-mono text-clause-gold text-left cursor-pointer hover:underline"
+                                    className="mt-auto pt-4 text-xs font-mono text-[#B8B8B8] text-left cursor-pointer hover:underline"
                                     onClick={() => handleCreateBlankTask(selectedMatterId)}
                                 >
                                     SELECT TEMPLATE →
@@ -1412,12 +1412,12 @@ export default function TasksDashboardPage() {
                                             }
                                             handleApplySOPTemplate(template.id, selectedMatterId);
                                         }}
-                                            className="bg-white/5 border border-white/10 hover:border-clause-gold/50 p-5 rounded-xl transition-all duration-300 hover:bg-white/10 cursor-pointer flex flex-col h-full group"
+                                            className="bg-white/5 border border-white/10 hover:border-[#3A3A3A] p-5 rounded-xl transition-all duration-300 hover:bg-white/10 cursor-pointer flex flex-col h-full group"
                                         >
                                             <div className="flex justify-between items-start mb-4">
                                                 <div className="flex items-center gap-2">
-                                                    <div className="text-clause-gold"><Gavel size={20} /></div>
-                                                    <span className="text-[10px] font-bold tracking-wider uppercase px-2 py-1 bg-clause-gold/10 text-clause-gold rounded border border-clause-gold/20">Premium SOP</span>
+                                                    <div className="text-[#B8B8B8]"><Gavel size={20} /></div>
+                                                    <span className="text-[10px] font-bold tracking-wider uppercase px-2 py-1 bg-[#B8B8B8]/10 text-[#B8B8B8] rounded border border-[#2A2A2A]">Premium SOP</span>
                                                 </div>
 
                                                 <ConfirmDialog
@@ -1440,7 +1440,7 @@ export default function TasksDashboardPage() {
                                             </p>
                                             <div className="flex justify-between items-center mt-6 pt-4 border-t border-white/10">
                                                 <span className="text-[10px] font-bold text-gray-500 tracking-wider uppercase">{itemCount} SUB-TASKS • AI ASSISTED</span>
-                                                <span className="text-xs font-semibold text-clause-gold group-hover:translate-x-1 transition-transform">SELECT TEMPLATE →</span>
+                                                <span className="text-xs font-semibold text-[#B8B8B8] group-hover:translate-x-1 transition-transform">SELECT TEMPLATE →</span>
                                             </div>
                                         </div>
                                     );
@@ -1451,7 +1451,7 @@ export default function TasksDashboardPage() {
                                     <div className="text-gray-500 mb-3"><FileWarning size={28} /></div>
                                     <h3 className="text-sm font-bold text-gray-300 mb-1">No Custom SOPs Found</h3>
                                     <p className="text-xs text-gray-500 mb-4 px-4">Standardize your workflow by creating AI-assisted Task Templates.</p>
-                                    <Link href="/dashboard/settings/templates" onClick={() => setIsSopModalOpen(false)} className="text-xs font-semibold text-clause-gold border border-clause-gold/30 bg-clause-gold/10 px-4 py-2 rounded hover:bg-clause-gold/20 transition-colors">
+                                    <Link href="/dashboard/settings/templates" onClick={() => setIsSopModalOpen(false)} className="text-xs font-semibold text-[#B8B8B8] border border-[#3A3A3A] bg-[#B8B8B8]/10 px-4 py-2 rounded hover:bg-[#B8B8B8]/20 transition-colors">
                                         + Create Template
                                     </Link>
                                 </div>
@@ -1465,12 +1465,12 @@ export default function TasksDashboardPage() {
             {/* BEGIN: Task-Specific AI Chat Modal */}
             {activeAiTask && (
                 <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-                    <div className="bg-[#0a0a0a] border border-clause-gold/30 rounded-xl w-full max-w-2xl overflow-hidden flex flex-col shadow-2xl animate-in fade-in zoom-in duration-200">
+                    <div className="bg-[#0a0a0a] border border-[#3A3A3A] rounded-xl w-full max-w-2xl overflow-hidden flex flex-col shadow-2xl animate-in fade-in zoom-in duration-200">
 
                         {/* Header */}
                         <div className="p-4 border-b border-white/10 flex justify-between items-center bg-white/5">
                             <div>
-                                <h3 className="text-clause-gold font-serif text-lg flex items-center gap-2">Clause Assistant</h3>
+                                <h3 className="text-[#B8B8B8] font-serif text-lg flex items-center gap-2">Clause Assistant</h3>
                                 <p className="text-[10px] text-white/50 mt-1 uppercase tracking-wider">Context: {activeAiTask.title}</p>
                             </div>
                             <button onClick={() => setActiveAiTask(null)} className="text-white/50 hover:text-white p-2 cursor-pointer">✕</button>
@@ -1481,7 +1481,7 @@ export default function TasksDashboardPage() {
                             {/* Initial Greeting */}
                             {aiMessages.length === 0 && (
                                 <div className="bg-white/5 p-3 rounded-lg border border-white/10 self-start max-w-[85%]">
-                                    <p className="mb-2">I am analyzing the documents for <span className="text-clause-gold font-medium">"{activeAiTask?.matters?.title || 'this matter'}"</span> to assist you with the task: <span className="font-semibold text-white">"{activeAiTask?.title}"</span>.</p>
+                                    <p className="mb-2">I am analyzing the documents for <span className="text-[#B8B8B8] font-medium">"{activeAiTask?.matters?.title || 'this matter'}"</span> to assist you with the task: <span className="font-semibold text-white">"{activeAiTask?.title}"</span>.</p>
                                     <p className="text-xs text-white/50">I can draft emails, extract obligations from the contract, or suggest next procedural steps. What do you need?</p>
                                 </div>
                             )}
@@ -1493,7 +1493,7 @@ export default function TasksDashboardPage() {
                                     : msg.content;
 
                                 return (
-                                <div key={idx} className={`p-3.5 rounded-xl max-w-[85%] shadow-lg ${msg.role === 'user' ? 'bg-clause-gold/20 border border-clause-gold/30 self-end text-white' : 'bg-white/5 border border-white/10 self-start text-white/90'}`}>
+                                <div key={idx} className={`p-3.5 rounded-xl max-w-[85%] shadow-lg ${msg.role === 'user' ? 'bg-[#B8B8B8]/20 border border-[#3A3A3A] self-end text-[#0A0A0A]' : 'bg-white/5 border border-white/10 self-start text-white/90'}`}>
                                     {msg.role === 'user' ? (
                                         <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
                                     ) : (
@@ -1503,7 +1503,7 @@ export default function TasksDashboardPage() {
                                                 unwrapDisallowed
                                                 components={{
                                                     p: ({ node, ...props }) => <p className="mb-3 last:mb-0 leading-relaxed" {...props} />,
-                                                    strong: ({ node, ...props }) => <strong className="font-bold text-clause-gold" {...props} />,
+                                                    strong: ({ node, ...props }) => <strong className="font-bold text-[#B8B8B8]" {...props} />,
                                                     ul: ({ node, ...props }) => <ul className="list-disc ml-5 mb-3 space-y-1.5" {...props} />,
                                                     ol: ({ node, ...props }) => <ol className="list-decimal ml-5 mb-3 space-y-1.5" {...props} />,
                                                     li: ({ node, ...props }) => <li className="pl-1" {...props} />,
@@ -1529,7 +1529,7 @@ export default function TasksDashboardPage() {
                                                                         console.log("⚡ [DEBUG] Tombol Emas Diklik! Title:", linkText, "Task ID:", currentTaskId);
                                                                         handleCreateAiSubtask(linkText, currentTaskId);
                                                                     }}
-                                                                    className="bg-clause-gold/10 hover:bg-clause-gold/30 text-clause-gold border border-clause-gold/50 px-3 py-1.5 rounded-lg text-xs font-semibold mt-2 mb-2 flex items-center gap-2 transition-all duration-200 shadow-sm cursor-pointer w-fit text-left"
+                                                                    className="bg-[#B8B8B8]/10 hover:bg-[#B8B8B8]/30 text-[#B8B8B8] border border-[#3A3A3A] px-3 py-1.5 rounded-lg text-xs font-semibold mt-2 mb-2 flex items-center gap-2 transition-all duration-200 shadow-sm cursor-pointer w-fit text-left"
                                                                 >
                                                                     ⚡ {linkText}
                                                                 </button>
@@ -1537,7 +1537,7 @@ export default function TasksDashboardPage() {
                                                         }
 
                                                         // Fallback for normal links
-                                                        return <a href={safeExternalHref(href)} target="_blank" rel="noopener noreferrer" className="text-blue-400 underline" onClick={(e) => e.preventDefault()} {...props}>{children}</a>;
+                                                        return <a href={safeExternalHref(href)} target="_blank" rel="noopener noreferrer" className="text-[#B8B8B8] underline" onClick={(e) => e.preventDefault()} {...props}>{children}</a>;
                                                     },
                                                     img: ({ alt, src }) => (
                                                         <BlockedMarkdownImage
@@ -1577,12 +1577,12 @@ export default function TasksDashboardPage() {
                                 <input
                                     type="text"
                                     placeholder="Ask Clause AI to draft, analyze, or summarize..."
-                                    className="w-full bg-[#111] border border-white/10 rounded-lg pl-4 pr-12 py-3 text-white focus:ring-1 focus:ring-clause-gold focus:border-clause-gold text-xs"
+                                    className="w-full bg-[#111] border border-white/10 rounded-lg pl-4 pr-12 py-3 text-white focus:ring-1 focus:ring-[#888888] focus:border-[#3A3A3A] text-xs"
                                     value={aiInput}
                                     onChange={(e) => setAiInput(e.target.value)}
                                     onKeyDown={(e) => { if (e.key === 'Enter') handleSendAiMessage(); }}
                                 />
-                                <button onClick={handleSendAiMessage} className="absolute right-2 top-1/2 -translate-y-1/2 text-clause-gold hover:bg-white/10 p-1.5 rounded-md transition-colors cursor-pointer">
+                                <button onClick={handleSendAiMessage} className="absolute right-2 top-1/2 -translate-y-1/2 text-[#B8B8B8] hover:bg-white/10 p-1.5 rounded-md transition-colors cursor-pointer">
                                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg>
                                 </button>
                             </div>

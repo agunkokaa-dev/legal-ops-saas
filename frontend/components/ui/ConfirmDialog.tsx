@@ -12,7 +12,7 @@ export interface ConfirmDialogProps {
   confirmText?: string
   /** The label for the cancel button. If null/undefined, behaves as an Alert with no cancel option. */
   cancelText?: string | null
-  /** The variant style: destructive (red) or default (gold) */
+  /** The variant style: destructive (red) or default (accent) */
   variant?: 'destructive' | 'default'
   
   /** Function to execute on confirm. Displays loading state if async. */
@@ -96,7 +96,7 @@ export default function ConfirmDialog({
         className={`bg-surface border w-full max-w-md rounded-lg flex flex-col overflow-hidden relative z-50 animate-in fade-in zoom-in-95 duration-200 ${
           variant === 'destructive' 
             ? 'shadow-[0_0_50px_rgba(239,68,68,0.15)] border-surface-border' 
-            : 'shadow-[0_0_50px_rgba(212,175,55,0.15)] border-[rgba(212,175,55,0.2)]'
+            : 'shadow-[0_0_50px_rgba(184, 184, 184,0.15)] border-[rgba(184, 184, 184,0.2)]'
         }`}
         onClick={(e) => e.stopPropagation()}
       >
@@ -105,7 +105,7 @@ export default function ConfirmDialog({
           <div className={`h-12 w-12 rounded-full flex items-center justify-center border ${
             variant === 'destructive'
               ? 'bg-red-500/10 border-red-500/20 text-red-500'
-              : 'bg-[#d4af37]/10 border-[#d4af37]/20 text-[#d4af37]'
+              : 'bg-[#B8B8B8]/10 border-[#B8B8B8]/20 text-[#B8B8B8]'
           }`}>
             <span className="material-symbols-outlined">
               {variant === 'destructive' ? 'warning' : 'info'}
@@ -137,7 +137,7 @@ export default function ConfirmDialog({
             className={`px-4 py-2 rounded text-sm font-medium transition-all disabled:opacity-50 flex items-center gap-2 ${
               variant === 'destructive'
                 ? 'bg-red-500/10 border border-red-500/50 text-red-500 hover:bg-red-500 hover:text-white'
-                : 'bg-[#d4af37]/10 border border-[#d4af37]/50 text-[#d4af37] hover:bg-[#d4af37] hover:text-black font-bold shadow-[0_0_15px_rgba(212,175,55,0.3)] hover:scale-[1.02]'
+                : 'bg-[#B8B8B8]/10 border border-[#B8B8B8]/50 text-[#B8B8B8] hover:bg-[#D4D4D4] hover:text-[#0A0A0A] font-bold shadow-[0_0_15px_rgba(184, 184, 184,0.3)] hover:scale-[1.02]'
             }`}
           >
             {isExecuting ? (

@@ -320,7 +320,7 @@ export default function ContractReviewClient({
             }
 
             toast.success('✅ Task successfully added to Backlog.', {
-                style: { background: '#1a1a1a', border: '1px solid #d4af37', color: '#fff' },
+                style: { background: '#1a1a1a', border: '1px solid #B8B8B8', color: '#fff' },
                 duration: 6000,
                 action: {
                     label: 'Open Task Management',
@@ -346,7 +346,7 @@ export default function ContractReviewClient({
     if (isLoading) {
         const phaseMessages = {
             checking: { title: 'Checking for Cached Review', subtitle: 'Looking up existing analysis data...' },
-            analyzing: { title: 'AI is Analyzing This Document', subtitle: 'Running 7-Agent LangGraph Pipeline — this may take 30-60 seconds...' },
+            analyzing: { title: 'AI is Analyzing This Document', subtitle: 'Running cost-optimized review pipeline — this may take 30-60 seconds...' },
             finalizing: { title: 'Finalizing Results', subtitle: 'Structuring findings and insights...' }
         }
         const phase = phaseMessages[loadingPhase]
@@ -356,9 +356,9 @@ export default function ContractReviewClient({
         return (
             <div className="flex-1 flex flex-col items-center justify-center bg-[#0a0a0a] gap-6">
                 <div className="relative">
-                    <div className="w-16 h-16 border-2 border-[#d4af37]/20 rounded-full animate-spin" style={{ borderTopColor: '#d4af37' }} />
+                    <div className="w-16 h-16 border-2 border-[#B8B8B8]/20 rounded-full animate-spin" style={{ borderTopColor: '#B8B8B8' }} />
                     <div className="absolute inset-0 flex items-center justify-center">
-                        <span className="material-symbols-outlined text-[#d4af37] text-2xl" style={{ fontVariationSettings: "'FILL' 1" }}>shield</span>
+                        <span className="material-symbols-outlined text-[#B8B8B8] text-2xl" style={{ fontVariationSettings: "'FILL' 1" }}>shield</span>
                     </div>
                 </div>
                 <div className="text-center">
@@ -367,10 +367,10 @@ export default function ContractReviewClient({
                 </div>
                 {loadingPhase === 'analyzing' && (
                     <div className="flex gap-2 mt-2">
-                        {['Ingestion', 'Compliance', 'Risk', 'Negotiation', 'Drafting', 'Obligations', 'Classification'].map((step, i) => (
+                        {['Ingestion', 'Compliance', 'Risk', 'Obligations', 'Classification'].map((step, i) => (
                             <div key={step} className="flex flex-col items-center gap-1">
                                 <div
-                                    className="w-2 h-2 rounded-full bg-[#d4af37] animate-pulse"
+                                    className="w-2 h-2 rounded-full bg-[#B8B8B8] animate-pulse"
                                     style={{ animationDelay: `${i * 200}ms` }}
                                 />
                                 <span className="text-[9px] text-zinc-600 tracking-wider">{step}</span>
@@ -391,7 +391,7 @@ export default function ContractReviewClient({
                 <div className="flex gap-3">
                     <button
                         onClick={() => loadReview(true)}
-                        className="px-4 py-2 text-xs bg-[#d4af37] text-black font-bold rounded hover:bg-[#b5952f] transition-colors"
+                        className="px-4 py-2 text-xs bg-[#B8B8B8] text-[#0A0A0A] font-bold rounded hover:bg-[#D4D4D4] transition-colors"
                     >
                         Retry Analysis
                     </button>
@@ -422,7 +422,7 @@ export default function ContractReviewClient({
                     <h1 className="text-white font-serif text-sm font-semibold truncate max-w-[300px]">
                         {contractTitle}
                     </h1>
-                    <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-[#d4af37]/10 text-[#d4af37] border border-[#d4af37]/20">
+                    <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-[#B8B8B8]/10 text-[#B8B8B8] border border-[#B8B8B8]/20">
                         {wizardMode ? 'Wizard Mode' : 'Review Mode'}
                     </span>
                 </div>

@@ -351,7 +351,6 @@ def assess_pipeline_output_quality(
     agents = agents_to_validate or [
         "compliance",
         "risk",
-        "drafting",
         "obligation_miner",
         "clause_classifier",
     ]

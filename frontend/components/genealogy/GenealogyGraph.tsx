@@ -95,7 +95,7 @@ export default function GenealogyGraph({ documents = [], relationships = [], cur
                 source: rel.parent_id,
                 target: rel.child_id,
                 animated: true,
-                style: { stroke: '#d4af37', strokeWidth: 2, filter: 'drop-shadow(0 0 5px rgba(212,175,55,0.3))' },
+                style: { stroke: '#B8B8B8', strokeWidth: 2, filter: 'drop-shadow(0 0 5px rgba(184, 184, 184,0.3))' },
             })
         })
 

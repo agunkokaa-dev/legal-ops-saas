@@ -48,8 +48,8 @@ function getRoleClasses(role: DebateTurn['role']) {
             }
         default:
             return {
-                badge: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
-                dot: 'bg-amber-400',
+                badge: 'bg-[#1C1C1C] text-[#B8B8B8] border-[#3A3A3A]',
+                dot: 'bg-[#B8B8B8]',
                 icon: 'account_balance',
                 label: 'Judge',
             }
@@ -88,7 +88,7 @@ export default function DebateTurnCard({
 
     return (
         <div className={`rounded-2xl border bg-[#111] p-4 shadow-[0_10px_40px_rgba(0,0,0,0.18)] transition-all ${
-            isLatest ? 'border-[#D4AF37]/40 ring-1 ring-[#D4AF37]/20' : 'border-zinc-800/70'
+            isLatest ? 'border-[#3A3A3A] ring-1 ring-[#888888]/20' : 'border-zinc-800/70'
         }`}>
             <div className="mb-3 flex items-start justify-between gap-4">
                 <div className="flex items-start gap-3">
@@ -115,7 +115,7 @@ export default function DebateTurnCard({
                 <button
                     type="button"
                     onClick={() => setExpanded(prev => !prev)}
-                    className="mt-2 text-[10px] uppercase tracking-[0.22em] text-[#D4AF37] hover:text-[#f2ca50]"
+                    className="mt-2 text-[10px] uppercase tracking-[0.22em] text-[#B8B8B8] hover:text-[#D4D4D4]"
                 >
                     {expanded ? 'Show Less' : 'Show More'}
                 </button>
@@ -171,7 +171,7 @@ export default function DebateTurnCard({
                                 ? 'bg-rose-400/80'
                                 : turn.role === 'defender'
                                   ? 'bg-emerald-400/80'
-                                  : 'bg-amber-400/80'
+                                  : 'bg-[#B8B8B8]/80'
                         }`}
                         style={{ width: `${Math.max(5, Math.round((turn.confidence || 0) * 100))}%` }}
                     />

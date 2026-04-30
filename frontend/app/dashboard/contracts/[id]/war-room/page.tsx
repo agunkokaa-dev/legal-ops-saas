@@ -1,5 +1,5 @@
-import { notFound } from 'next/navigation';
 import WarRoomClient from '@/components/war-room/WarRoomClient';
+import { WarRoomErrorBoundary } from '@/components/war-room/WarRoomErrorBoundary';
 import { getContractById } from '@/app/actions/documentActions';
 
 export const dynamic = 'force-dynamic';
@@ -22,12 +22,14 @@ export default async function WarRoomPage({ params }: { params: Promise<{ id: st
     }
 
     return (
-        <WarRoomClient 
-            contractId={contractId} 
-            matterId={contract.matter_id}
-            contractTitle={contract.title || 'Untitled Contract'}
-            contractStatus={contract.status || null}
-            fileUrl={contract.file_url || null}
-        />
+        <WarRoomErrorBoundary contractId={contractId}>
+            <WarRoomClient
+                contractId={contractId}
+                matterId={contract.matter_id}
+                contractTitle={contract.title || 'Untitled Contract'}
+                contractStatus={contract.status || null}
+                fileUrl={contract.file_url || null}
+            />
+        </WarRoomErrorBoundary>
     );
 }

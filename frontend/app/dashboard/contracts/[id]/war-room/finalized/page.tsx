@@ -41,14 +41,14 @@ export default async function WarRoomFinalizedPage({
                             versionId={versionId}
                             versionNumber={versionNumber}
                             format="docx"
-                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-4 text-sm font-semibold text-zinc-100 transition hover:border-[#D4AF37]/40 hover:bg-zinc-800"
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-4 text-sm font-semibold text-zinc-100 transition hover:border-[#B8B8B8]/40 hover:bg-zinc-800"
                         />
                         <DownloadButton
                             contractId={contractId}
                             versionId={versionId}
                             versionNumber={versionNumber}
                             format="pdf"
-                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-4 text-sm font-semibold text-zinc-100 transition hover:border-[#D4AF37]/40 hover:bg-zinc-800"
+                            className="inline-flex items-center justify-center gap-2 rounded-xl border border-zinc-700 bg-zinc-900 px-4 py-4 text-sm font-semibold text-zinc-100 transition hover:border-[#B8B8B8]/40 hover:bg-zinc-800"
                         />
                     </div>
                 </div>

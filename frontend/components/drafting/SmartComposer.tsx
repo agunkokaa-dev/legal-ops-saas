@@ -149,7 +149,7 @@ export default function SmartComposer({
     },
     editorProps: {
       attributes: {
-        class: 'w-full h-full min-h-[700px] bg-transparent border-none text-black font-serif text-[15px] leading-relaxed focus:ring-0 px-0 outline-none prose prose-zinc prose-p:my-2 prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg max-w-none focus:outline-none'
+        class: 'w-full min-h-full bg-transparent border-none text-[#0A0A0A] font-serif text-[15px] leading-relaxed focus:ring-0 px-0 outline-none prose prose-zinc prose-p:my-2 prose-h1:text-2xl prose-h2:text-xl prose-h3:text-lg max-w-none focus:outline-none'
       }
     },
     immediatelyRender: false,
@@ -559,7 +559,7 @@ export default function SmartComposer({
           label: 'Go to Settings',
           onClick: () => router.push('/dashboard/settings/clause-library'),
         },
-        style: { background: '#141414', border: '1px solid #d4af37', color: 'white' },
+        style: { background: '#141414', border: '1px solid #B8B8B8', color: 'white' },
       });
       setTextSelection(null);
       window.getSelection()?.removeAllRanges();
@@ -620,7 +620,7 @@ export default function SmartComposer({
   }, [handleDocumentClick]);
 
   return (
-    <div className="fixed inset-0 z-[100] bg-[#0a0a0a] flex flex-col overflow-hidden text-[#e5e2e1] font-['Inter'] selection:bg-[#f2ca50]/30">
+    <div className="fixed inset-0 z-[100] bg-[#0a0a0a] flex flex-col overflow-hidden text-[#e5e2e1] font-['Inter'] selection:bg-[#B8B8B8]/30">
       <style dangerouslySetInnerHTML={{
         __html: `
         @import url('https://fonts.googleapis.com/css2?family=Noto+Serif:ital,wght@0,300;0,400;0,700;1,400&family=Inter:wght@300;400;500;600;700&display=swap');
@@ -663,7 +663,7 @@ export default function SmartComposer({
           {currentContractId && (
             <button
               onClick={() => router.push(`/dashboard/bilingual/${currentContractId}`)}
-              className="relative overflow-hidden border border-blue-500/40 bg-[#0a0a0a] text-blue-400 hover:bg-blue-500/10 hover:border-blue-400 px-6 py-2 rounded text-[10px] font-extrabold tracking-[0.1em] uppercase transition-all duration-300 shadow-[0_0_15px_rgba(59,130,246,0.05)] hover:shadow-[0_0_25px_rgba(59,130,246,0.2)]"
+              className="relative overflow-hidden border border-[#3A3A3A] bg-[#0a0a0a] text-[#B8B8B8] hover:bg-[#1C1C1C] hover:border-[#3A3A3A] px-6 py-2 rounded text-[10px] font-extrabold tracking-[0.1em] uppercase transition-all duration-300 shadow-[0_0_15px_rgba(184,184,184,0.05)] hover:shadow-[0_0_25px_rgba(184,184,184,0.2)]"
               title="Open the Bilingual Editor (Bahasa Indonesia & English)"
             >
               Bilingual Editor
@@ -673,7 +673,7 @@ export default function SmartComposer({
           <button
             onClick={handleAudit}
             disabled={isAuditing}
-            className="relative overflow-hidden border border-[#d4af37]/40 bg-[#0a0a0a] text-[#d4af37] hover:bg-[#d4af37]/10 hover:border-[#d4af37] px-8 py-2.5 rounded text-[10px] font-extrabold tracking-[0.2em] uppercase transition-all duration-300 shadow-[0_0_15px_rgba(212,175,55,0.05)] hover:shadow-[0_0_25px_rgba(212,175,55,0.2)]"
+            className="relative overflow-hidden border border-[#B8B8B8]/40 bg-[#0a0a0a] text-[#B8B8B8] hover:bg-[#B8B8B8]/10 hover:border-[#B8B8B8] px-8 py-2.5 rounded text-[10px] font-extrabold tracking-[0.2em] uppercase transition-all duration-300 shadow-[0_0_15px_rgba(184, 184, 184,0.05)] hover:shadow-[0_0_25px_rgba(184, 184, 184,0.2)]"
           >
             {isAuditing ? "Auditing..." : "RUN COMPLIANCE AUDIT"}
           </button>
@@ -681,13 +681,13 @@ export default function SmartComposer({
       </header>
 
       {/* Main Workspace Layout */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* SideNavBar (Left Fixed) */}
         <aside className="w-20 bg-[#0e0e0e] border-r border-[#4d4635]/20 flex flex-col items-center py-6 z-40 flex-shrink-0">
           <div className="space-y-8">
             <div
               onClick={() => setActiveTab('docs')}
-              className={`flex flex-col items-center gap-1 group cursor-pointer transition-all ${activeTab === 'docs' ? 'text-white border-l-2 border-[#f2ca50] bg-[#1c1b1b] py-3 pl-0 w-full' : 'text-zinc-500 hover:text-white hover:bg-[#1c1b1b] p-2 rounded'}`}
+              className={`flex flex-col items-center gap-1 group cursor-pointer transition-all ${activeTab === 'docs' ? 'text-white border-l-2 border-[#B8B8B8] bg-[#1c1b1b] py-3 pl-0 w-full' : 'text-zinc-500 hover:text-white hover:bg-[#1c1b1b] p-2 rounded'}`}
             >
               <span className="material-symbols-outlined text-2xl" style={activeTab === 'docs' ? { fontVariationSettings: "'FILL' 1" } : {}}>description</span>
               <span className={`font-sans text-[10px] tracking-widest uppercase ${activeTab === 'docs' ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>Docs</span>
@@ -695,14 +695,14 @@ export default function SmartComposer({
 
             <div
               onClick={() => setActiveTab('library')}
-              className={`flex flex-col items-center gap-1 group cursor-pointer transition-all ${activeTab === 'library' ? 'text-white border-l-2 border-[#f2ca50] bg-[#1c1b1b] py-3 pl-0 w-full' : 'text-zinc-500 hover:text-white hover:bg-[#1c1b1b] p-2 rounded'}`}
+              className={`flex flex-col items-center gap-1 group cursor-pointer transition-all ${activeTab === 'library' ? 'text-white border-l-2 border-[#B8B8B8] bg-[#1c1b1b] py-3 pl-0 w-full' : 'text-zinc-500 hover:text-white hover:bg-[#1c1b1b] p-2 rounded'}`}
             >
               <span className="material-symbols-outlined text-2xl" style={activeTab === 'library' ? { fontVariationSettings: "'FILL' 1" } : {}}>menu_book</span>
               <span className={`font-sans text-[10px] tracking-widest uppercase ${activeTab === 'library' ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>Library</span>
             </div>
             <div
               onClick={() => setActiveTab('history')}
-              className={`flex flex-col items-center gap-1 group cursor-pointer transition-all ${activeTab === 'history' ? 'text-white border-l-2 border-[#f2ca50] bg-[#1c1b1b] py-3 pl-0 w-full' : 'text-zinc-500 hover:text-white hover:bg-[#1c1b1b] p-2 rounded'}`}
+              className={`flex flex-col items-center gap-1 group cursor-pointer transition-all ${activeTab === 'history' ? 'text-white border-l-2 border-[#B8B8B8] bg-[#1c1b1b] py-3 pl-0 w-full' : 'text-zinc-500 hover:text-white hover:bg-[#1c1b1b] p-2 rounded'}`}
             >
               <span className="material-symbols-outlined text-2xl" style={activeTab === 'history' ? { fontVariationSettings: "'FILL' 1" } : {}}>history</span>
               <span className={`font-sans text-[10px] tracking-widest uppercase ${activeTab === 'history' ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}>History</span>
@@ -735,14 +735,14 @@ export default function SmartComposer({
             <div className="space-y-6 flex-1">
               {/* Template Card */}
               <div className="bg-[#0f0f0f] border border-zinc-800/60 rounded-xl p-5">
-                <h3 className="font-['Inter'] text-xs uppercase tracking-[0.2em] text-[#d4af37] mb-4">Draft Template</h3>
+                <h3 className="font-['Inter'] text-xs uppercase tracking-[0.2em] text-[#B8B8B8] mb-4">Draft Template</h3>
                 <div className="space-y-4">
                   <div>
                     <label className="block text-[10px] text-zinc-500 mb-1">TEMPLATE NAME</label>
                     <select
                       value={templateName}
                       onChange={(e) => setTemplateName(e.target.value)}
-                      className="w-full bg-[#141414] border-none text-sm text-zinc-300 rounded-md focus:ring-1 focus:ring-[#f2ca50]/40 h-10 px-3 outline-none"
+                      className="w-full bg-[#141414] border-none text-sm text-zinc-300 rounded-md focus:ring-1 focus:ring-[#B8B8B8]/40 h-10 px-3 outline-none"
                     >
                       <option>Mutual NDA</option>
                       <option>Master Service Agreement</option>
@@ -754,18 +754,18 @@ export default function SmartComposer({
 
               {/* Intake Variables Card */}
               <div className="bg-[#0f0f0f] border border-zinc-800/60 rounded-xl p-5">
-                <h3 className="font-['Inter'] text-xs uppercase tracking-[0.2em] text-[#d4af37] mb-4">Intake Variables</h3>
+                <h3 className="font-['Inter'] text-xs uppercase tracking-[0.2em] text-[#B8B8B8] mb-4">Intake Variables</h3>
                 <div className="space-y-4">
                   <div>
                     <label className="block text-[10px] text-zinc-500 mb-1">EFFECTIVE DATE</label>
-                    <input className="w-full bg-[#141414] border-none text-sm text-zinc-300 rounded-md focus:ring-1 focus:ring-[#f2ca50]/40 h-10 px-3 outline-none" type="date" />
+                    <input className="w-full bg-[#141414] border-none text-sm text-zinc-300 rounded-md focus:ring-1 focus:ring-[#B8B8B8]/40 h-10 px-3 outline-none" type="date" />
                   </div>
                   <div>
                     <label className="block text-[10px] text-zinc-500 mb-1">GOVERNING LAW</label>
                     <select
                       value={governingLaw}
                       onChange={(e) => setGoverningLaw(e.target.value)}
-                      className="w-full bg-[#141414] border-none text-sm text-zinc-300 rounded-md focus:ring-1 focus:ring-[#f2ca50]/40 h-10 px-3 outline-none"
+                      className="w-full bg-[#141414] border-none text-sm text-zinc-300 rounded-md focus:ring-1 focus:ring-[#B8B8B8]/40 h-10 px-3 outline-none"
                     >
                       <option>State of Delaware</option>
                       <option>State of New York</option>
@@ -775,7 +775,7 @@ export default function SmartComposer({
                   </div>
                   <div>
                     <label className="block text-[10px] text-zinc-500 mb-1">TERMINATION (MONTHS)</label>
-                    <input className="w-full bg-[#141414] border-none text-sm text-zinc-300 rounded-md focus:ring-1 focus:ring-[#f2ca50]/40 h-10 px-3 outline-none" placeholder="12" type="number" />
+                    <input className="w-full bg-[#141414] border-none text-sm text-zinc-300 rounded-md focus:ring-1 focus:ring-[#B8B8B8]/40 h-10 px-3 outline-none" placeholder="12" type="number" />
                   </div>
                 </div>
               </div>
@@ -783,13 +783,13 @@ export default function SmartComposer({
               {/* Playbook Library Card */}
               <div className="bg-[#0f0f0f] border border-zinc-800/60 rounded-xl p-5">
                 <div className="space-y-2">
-                  <label className="text-[10px] font-bold text-[#d4af37] uppercase tracking-[0.2em] mb-4 block">Playbook Library</label>
+                  <label className="text-[10px] font-bold text-[#B8B8B8] uppercase tracking-[0.2em] mb-4 block">Playbook Library</label>
                   {playbookCategories.length > 0 ? playbookCategories.map((category) => (
                     <div
                       key={category}
                       onClick={() => setSelectedPlaybook(category)}
                       className={`p-3 rounded-lg border cursor-pointer transition-all ${selectedPlaybook === category
-                        ? 'border-[#d4af37]/50 bg-[#141414]'
+                        ? 'border-[#B8B8B8]/50 bg-[#141414]'
                         : 'border-white/5 bg-transparent hover:border-white/20'
                         }`}
                     >
@@ -810,7 +810,7 @@ export default function SmartComposer({
                 w-full py-3.5 px-4 rounded-md uppercase font-bold text-sm tracking-[0.15em] transition-all duration-300 mt-6
                 ${isGenerating 
                     ? 'bg-white/5 text-white/30 cursor-not-allowed border border-white/10' 
-                    : 'bg-gradient-to-r from-[#d4af37] to-[#bda036] text-black shadow-[0_0_15px_rgba(212,175,55,0.2)] hover:shadow-[0_0_25px_rgba(212,175,55,0.4)] hover:scale-[1.02] active:scale-[0.98]'
+                    : 'bg-gradient-to-r from-[#B8B8B8] to-[#B8B8B8] text-[#0A0A0A] shadow-[0_0_15px_rgba(184, 184, 184,0.2)] hover:shadow-[0_0_25px_rgba(184, 184, 184,0.4)] hover:scale-[1.02] active:scale-[0.98]'
                 }
               `}
             >
@@ -820,32 +820,32 @@ export default function SmartComposer({
         )}
 
         {/* Column 2: The Live Document */}
-        <section className="flex-1 bg-[#0a0a0a] p-8 overflow-y-auto custom-scrollbar flex flex-col items-center relative">
+        <section className="relative flex flex-1 min-h-0 flex-col items-center bg-[#0a0a0a] p-8 overflow-hidden">
           {mode === 'warroom' && source === 'war_room' && warRoomSourceMeta && (
-            <div className="mb-4 flex w-full max-w-[750px] items-center gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-              <span className="material-symbols-outlined text-base text-amber-300">info</span>
+            <div className="mb-4 flex w-full max-w-[750px] flex-shrink-0 items-center gap-2 rounded-xl border border-[#3A3A3A] bg-[#1C1C1C] px-4 py-3 text-sm text-[#E8E8E8]">
+              <span className="material-symbols-outlined text-base text-[#B8B8B8]">info</span>
               <span>
                 Editing {warRoomSourceMeta.versionLabel} from War Room
                 {warRoomSourceMeta.title ? ` — ${warRoomSourceMeta.title}` : ''}
               </span>
             </div>
           )}
-          <div className="max-w-[750px] w-full bg-white text-black border border-zinc-200 rounded-xl shadow-2xl p-16 min-h-[1000px] mb-12 flex flex-col">
-            <header className="text-center mb-8">
+          <div className="mb-6 flex w-full max-w-[750px] flex-1 min-h-0 flex-col overflow-hidden rounded-xl border border-zinc-200 bg-white text-[#0A0A0A] shadow-2xl">
+            <header className="mb-8 flex-shrink-0 px-16 pt-16 text-center">
               <h1 className="font-serif text-3xl mb-2 tracking-tight uppercase">{templateName}</h1>
               <p className="font-serif text-sm italic text-zinc-500">Document ID: NDA-{matterId.substring(0, 8).toUpperCase()}</p>
             </header>
 
-            <div className="flex-1 w-full relative group">
+            <div className="relative flex-1 min-h-0 w-full px-8 pb-8 group">
               {previewText !== null ? (
                 /* READ-ONLY PREVIEW MODE */
-                <div className="relative">
-                  <div className="absolute top-0 left-0 right-0 bg-amber-500/90 text-black text-[10px] font-extrabold uppercase tracking-[0.2em] text-center py-1.5 rounded-t-lg z-10">
+                <div className="relative h-full min-h-0 overflow-hidden rounded-lg bg-zinc-100">
+                  <div className="absolute top-0 left-0 right-0 bg-[#B8B8B8]/90 text-[#0A0A0A] text-[10px] font-extrabold uppercase tracking-[0.2em] text-center py-1.5 rounded-t-lg z-10">
                     PREVIEWING OLD VERSION
                   </div>
                   <div
                     dangerouslySetInnerHTML={{ __html: sanitizeContractHtml(previewText) }}
-                    className="w-full h-full min-h-[700px] bg-zinc-100 border-none text-zinc-600 font-serif text-[15px] leading-relaxed resize-none focus:ring-0 overflow-y-auto px-8 custom-scrollbar outline-none pt-12 pb-8 cursor-not-allowed prose max-w-none prose-zinc"
+                    className="h-full overflow-y-auto bg-zinc-100 px-8 pb-8 pt-12 font-serif text-[15px] leading-relaxed text-zinc-600 outline-none prose prose-zinc max-w-none custom-scrollbar cursor-not-allowed"
                   />
                   <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex gap-3">
                     <button
@@ -857,11 +857,11 @@ export default function SmartComposer({
                   </div>
                 </div>
               ) : draftText ? (
-                <div className="w-full h-full custom-scrollbar px-2 max-w-[650px] mx-auto">
+                <div className="mx-auto h-full min-h-0 w-full max-w-[650px] overflow-y-auto px-2 custom-scrollbar">
                   <EditorContent editor={editor} />
                 </div>
               ) : (
-                <div className="w-full h-full min-h-[700px] flex items-center justify-center">
+                <div className="flex h-full min-h-[700px] items-center justify-center">
                   <p className="text-zinc-600 font-serif italic">Use the Control Room to generate a draft...</p>
                 </div>
               )}
@@ -876,7 +876,7 @@ export default function SmartComposer({
           {textSelection && (
             <div
               data-floating-menu
-              className="fixed z-[9999] animate-in fade-in zoom-in-95 duration-200 shadow-[0_8px_32px_rgba(0,0,0,0.6)] bg-[#141414] border border-[#d4af37]/50 rounded-lg p-1 transition-all backdrop-blur-xl"
+              className="fixed z-[9999] animate-in fade-in zoom-in-95 duration-200 shadow-[0_8px_32px_rgba(0,0,0,0.6)] bg-[#141414] border border-[#B8B8B8]/50 rounded-lg p-1 transition-all backdrop-blur-xl"
               style={{ left: textSelection.x, top: textSelection.y, transform: 'translate(-50%, -100%)' }}
             >
               {rewriteMode ? (
@@ -919,7 +919,7 @@ export default function SmartComposer({
                   <div className="w-[1px] h-5 bg-white/10 mx-1"></div>
                   <button
                     onClick={handleAnalyzeClause}
-                    className="flex items-center gap-1.5 px-3 py-2 hover:bg-[#d4af37]/10 rounded-md text-xs font-bold uppercase tracking-wider text-[#d4af37] transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-2 hover:bg-[#B8B8B8]/10 rounded-md text-xs font-bold uppercase tracking-wider text-[#B8B8B8] transition-colors"
                   >
                     Analyze
                   </button>
@@ -943,9 +943,9 @@ export default function SmartComposer({
                     {msg.content}
                   </div>
                   {msg.suggestion && (
-                    <div className="bg-[#141414] border border-[#d4af37]/30 rounded-xl p-4 space-y-3 mt-3 w-full">
+                    <div className="bg-[#141414] border border-[#B8B8B8]/30 rounded-xl p-4 space-y-3 mt-3 w-full">
                       <div className="flex justify-between items-center">
-                        <span className="text-[10px] font-bold text-[#f2ca50] uppercase">Draft Suggestion</span>
+                        <span className="text-[10px] font-bold text-[#B8B8B8] uppercase">Draft Suggestion</span>
                         <span className="text-[9px] text-zinc-500">AI Generated</span>
                       </div>
                       <p className="text-xs italic text-zinc-400 font-serif leading-relaxed line-clamp-4">
@@ -954,13 +954,13 @@ export default function SmartComposer({
                       <div className="flex gap-2 mt-3 w-full">
                         <button
                           onClick={() => performSurgicalReplace(msg.suggestion!)}
-                          className="flex-1 w-full py-2 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 text-[#f2ca50] text-[10px] font-bold uppercase tracking-wider rounded transition-all"
+                          className="flex-1 w-full py-2 bg-[#B8B8B8]/20 hover:bg-[#B8B8B8]/30 text-[#B8B8B8] text-[10px] font-bold uppercase tracking-wider rounded transition-all"
                         >
                           Replace Document
                         </button>
                         <button
                           onClick={() => handleAppendClause(msg.suggestion!)}
-                          className="flex-1 w-full py-2 bg-[#d4af37]/20 hover:bg-[#d4af37]/30 text-[#f2ca50] text-[10px] font-bold uppercase tracking-wider rounded transition-all"
+                          className="flex-1 w-full py-2 bg-[#B8B8B8]/20 hover:bg-[#B8B8B8]/30 text-[#B8B8B8] text-[10px] font-bold uppercase tracking-wider rounded transition-all"
                         >
                           Append Clause
                         </button>
@@ -970,7 +970,7 @@ export default function SmartComposer({
                 </div>
               ) : (
                 <div key={idx} className="flex flex-col items-end max-w-[90%] ml-auto">
-                  <div className="bg-[#d4af37]/10 border border-[#d4af37]/20 rounded-2xl rounded-tr-sm p-4 text-sm text-zinc-200 leading-relaxed">
+                  <div className="bg-[#B8B8B8]/10 border border-[#B8B8B8]/20 rounded-2xl rounded-tr-sm p-4 text-sm text-zinc-200 leading-relaxed">
                     {msg.content}
                   </div>
                 </div>
@@ -996,10 +996,10 @@ export default function SmartComposer({
               <button
                 onClick={handleSendChat}
                 disabled={isChatting || !chatInput.trim()}
-                className="absolute bottom-0 right-0 p-2 text-[#d4af37] hover:scale-110 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
+                className="absolute bottom-0 right-0 p-2 text-[#B8B8B8] hover:scale-110 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isChatting ? (
-                  <svg className="animate-spin h-5 w-5 text-[#d4af37]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <svg className="animate-spin h-5 w-5 text-[#B8B8B8]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                   </svg>

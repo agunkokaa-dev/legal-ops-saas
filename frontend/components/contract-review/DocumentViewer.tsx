@@ -43,10 +43,10 @@ const SEVERITY_COLORS = {
         dot: 'bg-amber-500',
     },
     info: {
-        bg: 'bg-blue-500/8',
-        border: 'border-l-blue-500',
-        hoverBg: 'hover:bg-blue-500/15',
-        dot: 'bg-blue-500',
+        bg: 'bg-[#161616]',
+        border: 'border-l-[#B8B8B8]',
+        hoverBg: 'hover:bg-[#1C1C1C]',
+        dot: 'bg-[#B8B8B8]',
     },
 }
 
@@ -224,9 +224,9 @@ export default function DocumentViewer({
         const el = findingRefs.current.get(scrollToFindingId)
         if (el) {
             el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-            el.classList.add('ring-2', 'ring-[#d4af37]', 'ring-offset-2', 'ring-offset-white')
+            el.classList.add('ring-2', 'ring-[#B8B8B8]', 'ring-offset-2', 'ring-offset-white')
             setTimeout(() => {
-                el.classList.remove('ring-2', 'ring-[#d4af37]', 'ring-offset-2', 'ring-offset-white')
+                el.classList.remove('ring-2', 'ring-[#B8B8B8]', 'ring-offset-2', 'ring-offset-white')
             }, 2000)
         }
     }, [scrollToFindingId])
@@ -271,7 +271,7 @@ export default function DocumentViewer({
                 {/* A4-style paper container */}
                 <div className="max-w-[800px] mx-auto bg-white rounded-lg shadow-2xl shadow-black/40 min-h-[1056px]">
                     <div className="p-12 md:p-16">
-                        <div className="prose prose-sm max-w-none text-black">
+                        <div className="prose prose-sm max-w-none text-[#0A0A0A]">
                             <ReactMarkdown
                                 remarkPlugins={[remarkGfm]}
                                 rehypePlugins={[rehypeRaw]}
@@ -312,7 +312,7 @@ export default function DocumentViewer({
                                                     relative cursor-pointer transition-all duration-300 rounded-sm
                                                     border-l-4 px-1 -mx-1
                                                     ${colors.bg} ${colors.border} ${colors.hoverBg}
-                                                    ${isSelected || isPopoverOpen ? 'ring-2 ring-[#d4af37] ring-offset-1 ring-offset-white shadow-lg' : ''}
+                                                    ${isSelected || isPopoverOpen ? 'ring-2 ring-[#B8B8B8] ring-offset-1 ring-offset-white shadow-lg' : ''}
                                                 `}
                                                 style={{
                                                     backgroundColor: isAccepted
@@ -321,7 +321,7 @@ export default function DocumentViewer({
                                                             ? 'rgba(239, 68, 68, 0.08)'
                                                             : primaryFinding.severity === 'warning'
                                                                 ? 'rgba(245, 158, 11, 0.08)'
-                                                                : 'rgba(59, 130, 246, 0.08)',
+                                                                : 'rgba(184, 184, 184, 0.08)',
                                                     color: 'inherit',
                                                 }}
                                                 onClick={(e) => handleFindingClick(primaryFinding, e)}

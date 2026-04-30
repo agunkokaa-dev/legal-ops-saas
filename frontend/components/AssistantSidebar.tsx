@@ -2,26 +2,49 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { chatWithClause } from '@/app/actions/backend'
-import { Sparkles, Command, User, Send, FileText } from 'lucide-react'
+import { Send, FileText } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { useRouter } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
+import { useAuth } from '@clerk/nextjs'
+import { CitationPanel } from '@/components/CitationPanel'
 import { LuxuryThinkingStepper } from '@/components/ui/LuxuryThinkingStepper'
+import { getPublicApiBase } from '@/lib/public-api-base'
 import {
     BlockedMarkdownImage,
     DISALLOWED_MARKDOWN_ELEMENTS,
     safeExternalHref,
 } from '@/lib/markdownSafety'
 import { assertSafeLlmText } from '@/lib/sanitize'
+import {
+    type AssistantSource,
+    normalizeAssistantSources,
+    resolveDocumentSourceId,
+} from '@/lib/assistantSources'
+import {
+    CONTRACTS_METADATA_EVENT,
+    CONTRACTS_METADATA_STORAGE_KEY,
+    type ContractMetadata,
+    isLikelyMetadataQuery,
+    normalizeContractsMetadata,
+    readStoredContractsMetadata,
+    publishContractsMetadata,
+    tryAnswerFromMetadata,
+} from '@/lib/metadataQuery'
 
 interface Message {
     id: string
     role: 'user' | 'assistant'
     content: string
-    citations?: { contract_id: string; file_name?: string }[]
+    sources?: AssistantSource[]
 }
 
-export default function AssistantSidebar() {
+interface AssistantSidebarProps {
+    contractsMetadata?: ContractMetadata[]
+}
+
+export default function AssistantSidebar({ contractsMetadata }: AssistantSidebarProps) {
+    const { getToken, userId } = useAuth()
+    const pathname = usePathname()
     const [messages, setMessages] = useState<Message[]>([
         {
             id: 'welcome',
@@ -31,6 +54,7 @@ export default function AssistantSidebar() {
     ])
     const [input, setInput] = useState('')
     const [isLoading, setIsLoading] = useState(false)
+    const [fetchedContractsMetadata, setFetchedContractsMetadata] = useState<ContractMetadata[]>([])
     const messagesEndRef = useRef<HTMLDivElement>(null)
     const router = useRouter()
 
@@ -56,34 +80,178 @@ export default function AssistantSidebar() {
         scrollToBottom()
     }, [messages, isLoading])
 
+    // ── Storage reader + event listener (always active) ──
+    // Reads sessionStorage on mount and listens for updates from MetadataBridge
+    // in documents page. This must run on ALL pages, not just /dashboard/documents.
+    useEffect(() => {
+        if (contractsMetadata && contractsMetadata.length > 0) return
+
+        const stored = readStoredContractsMetadata()
+        if (stored.length > 0) {
+            setFetchedContractsMetadata(stored)
+        }
+
+        const handleMetadataUpdate = (event: Event) => {
+            const nextMetadata = (event as CustomEvent<ContractMetadata[]>).detail
+            if (Array.isArray(nextMetadata)) {
+                setFetchedContractsMetadata(normalizeContractsMetadata(nextMetadata))
+            }
+        }
+
+        window.addEventListener(CONTRACTS_METADATA_EVENT, handleMetadataUpdate)
+        return () => window.removeEventListener(CONTRACTS_METADATA_EVENT, handleMetadataUpdate)
+    }, [contractsMetadata])
+
+    // ── Fallback: direct API fetch when on /dashboard/documents ──
+    // Only fires if no prop metadata AND no stored metadata was found.
+    useEffect(() => {
+        if (contractsMetadata || pathname !== '/dashboard/documents' || !userId) {
+            return
+        }
+
+        // Skip if we already have metadata from storage/event
+        if (fetchedContractsMetadata.length > 0) return
+
+        let cancelled = false
+
+        const fetchMetadata = async () => {
+            try {
+                const token = await getToken()
+                const response = await fetch(`${getPublicApiBase()}/api/contracts?tab=active`, {
+                    method: 'GET',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                    },
+                    cache: 'no-store',
+                })
+
+                if (!response.ok) return
+
+                const payload = await response.json()
+                const records = Array.isArray(payload)
+                    ? payload
+                    : Array.isArray(payload?.data)
+                        ? payload.data
+                        : []
+
+                const normalized = normalizeContractsMetadata(records)
+
+                if (!cancelled) {
+                    publishContractsMetadata(normalized)
+                    setFetchedContractsMetadata(normalized)
+                }
+            } catch {
+                if (!cancelled) setFetchedContractsMetadata([])
+            }
+        }
+
+        void fetchMetadata()
+
+        return () => {
+            cancelled = true
+        }
+    }, [contractsMetadata, fetchedContractsMetadata.length, getToken, pathname, userId])
+
     const handleSend = async () => {
         if (!input.trim() || isLoading) return
 
-        const userMessage: Message = { id: Date.now().toString(), role: 'user', content: input }
-        setMessages(prev => [...prev, userMessage])
+        const trimmed = input.trim()
         setInput('')
+
+        // STEP A: fresh metadata read on every submit.
+        let activeMeta: ContractMetadata[] = []
+
+        if (contractsMetadata && contractsMetadata.length > 0) {
+            activeMeta = normalizeContractsMetadata(contractsMetadata)
+        } else if (fetchedContractsMetadata.length > 0) {
+            activeMeta = normalizeContractsMetadata(fetchedContractsMetadata)
+        }
+
+        if (activeMeta.length === 0) {
+            try {
+                const stored = window.sessionStorage.getItem(CONTRACTS_METADATA_STORAGE_KEY)
+                if (stored) {
+                    const parsed = JSON.parse(stored)
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        activeMeta = normalizeContractsMetadata(parsed)
+                    }
+                }
+            } catch {
+                activeMeta = []
+            }
+        }
+
+        const localAnswer = tryAnswerFromMetadata(trimmed, activeMeta)
+        console.log('[DEBUG] activeMeta.length:', activeMeta.length);
+        console.log('[DEBUG] localAnswer:', localAnswer);
+
+        // STEP B: answer from local metadata before any backend call.
+        if (activeMeta.length > 0) {
+            if (localAnswer !== null && localAnswer !== undefined && localAnswer !== '') {
+                const now = Date.now()
+                setMessages(prev => [
+                    ...prev,
+                    { id: now.toString(), role: 'user', content: trimmed },
+                    {
+                        id: `${now + 1}metadata`,
+                        role: 'assistant',
+                        content: localAnswer,
+                        sources: [],
+                    },
+                ])
+                return
+            }
+        }
+
+        if (pathname === '/dashboard/documents' && isLikelyMetadataQuery(trimmed)) {
+            setMessages(prev => [...prev, {
+                id: Date.now().toString(),
+                role: 'user',
+                content: trimmed,
+            }, {
+                id: Date.now().toString() + 'metadata-fallback',
+                role: 'assistant',
+                content: activeMeta.length
+                    ? `Saya tidak menemukan informasi yang relevan untuk pertanyaan ini dari ${activeMeta.length} kontrak yang tersedia. Coba tanyakan tentang nilai kontrak, status, atau risiko. Untuk analisis mendalam teks kontrak, buka kontrak spesifik terlebih dahulu.`
+                    : 'Belum ada kontrak yang tersimpan. Upload kontrak pertama Anda untuk memulai analisis.',
+                sources: [],
+            }])
+            return
+        }
+
+        // STEP C: only call backend when local metadata cannot answer.
         setIsLoading(true)
+        setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: trimmed }])
 
         try {
-            const result = await chatWithClause(userMessage.content)
+            const result = await chatWithClause(trimmed)
 
             // 🚨 CRITICAL FIX: Backend returns {"reply": "..."}, NOT {"answer": "..."}
-            const aiContent = typeof result === 'string'
+            let aiContent = typeof result === 'string'
                 ? result
                 : String(result.reply || result.answer || result.response || result.content || "Mohon maaf, terjadi kesalahan dalam memproses respons.");
+
+            if (
+                pathname === '/dashboard/documents' &&
+                activeMeta.length > 0 &&
+                /tidak ada dokumen|tidak terhubung|no document/i.test(aiContent)
+            ) {
+                aiContent = `Saya tidak menemukan informasi yang relevan untuk pertanyaan ini dari ${activeMeta.length} kontrak yang tersedia. Coba tanyakan tentang nilai kontrak, status, atau risiko. Untuk analisis mendalam teks kontrak, buka kontrak spesifik terlebih dahulu.`
+            }
 
             setMessages(prev => [...prev, {
                 id: Date.now().toString() + 'ai',
                 role: 'assistant',
                 content: aiContent,
-                citations: result?.citations || result?.sources || []
+                sources: normalizeAssistantSources(result?.sources || result?.citations || [])
             }])
 
-        } catch (error: any) {
+        } catch (error: unknown) {
             setMessages(prev => [...prev, {
                 id: Date.now().toString() + 'err',
                 role: 'assistant',
-                content: `Error: ${error.message || "Failed to communicate with intelligence engine."}`
+                content: `Error: ${error instanceof Error ? error.message : "Failed to communicate with intelligence engine."}`
             }])
         } finally {
             setIsLoading(false)
@@ -96,7 +264,7 @@ export default function AssistantSidebar() {
                 <h2 className="text-[10px] uppercase tracking-widest text-text-muted font-semibold">Clause Assistant</h2>
             </div>
             <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4 relative">
-                {messages.map(msg => {
+                {messages.map((msg, idx) => {
                     const safeContent = msg.role === 'assistant'
                         ? assertSafeLlmText(msg.content, 'assistant_sidebar_response')
                         : msg.content
@@ -114,38 +282,39 @@ export default function AssistantSidebar() {
                                             disallowedElements={DISALLOWED_MARKDOWN_ELEMENTS}
                                             unwrapDisallowed
                                             components={{
-                                                p: ({node, ...props}) => <p className="mb-2" {...props} />,
-                                                strong: ({node, ...props}) => <strong className="font-bold text-white tracking-wide" {...props} />,
-                                                ul: ({node, ...props}) => <ul className="list-none pl-1 space-y-2 mb-3" {...props} />,
-                                                ol: ({node, ...props}) => <ol className="list-decimal pl-4 space-y-2 mb-3" {...props} />,
-                                                li: ({node, ...props}) => <li className="leading-relaxed" {...props} />,
+                                                p: ({node, ...props}) => {
+                                                    void node
+                                                    return <p className="mb-2" {...props} />
+                                                },
+                                                strong: ({node, ...props}) => {
+                                                    void node
+                                                    return <strong className="font-bold text-white tracking-wide" {...props} />
+                                                },
+                                                ul: ({node, ...props}) => {
+                                                    void node
+                                                    return <ul className="list-none pl-1 space-y-2 mb-3" {...props} />
+                                                },
+                                                ol: ({node, ...props}) => {
+                                                    void node
+                                                    return <ol className="list-decimal pl-4 space-y-2 mb-3" {...props} />
+                                                },
+                                                li: ({node, ...props}) => {
+                                                    void node
+                                                    return <li className="leading-relaxed" {...props} />
+                                                },
                                                 a: ({node, href, children, ...props}) => {
+                                                    void node
                                                     const linkText = String(children);
                                                     const hrefStr = href || '';
                                                     
                                                     // Check if it's a contract link (either by file extension or specific routing)
                                                     if (linkText.match(/\.(?:pdf|docx|txt)$/i) || hrefStr.includes('/dashboard/documents/') || hrefStr.includes('/dashboard/contracts/')) {
-                                                        
-                                                        // 🚨 CRITICAL FIX: Extract UUID from href if it follows the enterprise routing pattern
-                                                        // We prioritize the ID from the href over the link text to prevent routing to filenames.
-                                                        let targetId = linkText; 
-                                                        
-                                                        if (hrefStr.includes('/dashboard/contracts/')) {
-                                                            targetId = hrefStr.split('/dashboard/contracts/')[1] || linkText;
-                                                        } else if (hrefStr.includes('/dashboard/documents/')) {
-                                                            targetId = hrefStr.split('/dashboard/documents/')[1] || linkText;
-                                                        }
-
-                                                        const matchedSource = msg.citations?.find((cite: any) => 
-                                                            cite.file_name === linkText || cite.contract_id === targetId || cite.contract_id === linkText
-                                                        );
-                                                        
-                                                        const finalId = matchedSource ? matchedSource.contract_id : targetId;
+                                                        const finalId = resolveDocumentSourceId(msg.sources, linkText, hrefStr)
 
                                                         return (
                                                             <span
                                                                 onClick={() => router.push(`/dashboard/contracts/${encodeURIComponent(finalId)}`)}
-                                                                className="inline-flex items-center gap-1 bg-clause-gold/10 text-clause-gold border border-clause-gold/30 px-2 py-1 mx-1 rounded text-xs font-bold cursor-pointer hover:bg-clause-gold/20 hover:scale-105 transition-all shadow-sm shadow-clause-gold/10"
+                                                                className="inline-flex items-center gap-1 bg-[#B8B8B8]/10 text-[#B8B8B8] border border-[#3A3A3A] px-2 py-1 mx-1 rounded text-xs font-bold cursor-pointer hover:bg-[#B8B8B8]/20 hover:scale-105 transition-all shadow-sm shadow-[#888888]/10"
                                                                 title={`Open Document: ${linkText}`}
                                                             >
                                                                 <FileText size={12} className="shrink-0" />
@@ -153,7 +322,7 @@ export default function AssistantSidebar() {
                                                         </span>
                                                     );
                                                 }
-                                                    return <a href={safeExternalHref(hrefStr)} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline" {...props}>{children}</a>;
+                                                    return <a href={safeExternalHref(hrefStr)} target="_blank" rel="noopener noreferrer" className="text-[#B8B8B8] hover:underline" {...props}>{children}</a>;
                                                 },
                                                 img: ({ alt, src }) => (
                                                     <BlockedMarkdownImage
@@ -171,28 +340,8 @@ export default function AssistantSidebar() {
                                     msg.content
                                 )}
                             </div>
-
-                            {/* Evidence Chips */}
-                            {msg.role === 'assistant' && msg.citations && msg.citations.length > 0 && (
-                                <div className="flex flex-wrap gap-2 mt-1">
-                                    {msg.citations.map((cite, idx) => {
-                                        return (
-                                            <button
-                                                suppressHydrationWarning
-                                                key={idx}
-                                                onClick={(e) => {
-                                                    e.preventDefault();
-                                                    router.push(`/dashboard/contracts/${cite.contract_id}`);
-                                                }}
-                                                className="flex items-center gap-1.5 bg-surface-border/60 hover:bg-primary/20 border border-surface-border text-[10px] text-text-muted hover:text-primary px-2 py-1 rounded-full transition-colors cursor-pointer"
-                                                title={`Contract ID: ${cite.contract_id}`}
-                                            >
-                                                <FileText className="w-3 h-3" />
-                                                Source: {cite.file_name || 'Document'}
-                                            </button>
-                                        );
-                                    })}
-                                </div>
+                            {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
+                                <CitationPanel citations={msg.sources} messageIndex={idx} />
                             )}
                         </div>
                     </div>

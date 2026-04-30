@@ -20,8 +20,8 @@ export function WarRoomBottomBar({
                 <button
                     onClick={onIssueTrackerClick}
                     className="flex items-center gap-2 px-4 py-2 rounded-lg
-                               bg-amber-500/10 border border-amber-500/25
-                               text-amber-400 text-sm hover:bg-amber-500/15 transition"
+                               bg-zinc-800/60 border border-zinc-700/60
+                               text-zinc-300 text-sm hover:bg-zinc-700/60 transition"
                 >
                     <AlertCircle className="w-4 h-4" />
                     {pendingCount} Pending Issues
@@ -59,9 +59,9 @@ export function WarRoomBottomBar({
             <button
                 onClick={onFinalizeClick}
                 className="flex items-center gap-2 px-6 py-2.5
-                           bg-amber-500 hover:bg-amber-400 active:scale-95
-                           text-black font-semibold text-sm rounded-lg
-                           transition-all shadow-lg shadow-amber-500/20"
+                           bg-[#B8B8B8] hover:bg-[#D4D4D4] active:scale-95
+                           text-[#0A0A0A] font-semibold text-sm rounded-lg
+                           transition-all shadow-lg shadow-[#888888]/20"
             >
                 <CheckCircle className="w-4 h-4" />
                 Finalize Negotiation Round

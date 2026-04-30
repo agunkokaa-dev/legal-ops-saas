@@ -10,6 +10,7 @@ import uuid
 import traceback
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -17,7 +18,8 @@ from fastapi import APIRouter, HTTPException, Depends, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from supabase import Client
 
-from app.config import openai_client, COLLECTION_NAME, qdrant
+from app.ai_usage import log_openai_response_sync
+from app.config import OUTPUT_TOKEN_CAPS, openai_client, COLLECTION_NAME, qdrant
 from app.counsel_engine import handle_counsel_message
 from app.debate.graph import run_debate_and_persist
 from app.debate.schemas import DebateSessionCreate, DebateSessionResponse
@@ -2219,12 +2221,24 @@ async def update_issue_status(
                 # AI Power Move: Generate email
                 try:
                     prompt = f"The counterparty proposed: '{v2_text}'. Our playbook dictates: '{deviation.get('playbook_violation', 'Strict adherence to standard terms')}'. Write a firm, professional 2-sentence legal email excerpt rejecting their clause and explaining why we must retain our original clause: '{v1_text}'."
+                    started_at = time.perf_counter()
                     response = await asyncio.to_thread(openai_client.chat.completions.create,
                         model="gpt-4o-mini",
+                        max_tokens=OUTPUT_TOKEN_CAPS["negotiation"],
                         messages=[
                             {"role": "system", "content": "You are a professional Enterprise Legal Counsel."},
                             {"role": "user", "content": prompt}
                         ]
+                    )
+                    log_openai_response_sync(
+                        state_client,
+                        tenant_id,
+                        "negotiation_rejection_email",
+                        "gpt-4o-mini",
+                        response,
+                        int((time.perf_counter() - started_at) * 1000),
+                        contract_id=contract_id,
+                        metadata={"deviation_id": issue_id},
                     )
                     generated_email = response.choices[0].message.content
                 except Exception as e:

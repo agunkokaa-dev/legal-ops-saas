@@ -58,11 +58,11 @@ export default function UploadNextVersionButton({
             <button
                 onClick={() => fileInputRef.current?.click()}
                 disabled={isUploading}
-                className="w-full mt-3 py-3 border border-dashed border-zinc-700 hover:border-[#D4AF37]/50 text-zinc-500 hover:text-[#D4AF37] text-[10px] font-bold uppercase tracking-widest rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full mt-3 py-3 border border-dashed border-zinc-700 hover:border-[#3A3A3A] text-zinc-500 hover:text-[#B8B8B8] text-[10px] font-bold uppercase tracking-widest rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
             >
                 {isUploading ? (
                     <>
-                        <span className="w-3 h-3 border-2 border-[#D4AF37]/20 rounded-full animate-spin border-t-[#D4AF37]" />
+                        <span className="w-3 h-3 border-2 border-[#2A2A2A] rounded-full animate-spin border-t-[#B8B8B8]" />
                         UPLOADING...
                     </>
                 ) : (

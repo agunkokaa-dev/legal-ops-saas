@@ -17,7 +17,9 @@ import traceback
 import json
 import logging
 import html
+import time
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Query, Request
 from fastapi.responses import StreamingResponse
@@ -29,7 +31,8 @@ from PyPDF2 import PdfReader
 from dotenv import load_dotenv
 import os
 
-from app.config import openai_client, qdrant, COLLECTION_NAME
+from app.ai_usage import log_openai_response_sync
+from app.config import OUTPUT_TOKEN_CAPS, admin_supabase, openai_client, qdrant, COLLECTION_NAME
 from app.rate_limiter import limiter
 from app.task_logger import TaskLogger
 from app.token_budget import count_tokens, truncate_to_budget
@@ -53,7 +56,7 @@ from app.utils import chunk_text
 from app.event_bus import SSEEvent, event_bus
 from app.llm_output_sanitizer import sanitize_llm_text, sanitize_review_finding
 from difflib import SequenceMatcher
-from graph import clm_graph
+from graph import clm_graph, drafting_agent, negotiation_agent
 from app.task_logger import TaskLogger
 from app.rate_limiter import limiter
 from openai import RateLimitError, APITimeoutError, APIConnectionError
@@ -147,22 +150,56 @@ def handle_task_result(task: asyncio.Task, contract_id: str, tenant_id: str = No
     except asyncio.CancelledError:
         print(f"⚠️ [BACKGROUND TASK CANCELLED] Contract {contract_id}")
 
-async def async_embed(text: str) -> list[float]:
+async def async_embed(
+    text: str,
+    *,
+    tenant_id: str | None = None,
+    workflow: str = "contract_embedding",
+    contract_id: str | None = None,
+) -> list[float]:
+    started_at = time.perf_counter()
     response = await asyncio.to_thread(
         openai_client.embeddings.create,
         input=text,
         model="text-embedding-3-small"
     )
+    log_openai_response_sync(
+        admin_supabase,
+        tenant_id,
+        workflow,
+        "text-embedding-3-small",
+        response,
+        int((time.perf_counter() - started_at) * 1000),
+        contract_id=contract_id,
+    )
     return response.data[0].embedding
 
 
-async def async_chat_completion(messages: list, response_format=None) -> any:
-    kwargs = {"model": "gpt-4o-mini", "messages": messages}
+async def async_chat_completion(
+    messages: list,
+    response_format=None,
+    *,
+    tenant_id: str | None = None,
+    workflow: str = "obligation_miner",
+    contract_id: str | None = None,
+) -> any:
+    started_at = time.perf_counter()
+    kwargs = {"model": "gpt-4o-mini", "messages": messages, "max_tokens": OUTPUT_TOKEN_CAPS["obligation_miner"]}
     if response_format:
         kwargs["response_format"] = response_format
     response = await asyncio.to_thread(
         openai_client.chat.completions.create,
         **kwargs
+    )
+    log_openai_response_sync(
+        admin_supabase,
+        tenant_id,
+        workflow,
+        "gpt-4o-mini",
+        response,
+        int((time.perf_counter() - started_at) * 1000),
+        contract_id=contract_id,
+        metadata={"response_format": bool(response_format)},
     )
     return response
 
@@ -461,6 +498,128 @@ def _build_pipeline_input_metadata(
     return safe_document, is_truncated, truncation_warning, input_metadata
 
 
+def _latest_text_from_draft_revisions(draft_revisions: Any, fallback: str = "") -> str:
+    if isinstance(draft_revisions, dict):
+        return str(draft_revisions.get("latest_text") or draft_revisions.get("content") or fallback or "")
+    if isinstance(draft_revisions, str):
+        try:
+            parsed = json.loads(draft_revisions)
+            if isinstance(parsed, dict):
+                return str(parsed.get("latest_text") or parsed.get("content") or fallback or "")
+        except (TypeError, json.JSONDecodeError):
+            return draft_revisions
+    return fallback or ""
+
+
+def _build_lazy_agent_state(
+    *,
+    contract_id: str,
+    tenant_id: str,
+    raw_text: str,
+    pipeline_output: PipelineOutput,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    compliance_findings = [
+        item.model_dump() if hasattr(item, "model_dump") else dict(item)
+        for item in (pipeline_output.compliance_findings_v2 or [])
+    ]
+    risk_flags = [
+        item.model_dump() if hasattr(item, "model_dump") else dict(item)
+        for item in (pipeline_output.risk_flags_v2 or [])
+    ]
+    obligations = [
+        item.model_dump() if hasattr(item, "model_dump") else dict(item)
+        for item in (pipeline_output.obligations_v2 or [])
+    ]
+    clauses = [
+        item.model_dump() if hasattr(item, "model_dump") else dict(item)
+        for item in (pipeline_output.classified_clauses_v2 or [])
+    ]
+
+    return {
+        "contract_id": contract_id,
+        "raw_document": raw_text,
+        "tenant_id": tenant_id,
+        "_tenant_id": tenant_id,
+        "playbook_rules": [],
+        "national_law_excerpts": [],
+        "contract_value": pipeline_output.contract_value or contract.get("contract_value") or 0.0,
+        "currency": pipeline_output.currency or contract.get("currency") or "IDR",
+        "end_date": pipeline_output.end_date or contract.get("end_date") or "Unknown",
+        "effective_date": pipeline_output.effective_date or contract.get("effective_date"),
+        "jurisdiction": pipeline_output.jurisdiction or contract.get("jurisdiction"),
+        "governing_law": pipeline_output.governing_law or contract.get("governing_law"),
+        "counter_proposal": pipeline_output.counter_proposal or contract.get("counter_proposal") or "",
+        "compliance_findings_v2": compliance_findings,
+        "compliance_issues": [item.get("issue", "") for item in compliance_findings if item.get("issue")],
+        "risk_flags_v2": risk_flags,
+        "risk_flags": [item.get("flag", "") for item in risk_flags if item.get("flag")],
+        "risk_score": pipeline_output.risk_score or contract.get("risk_score") or 0.0,
+        "risk_level": pipeline_output.risk_level or contract.get("risk_level") or "Safe",
+        "draft_revisions_v2": [
+            item.model_dump() if hasattr(item, "model_dump") else dict(item)
+            for item in (pipeline_output.draft_revisions_v2 or [])
+        ],
+        "draft_revisions": [],
+        "obligations_v2": obligations,
+        "extracted_obligations": [
+            {"description": item.get("description", ""), "due_date": item.get("due_date")}
+            for item in obligations
+        ],
+        "classified_clauses_v2": clauses,
+        "classified_clauses": [
+            {
+                "clause_type": item.get("clause_type", "Other"),
+                "original_text": item.get("original_text", ""),
+                "ai_summary": item.get("ai_summary", ""),
+            }
+            for item in clauses
+        ],
+        "extracted_clauses": {
+            item.get("clause_type", f"Clause {idx + 1}"): item.get("original_text", "")
+            for idx, item in enumerate(clauses)
+            if item.get("original_text")
+        },
+    }
+
+
+def _load_latest_contract_version(
+    *,
+    supabase: Client,
+    tenant_id: str,
+    contract_id: str,
+) -> tuple[dict[str, Any], dict[str, Any], PipelineOutput, str]:
+    contract_res = supabase.table("contracts").select("*") \
+        .eq("id", contract_id) \
+        .eq("tenant_id", tenant_id) \
+        .limit(1) \
+        .execute()
+    if not contract_res.data:
+        raise HTTPException(status_code=404, detail="Contract not found")
+    contract = contract_res.data[0]
+
+    version_query = supabase.table("contract_versions").select("id, raw_text, pipeline_output, version_number") \
+        .eq("contract_id", contract_id) \
+        .eq("tenant_id", tenant_id)
+    latest_version_id = contract.get("latest_version_id")
+    if latest_version_id:
+        version_query = version_query.eq("id", latest_version_id)
+    else:
+        version_query = version_query.gt("version_number", 0).order("version_number", desc=True)
+    version_res = version_query.limit(1).execute()
+    if not version_res.data:
+        raise HTTPException(status_code=404, detail="Contract version not found")
+    version = version_res.data[0]
+    pipeline_output = parse_pipeline_output(version.get("pipeline_output"))
+    raw_text = (
+        str(version.get("raw_text") or "")
+        or _latest_text_from_draft_revisions(contract.get("draft_revisions"))
+    )
+    if not raw_text.strip():
+        raise HTTPException(status_code=400, detail="No document text available for generation")
+    return contract, version, pipeline_output, raw_text
+
+
 # =====================================================================
 # ENDPOINTS
 # =====================================================================
@@ -697,6 +856,128 @@ async def update_contract(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.post("/contracts/{contract_id}/generate-negotiation")
+@limiter.limit("5/minute")
+async def generate_negotiation_on_demand(
+    request: Request,
+    contract_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    """Generate negotiation strategy only when requested by the user."""
+    try:
+        tenant_id = claims["verified_tenant_id"]
+        contract, version, pipeline_output, raw_text = _load_latest_contract_version(
+            supabase=supabase,
+            tenant_id=tenant_id,
+            contract_id=contract_id,
+        )
+        state = _build_lazy_agent_state(
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            raw_text=raw_text,
+            pipeline_output=pipeline_output,
+            contract=contract,
+        )
+        result = await asyncio.to_thread(negotiation_agent, state)
+        counter_proposal = result.get("counter_proposal") or ""
+        pipeline_output.counter_proposal = counter_proposal
+
+        supabase.table("contracts").update({
+            "counter_proposal": counter_proposal,
+        }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+        supabase.table("contract_versions").update({
+            "pipeline_output": serialize_pipeline_output(pipeline_output),
+        }).eq("id", version["id"]).eq("tenant_id", tenant_id).execute()
+
+        await publish_contract_event(
+            "contract.negotiation_generated",
+            tenant_id,
+            contract_id=contract_id,
+            data={"message": "Negotiation strategy generated"},
+        )
+        return {
+            "status": "success",
+            "contract_id": contract_id,
+            "counter_proposal": counter_proposal,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[POST /contracts/{contract_id}/generate-negotiation] Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/contracts/{contract_id}/generate-drafting")
+@limiter.limit("5/minute")
+async def generate_drafting_on_demand(
+    request: Request,
+    contract_id: str,
+    claims: dict = Depends(verify_clerk_token),
+    supabase: Client = Depends(get_tenant_supabase),
+):
+    """Generate drafting suggestions only when requested by the user."""
+    try:
+        tenant_id = claims["verified_tenant_id"]
+        contract, version, pipeline_output, raw_text = _load_latest_contract_version(
+            supabase=supabase,
+            tenant_id=tenant_id,
+            contract_id=contract_id,
+        )
+        state = _build_lazy_agent_state(
+            contract_id=contract_id,
+            tenant_id=tenant_id,
+            raw_text=raw_text,
+            pipeline_output=pipeline_output,
+            contract=contract,
+        )
+        result = await asyncio.to_thread(drafting_agent, state)
+        legacy_revisions = result.get("draft_revisions") or []
+        v2_revisions = result.get("draft_revisions_v2") or []
+        pipeline_output.draft_revisions_v2 = v2_revisions
+
+        draft_revisions = contract.get("draft_revisions")
+        if isinstance(draft_revisions, str):
+            try:
+                parsed = json.loads(draft_revisions)
+                draft_revisions = parsed if isinstance(parsed, dict) else {"latest_text": raw_text}
+            except (TypeError, json.JSONDecodeError):
+                draft_revisions = {"latest_text": draft_revisions}
+        elif not isinstance(draft_revisions, dict):
+            draft_revisions = {"latest_text": raw_text}
+        draft_revisions.setdefault("latest_text", raw_text)
+        draft_revisions["findings"] = legacy_revisions
+        draft_revisions["generated_at"] = datetime.now(timezone.utc).isoformat()
+
+        supabase.table("contracts").update({
+            "draft_revisions": draft_revisions,
+        }).eq("id", contract_id).eq("tenant_id", tenant_id).execute()
+        supabase.table("contract_versions").update({
+            "pipeline_output": serialize_pipeline_output(pipeline_output),
+        }).eq("id", version["id"]).eq("tenant_id", tenant_id).execute()
+
+        await publish_contract_event(
+            "contract.drafting_generated",
+            tenant_id,
+            contract_id=contract_id,
+            data={"message": "Drafting suggestions generated", "revisions_count": len(v2_revisions)},
+        )
+        return {
+            "status": "success",
+            "contract_id": contract_id,
+            "draft_revisions": legacy_revisions,
+            "draft_revisions_v2": v2_revisions,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[POST /contracts/{contract_id}/generate-drafting] Error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 async def _execute_pipeline_and_persist(
     *,
     contract_id: str,
@@ -716,9 +997,12 @@ async def _execute_pipeline_and_persist(
     final_state = await async_clm_graph_invoke({
         "contract_id": contract_id,
         "raw_document": safe_document,
+        "tenant_id": tenant_id,
         "_task_logger": task_logger,
         "_event_bus": event_bus,
         "_tenant_id": tenant_id,
+        "playbook_rules": [],
+        "national_law_excerpts": [],
     })
 
     print(f"[LANGGRAPH] Execution complete for {contract_id}. Raw JSON output:")
@@ -892,7 +1176,12 @@ async def _execute_pipeline_and_persist(
 
     points = []
     for i, chunk in enumerate(chunks):
-        chunk_embed = await async_embed(chunk)
+        chunk_embed = await async_embed(
+            chunk,
+            tenant_id=tenant_id,
+            workflow="contract_vectorization",
+            contract_id=contract_id,
+        )
         page_match = re.search(r'\[Page (\d+)\]', chunk)
         page_number = page_match.group(1) if page_match else "Unknown"
 
@@ -1005,7 +1294,7 @@ async def process_contract_background(
             data={
                 "filename": filename,
                 "text_length": len(text_content),
-                "total_agents": 8,
+                "total_agents": 7,
                 "message": "AI contract analysis started",
             },
         )
@@ -1712,7 +2001,10 @@ Return a JSON object containing an array called 'obligations' with keys:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            response_format={"type": "json_object"}
+            response_format={"type": "json_object"},
+            tenant_id=tenant_id,
+            workflow="obligation_miner",
+            contract_id=payload.contract_id,
         )
         
         raw_output = response.choices[0].message.content

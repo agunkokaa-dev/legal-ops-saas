@@ -202,7 +202,7 @@ export default function NewMatterModal() {
                             suppressHydrationWarning
                             type="submit"
                             disabled={isSubmitting}
-                            className="bg-primary px-6 py-2 rounded text-sm text-black font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2 shadow-[0_0_15px_rgba(var(--primary),0.3)]"
+                            className="bg-primary px-6 py-2 rounded text-sm text-[#0A0A0A] font-medium hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-2 shadow-[0_0_15px_rgba(var(--primary),0.3)]"
                         >
                             {isSubmitting ? 'Initializing...' : 'Initialize Matter'}
                         </button>
@@ -217,7 +217,7 @@ export default function NewMatterModal() {
             <button
                 suppressHydrationWarning
                 onClick={() => setIsOpen(true)}
-                className="flex items-center gap-2 bg-primary px-4 py-2 rounded text-sm text-black font-medium hover:bg-primary/90 transition-colors shadow-[0_0_15px_rgba(var(--primary),0.3)]"
+                className="flex items-center gap-2 bg-primary px-4 py-2 rounded text-sm text-[#0A0A0A] font-medium hover:bg-primary/90 transition-colors shadow-[0_0_15px_rgba(var(--primary),0.3)]"
             >
                 <span className="material-symbols-outlined text-sm">add</span>
                 New Matter

@@ -1,20 +1,23 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef, Suspense } from "react";
 import { useAuth } from "@clerk/nextjs";
 import Link from "next/link";
+import { useRouter, useSearchParams } from "next/navigation";
+import { toast } from "sonner";
 import ArchivedContracts from "@/components/ArchivedContracts";
+import { EmptyState } from "@/components/onboarding/EmptyState";
+import { loadSampleContracts } from "@/app/actions/onboarding";
+import { uploadDocument } from "@/app/actions/backend";
 import { getPublicApiBase } from "@/lib/public-api-base";
+import { publishContractsMetadata } from "@/lib/metadataQuery";
 import {
-    Search,
     Upload,
     ChevronDown,
     ChevronLeft,
     ChevronRight,
     FileText,
-    ChevronsUp,
     ChevronsDown,
-    Ban,
     Loader2,
     Lock,
     Zap,
@@ -36,6 +39,7 @@ interface Contract {
     created_at: string;
     end_date: string | null;
     matter_id: string | null;
+    is_sample?: boolean | null;
 }
 
 // =====================================================================
@@ -122,12 +126,18 @@ function formatCurrency(value: number | null | undefined, currency: string | nul
 // =====================================================================
 // MAIN PAGE COMPONENT
 // =====================================================================
-export default function DocumentsPage() {
+function DocumentsContent() {
     const { userId, getToken } = useAuth();
+    const router = useRouter();
+    const searchParams = useSearchParams();
+    const uploadInputRef = useRef<HTMLInputElement>(null);
+    const handledOnboardingQueryRef = useRef(false);
 
     // State
     const [documents, setDocuments] = useState<Contract[]>([]);
     const [isLoading, setIsLoading] = useState(true);
+    const [isLoadingSample, setIsLoadingSample] = useState(false);
+    const [isUploading, setIsUploading] = useState(false);
     const [searchQuery, setSearchQuery] = useState("");
     const [filterType, setFilterType] = useState("");
     const [filterRisk, setFilterRisk] = useState("");
@@ -139,7 +149,7 @@ export default function DocumentsPage() {
     // =====================================================================
     // DATA FETCHING
     // =====================================================================
-    useEffect(() => {
+    const fetchDocuments = useCallback(async () => {
         if (!userId) {
             setDocuments([]);
             setIsLoading(false);
@@ -151,68 +161,55 @@ export default function DocumentsPage() {
             return;
         }
 
-        let cancelled = false;
+        try {
+            setIsLoading(true);
+            const token = await getToken();
+            const apiUrl = getPublicApiBase();
+            const response = await fetch(
+                `${apiUrl}/api/contracts?tab=${encodeURIComponent(activeTab)}`,
+                {
+                    method: "GET",
+                    headers: {
+                        "Content-Type": "application/json",
+                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                    },
+                    cache: "no-store",
+                }
+            );
 
-        const fetchDocuments = async () => {
-            try {
-                setIsLoading(true);
-                const token = await getToken();
-                const apiUrl = getPublicApiBase();
-                const response = await fetch(
-                    `${apiUrl}/api/contracts?tab=${encodeURIComponent(activeTab)}`,
-                    {
-                        method: "GET",
-                        headers: {
-                            "Content-Type": "application/json",
-                            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                        },
-                        cache: "no-store",
-                    }
-                );
-
-                if (!response.ok) {
-                    let backendError = `HTTP ${response.status}`;
-                    try {
-                        const errorJson = await response.json();
-                        backendError = errorJson.detail || backendError;
-                    } catch {
-                        // Ignore JSON parse failures and surface the HTTP status.
-                    }
-                    console.error("[VAULT] Documents fetch failed:", backendError);
-                    if (!cancelled) {
-                        setDocuments([]);
-                    }
-                    return;
+            if (!response.ok) {
+                let backendError = `HTTP ${response.status}`;
+                try {
+                    const errorJson = await response.json();
+                    backendError = errorJson.detail || backendError;
+                } catch {
+                    // Ignore JSON parse failures and surface the HTTP status.
                 }
-
-                const payload = await response.json();
-                const data = Array.isArray(payload)
-                    ? payload
-                    : Array.isArray(payload?.data)
-                        ? payload.data
-                        : [];
-                console.log("Contracts fetched:", data);
-                if (!cancelled) {
-                    setDocuments(data);
-                }
-            } catch (err: any) {
-                console.error("[VAULT] Exception fetching documents:", err?.message || String(err));
-                if (!cancelled) {
-                    setDocuments([]);
-                }
-            } finally {
-                if (!cancelled) {
-                    setIsLoading(false);
-                }
+                console.error("[VAULT] Documents fetch failed:", backendError);
+                setDocuments([]);
+                return;
             }
-        };
 
-        fetchDocuments();
-
-        return () => {
-            cancelled = true;
-        };
+            const payload = await response.json();
+            const data = Array.isArray(payload)
+                ? payload
+                : Array.isArray(payload?.data)
+                    ? payload.data
+                    : [];
+            console.log("Contracts fetched:", data);
+            setDocuments(data);
+        } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error("[VAULT] Exception fetching documents:", message);
+            setDocuments([]);
+        } finally {
+            setIsLoading(false);
+        }
     }, [activeTab, getToken, userId]);
+
+    useEffect(() => {
+        void fetchDocuments();
+    }, [fetchDocuments]);
 
     // =====================================================================
     // FILTERING & SEARCH (Client-Side)
@@ -278,6 +275,88 @@ export default function DocumentsPage() {
         return Array.from(types).sort();
     }, [documents]);
 
+    useEffect(() => {
+        if (isLoading) return;
+        const mapped = documents.map((doc) => ({
+            id: doc.id,
+            title: doc.title || doc.file_name || "Untitled",
+            status: doc.status || "",
+            contract_value: doc.contract_value ?? null,
+            currency: doc.currency || "IDR",
+            risk_level: doc.risk_level || null,
+            document_category: doc.document_category || null,
+            end_date: doc.end_date || null,
+            counterparty: doc.counterparty_name || null,
+        }));
+        publishContractsMetadata(mapped);
+    }, [documents, isLoading]);
+
+    const handleLoadSamples = useCallback(async () => {
+        setIsLoadingSample(true);
+        try {
+            const result = await loadSampleContracts();
+            if (!result.success) {
+                toast.error(result.error);
+                return;
+            }
+
+            if (result.data.loaded_count > 0) {
+                toast.success(`${result.data.loaded_count} sample contracts loaded.`);
+            } else if (result.data.already_loaded) {
+                toast.info("Sample contracts are already loaded.");
+            } else if (result.data.skipped) {
+                toast.info(result.data.detail || "Sample loading skipped.");
+            }
+
+            window.dispatchEvent(new Event('onboarding:samples-changed'));
+            await fetchDocuments();
+            router.replace('/dashboard/documents');
+            router.refresh();
+        } finally {
+            setIsLoadingSample(false);
+        }
+    }, [fetchDocuments, router]);
+
+    const handleUploadFile = useCallback(async (file: File) => {
+        setIsUploading(true);
+        try {
+            const formData = new FormData();
+            formData.append('file', file);
+            const result = await uploadDocument(formData);
+            if (!result.success) {
+                toast.error(result.error || 'Upload failed.');
+                return;
+            }
+
+            toast.success('Contract uploaded and queued for analysis.');
+            await fetchDocuments();
+            router.refresh();
+        } finally {
+            setIsUploading(false);
+            if (uploadInputRef.current) {
+                uploadInputRef.current.value = '';
+            }
+        }
+    }, [fetchDocuments, router]);
+
+    const handleWatchDemo = useCallback(() => {
+        const demoUrl = process.env.NEXT_PUBLIC_ONBOARDING_DEMO_URL;
+        if (demoUrl) {
+            window.open(demoUrl, '_blank', 'noopener,noreferrer');
+            return;
+        }
+        toast.info('Demo video belum dikonfigurasi.');
+    }, []);
+
+    useEffect(() => {
+        if (handledOnboardingQueryRef.current) return;
+        if (searchParams.get('onboarding') !== 'sample') return;
+        if (!userId) return;
+
+        handledOnboardingQueryRef.current = true;
+        void handleLoadSamples();
+    }, [handleLoadSamples, searchParams, userId]);
+
     // =====================================================================
     // RENDER
     // =====================================================================
@@ -316,13 +395,27 @@ export default function DocumentsPage() {
 
                     {/* Actions */}
                     <div className="flex items-center gap-4">
-                        <Link
-                            href="/dashboard"
+                        <input
+                            ref={uploadInputRef}
+                            type="file"
+                            accept="application/pdf"
+                            className="hidden"
+                            onChange={(event) => {
+                                const file = event.target.files?.[0];
+                                if (file) {
+                                    void handleUploadFile(file);
+                                }
+                            }}
+                        />
+                        <button
+                            type="button"
+                            onClick={() => uploadInputRef.current?.click()}
+                            disabled={isUploading}
                             className="bg-primary hover:bg-primary/80 text-background font-semibold px-6 py-2.5 rounded-lg text-sm transition-colors flex items-center gap-2"
                         >
                             <Upload className="w-4 h-4" />
-                            + Secure Upload
-                        </Link>
+                            {isUploading ? "Uploading..." : "+ Secure Upload"}
+                        </button>
                     </div>
                 </div>
             </header>
@@ -367,7 +460,15 @@ export default function DocumentsPage() {
                 </nav>
 
                 {/* ====== TAB: Active Contracts ====== */}
-                {activeTab === "active" && (<>
+                {activeTab === "active" && (!isLoading && documents.length === 0 ? (
+                    <EmptyState
+                        onUpload={() => uploadInputRef.current?.click()}
+                        onLoadSample={handleLoadSamples}
+                        onWatchDemo={handleWatchDemo}
+                        isLoadingSample={isLoadingSample}
+                        isUploading={isUploading}
+                    />
+                ) : (<>
                 {/* Filter Section */}
                 <section className="flex flex-wrap items-center gap-4 mb-6" data-purpose="table-filters">
                     {/* Filter by Type */}
@@ -617,7 +718,7 @@ export default function DocumentsPage() {
                         </div>
                     </footer>
                 </section>
-                </>)}
+                </>))}
 
                 {/* ====== TAB: Archived ====== */}
                 {activeTab === "archived" && <ArchivedContracts />}
@@ -630,5 +731,13 @@ export default function DocumentsPage() {
                 )}
             </main>
         </>
+    );
+}
+
+export default function DocumentsPage() {
+    return (
+        <Suspense fallback={<div className="p-8 text-white flex items-center justify-center h-full">Loading Vault...</div>}>
+            <DocumentsContent />
+        </Suspense>
     );
 }

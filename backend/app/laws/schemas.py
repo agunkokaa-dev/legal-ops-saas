@@ -87,11 +87,16 @@ class LawSearchRequest(BaseModel):
 
 class LawSearchResult(BaseModel):
     node_id: str
+    identifier: str
     law_short: str
     law_full_name: str
+    law_type: Optional[str] = None
+    number: Optional[str] = None
+    year: Optional[int] = None
     identifier_full: str
     body_snippet: str
     category: str
+    official_source_url: Optional[str] = None
     legal_status: str
     is_currently_citable: bool
     effective_from: Optional[str] = None

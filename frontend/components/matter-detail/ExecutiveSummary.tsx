@@ -62,7 +62,7 @@ export default function ExecutiveSummary({ matterId, initialDescription }: { mat
                             <button
                                 onClick={handleSave}
                                 disabled={isSaving}
-                                className="px-4 py-1.5 text-xs bg-primary text-black font-medium rounded hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-1"
+                                className="px-4 py-1.5 text-xs bg-primary text-[#0A0A0A] font-medium rounded hover:bg-primary/90 transition-colors disabled:opacity-50 flex items-center gap-1"
                             >
                                 {isSaving ? 'Saving...' : 'Save'}
                                 {isSaving && <span className="material-symbols-outlined text-[14px] animate-spin">sync</span>}

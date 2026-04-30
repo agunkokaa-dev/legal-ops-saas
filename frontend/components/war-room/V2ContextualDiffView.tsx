@@ -60,7 +60,7 @@ function getCategoryBadgeClass(category: string): string {
         return 'bg-red-500/20 text-red-400';
     }
     if (category === 'Modified') {
-        return 'bg-amber-500/20 text-amber-400';
+        return 'bg-[#1C1C1C] text-[#B8B8B8]';
     }
     if (category === 'Unchanged-Risk') {
         return 'bg-violet-500/20 text-violet-400';
@@ -203,7 +203,7 @@ export default function V2ContextualDiffView({
                                             const resolvedBatna = batnaFallbacks.find(b => b.deviation_id === dev.deviation_id);
                                             return (
                                                 <div className="mt-3">
-                                                    <div className="text-[10px] font-bold text-amber-500/90 mb-2 tracking-wider uppercase flex items-center gap-1.5">
+                                                    <div className="text-[10px] font-bold text-[#B8B8B8] mb-2 tracking-wider uppercase flex items-center gap-1.5">
                                                         <span className="material-symbols-outlined text-[13px]">reply</span> Countered (BATNA Inserted)
                                                     </div>
                                                     <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-zinc-600 mb-2">{dev.v2_text}</p>
@@ -309,7 +309,7 @@ export default function V2ContextualDiffView({
                             const resolvedBatna = batnaFallbacks.find(b => b.deviation_id === dev.deviation_id);
                             return (
                                 <div className="mt-3">
-                                    <div className="text-[10px] font-bold text-amber-500/90 mb-2 tracking-wider uppercase flex items-center gap-1.5">
+                                    <div className="text-[10px] font-bold text-[#B8B8B8] mb-2 tracking-wider uppercase flex items-center gap-1.5">
                                         <span className="material-symbols-outlined text-[13px]">reply</span> Countered (BATNA Inserted)
                                     </div>
                                     <p className="font-sans text-[13px] text-zinc-500 italic line-through decoration-zinc-600 mb-2">{dev.v2_text}</p>

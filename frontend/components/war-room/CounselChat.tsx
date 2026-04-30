@@ -253,7 +253,7 @@ export default function CounselChat({
                 </button>
                 <div>
                     <h2 className="text-sm font-bold text-zinc-100 p-0 m-0 leading-none mb-1">Clause Assistant</h2>
-                    <p className="text-[10px] text-[#D4AF37] opacity-80 m-0 leading-none">
+                    <p className="text-[10px] text-[#B8B8B8] opacity-80 m-0 leading-none">
                         {deviationTitle}
                     </p>
                 </div>
@@ -344,14 +344,14 @@ export default function CounselChat({
                         placeholder="Type your question... (Shift+Enter for new line)"
                         maxLength={1000}
                         rows={1}
-                        className="w-full bg-[#141414] border border-zinc-800 rounded-lg pl-3 pr-10 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-[#D4AF37]/50 focus:ring-1 focus:ring-[#D4AF37]/50 resize-none custom-scrollbar transition-all"
+                        className="w-full bg-[#141414] border border-zinc-800 rounded-lg pl-3 pr-10 py-2.5 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-[#3A3A3A] focus:ring-1 focus:ring-[#888888]/50 resize-none custom-scrollbar transition-all"
                         style={{ minHeight: '40px', maxHeight: '100px' }}
                         disabled={isStreaming}
                     />
                     <button
                         onClick={() => sendMessage(input)}
                         disabled={!input.trim() || isStreaming}
-                        className="absolute right-2 bottom-2 p-1 text-[#D4AF37] hover:text-[#f2ca50] hover:bg-[#D4AF37]/10 rounded disabled:opacity-30 transition-colors"
+                        className="absolute right-2 bottom-2 p-1 text-[#B8B8B8] hover:text-[#D4D4D4] hover:bg-[#1C1C1C] rounded disabled:opacity-30 transition-colors"
                     >
                         <span className="material-symbols-outlined text-sm">send</span>
                     </button>

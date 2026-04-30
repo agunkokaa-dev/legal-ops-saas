@@ -49,7 +49,7 @@ export default async function ObligationMaster({ matterId }: { matterId: string 
         <div className="bg-lux-sidebar border border-lux-border flex flex-col overflow-hidden h-full z-10 shadow-[-10px_0_30px_rgba(0,0,0,0.5)] rounded-lg text-lux-text-body font-display">
             {/* 1. Panel Master Header */}
             <div className="p-8 border-b border-lux-border shrink-0 bg-lux-sidebar">
-                <div className="flex items-center gap-2 mb-2 text-lux-gold">
+                <div className="flex items-center gap-2 mb-2 text-[#B8B8B8]">
                     <span className="material-symbols-outlined text-[18px]">analytics</span>
                     <span className="text-[10px] font-bold uppercase tracking-[0.2em]">Contract Intelligence</span>
                 </div>
@@ -62,14 +62,14 @@ export default async function ObligationMaster({ matterId }: { matterId: string 
             <div className="flex-1 overflow-y-auto pl-8 pr-2 py-8 space-y-6">
 
                 {/* 2. Prevailing Term Engine */}
-                <div className="bg-lux-card rounded border border-lux-border overflow-hidden hover:border-lux-gold/20 transition-colors duration-300">
+                <div className="bg-lux-card rounded border border-lux-border overflow-hidden hover:border-[#2A2A2A] transition-colors duration-300">
                     <div className="p-4 border-b border-lux-border bg-white/[0.02] flex justify-between items-center">
                         <h3 className="font-medium text-lux-text-head flex items-center gap-2.5 text-sm uppercase tracking-wider">
-                            <span className="material-symbols-outlined text-lux-amber text-[20px]">gavel</span>
+                            <span className="material-symbols-outlined text-[#B8B8B8] text-[20px]">gavel</span>
                             Prevailing Term Engine
                         </h3>
                         {prevailing?.conflictDetected ? (
-                            <span className="bg-lux-amber/10 border border-lux-amber/30 text-lux-amber text-[9px] font-bold px-2 py-1 rounded uppercase tracking-wider">
+                            <span className="bg-[#D4D4D4]/10 border border-[#3A3A3A] text-[#B8B8B8] text-[9px] font-bold px-2 py-1 rounded uppercase tracking-wider">
                                 Conflict Detected
                             </span>
                         ) : (
@@ -85,19 +85,19 @@ export default async function ObligationMaster({ matterId }: { matterId: string 
                             </p>
                             <div className="flex items-stretch gap-0 text-sm">
                                 {/* Parent Side (Losing) */}
-                                <div className={`flex-1 p-4 rounded-l border border-r-0 border-lux-border ${prevailing.prevailingName !== prevailing.parentName ? 'bg-white/[0.03] opacity-50' : 'bg-lux-amber/5 border-lux-amber/20 relative shadow-[inset_0_0_20px_rgba(251,191,36,0.05)]'}`}>
+                                <div className={`flex-1 p-4 rounded-l border border-r-0 border-lux-border ${prevailing.prevailingName !== prevailing.parentName ? 'bg-white/[0.03] opacity-50' : 'bg-[#D4D4D4]/5 border-[#2A2A2A] relative shadow-[inset_0_0_20px_rgba(184, 184, 184,0.05)]'}`}>
                                     {prevailing.prevailingName === prevailing.parentName && (
-                                        <div className="absolute -top-2 right-2 bg-lux-amber text-black text-[8px] font-bold px-2 py-0.5 rounded shadow-lg tracking-wider">PREVAILS</div>
+                                        <div className="absolute -top-2 right-2 bg-[#D4D4D4] text-[#0A0A0A] text-[8px] font-bold px-2 py-0.5 rounded shadow-lg tracking-wider">PREVAILS</div>
                                     )}
-                                    <div className={`text-[9px] uppercase font-bold mb-1 tracking-widest ${prevailing.prevailingName === prevailing.parentName ? 'text-lux-amber' : 'text-lux-text-muted'}`}>{prevailing.parentName}</div>
+                                    <div className={`text-[9px] uppercase font-bold mb-1 tracking-widest ${prevailing.prevailingName === prevailing.parentName ? 'text-[#B8B8B8]' : 'text-lux-text-muted'}`}>{prevailing.parentName}</div>
                                     <div className={`font-serif ${prevailing.prevailingName === prevailing.parentName ? 'text-white font-bold' : 'text-lux-text-body'}`}>{prevailing.parentTerm}</div>
                                 </div>
                                 {/* Child Side (Winning) */}
-                                <div className={`flex-1 p-4 rounded-r border border-lux-border ${prevailing.prevailingName !== prevailing.childName ? 'bg-white/[0.03] opacity-50' : 'bg-lux-amber/5 border-lux-amber/20 relative shadow-[inset_0_0_20px_rgba(251,191,36,0.05)]'}`}>
+                                <div className={`flex-1 p-4 rounded-r border border-lux-border ${prevailing.prevailingName !== prevailing.childName ? 'bg-white/[0.03] opacity-50' : 'bg-[#D4D4D4]/5 border-[#2A2A2A] relative shadow-[inset_0_0_20px_rgba(184, 184, 184,0.05)]'}`}>
                                     {prevailing.prevailingName === prevailing.childName && (
-                                        <div className="absolute -top-2 right-2 bg-lux-amber text-black text-[8px] font-bold px-2 py-0.5 rounded shadow-lg tracking-wider">PREVAILS</div>
+                                        <div className="absolute -top-2 right-2 bg-[#D4D4D4] text-[#0A0A0A] text-[8px] font-bold px-2 py-0.5 rounded shadow-lg tracking-wider">PREVAILS</div>
                                     )}
-                                    <div className={`text-[9px] uppercase font-bold mb-1 tracking-widest ${prevailing.prevailingName === prevailing.childName ? 'text-lux-amber' : 'text-lux-text-muted'}`}>{prevailing.childName}</div>
+                                    <div className={`text-[9px] uppercase font-bold mb-1 tracking-widest ${prevailing.prevailingName === prevailing.childName ? 'text-[#B8B8B8]' : 'text-lux-text-muted'}`}>{prevailing.childName}</div>
                                     <div className={`font-serif ${prevailing.prevailingName === prevailing.childName ? 'text-white font-bold' : 'text-lux-text-body'}`}>{prevailing.childTerm}</div>
                                 </div>
                             </div>
@@ -114,10 +114,10 @@ export default async function ObligationMaster({ matterId }: { matterId: string 
                 </div>
 
                 {/* 3. Clause Evolution Timeline */}
-                <div className="bg-lux-card rounded border border-lux-border overflow-hidden hover:border-lux-gold/20 transition-colors duration-300">
+                <div className="bg-lux-card rounded border border-lux-border overflow-hidden hover:border-[#2A2A2A] transition-colors duration-300">
                     <div className="p-4 border-b border-lux-border bg-white/[0.02]">
                         <h3 className="font-medium text-lux-text-head flex items-center gap-2.5 text-sm uppercase tracking-wider">
-                            <span className="material-symbols-outlined text-lux-gold text-[20px]">history</span>
+                            <span className="material-symbols-outlined text-[#B8B8B8] text-[20px]">history</span>
                             Clause Evolution: Indemnity
                         </h3>
                     </div>
@@ -128,7 +128,7 @@ export default async function ObligationMaster({ matterId }: { matterId: string 
 
                             {evolutions.map((evo, idx) => (
                                 <div key={idx} className={`flex gap-5 relative transition-opacity ${!evo.isCurrent ? 'opacity-60 hover:opacity-100' : ''} ${idx !== evolutions.length - 1 ? 'mb-8' : ''}`}>
-                                    <div className={`size-3 rounded-full border-[3px] border-lux-card shrink-0 z-10 translate-y-1.5 ${evo.isCurrent ? 'bg-lux-gold shadow-[0_0_0_1px_rgba(212,175,55,0.5)]' : 'bg-lux-border'}`}></div>
+                                    <div className={`size-3 rounded-full border-[3px] border-lux-card shrink-0 z-10 translate-y-1.5 ${evo.isCurrent ? 'bg-[#B8B8B8] shadow-[0_0_0_1px_rgba(184, 184, 184,0.5)]' : 'bg-lux-border'}`}></div>
                                     <div className="flex-1">
                                         <div className="flex justify-between items-baseline mb-2">
                                             <span className={`${evo.isCurrent ? 'font-bold text-white' : 'font-medium text-lux-text-body'} text-sm`}>{evo.year}</span>
@@ -152,7 +152,7 @@ export default async function ObligationMaster({ matterId }: { matterId: string 
                 </div>
 
                 {/* 4. Consolidated Obligations (Existing) */}
-                <div className="bg-lux-card rounded border border-lux-border overflow-hidden hover:border-lux-gold/20 transition-colors duration-300">
+                <div className="bg-lux-card rounded border border-lux-border overflow-hidden hover:border-[#2A2A2A] transition-colors duration-300">
                     <div className="p-4 border-b border-lux-border bg-white/[0.02] flex justify-between items-center">
                         <h3 className="font-medium text-lux-text-head flex items-center gap-2.5 text-sm uppercase tracking-wider">
                             Consolidated Obligations
@@ -185,7 +185,7 @@ export default async function ObligationMaster({ matterId }: { matterId: string 
                                             <input
                                                 type="checkbox"
                                                 defaultChecked={isCompleted}
-                                                className="rounded-sm border-lux-text-muted bg-transparent text-lux-gold focus:ring-lux-gold focus:ring-offset-0 focus:ring-1 h-4 w-4 cursor-pointer"
+                                                className="rounded-sm border-lux-text-muted bg-transparent text-[#B8B8B8] focus:ring-[#888888] focus:ring-offset-0 focus:ring-1 h-4 w-4 cursor-pointer"
                                                 readOnly
                                             />
                                         </div>
@@ -220,7 +220,7 @@ export default async function ObligationMaster({ matterId }: { matterId: string 
 
                     {items.length > 0 && (
                         <div className="p-3 bg-black/20 text-center border-t border-lux-border">
-                            <span className="text-lux-gold text-[10px] font-bold uppercase tracking-widest">
+                            <span className="text-[#B8B8B8] text-[10px] font-bold uppercase tracking-widest">
                                 {items.length} Total Obligation{items.length !== 1 ? 's' : ''}
                             </span>
                         </div>

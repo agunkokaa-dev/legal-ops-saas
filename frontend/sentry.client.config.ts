@@ -2,7 +2,17 @@ import * as Sentry from "@sentry/nextjs";
 
 Sentry.init({
   dsn: process.env.NEXT_PUBLIC_SENTRY_DSN,
-  tracesSampleRate: 1.0,
-  profilesSampleRate: 1.0,
+  environment: "production",
+  tracesSampleRate: 0.1,
+  sendDefaultPii: false,
   enabled: Boolean(process.env.NEXT_PUBLIC_SENTRY_DSN),
+  ignoreErrors: [
+    "Network request failed",
+    "Failed to fetch",
+    "Load failed",
+  ],
+  beforeSend(event) {
+    if (process.env.NODE_ENV === "development") return null;
+    return event;
+  },
 });

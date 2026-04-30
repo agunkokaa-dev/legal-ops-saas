@@ -1,0 +1,11 @@
+{
+  "short_name": "UU CONTOH",
+  "full_name": "Undang-Undang Contoh untuk Uji Ingestion Lokal",
+  "law_type": "UU",
+  "number": "999",
+  "year": 2026,
+  "category": "general",
+  "jurisdiction": "Indonesia",
+  "effective_date": "2026-01-01",
+  "official_source_url": "https://example.com/uu-contoh"
+}

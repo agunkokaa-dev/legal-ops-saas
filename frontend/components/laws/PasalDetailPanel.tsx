@@ -137,7 +137,7 @@ export default function PasalDetailPanel({
                           <button
                             key={`${part.value}-${index}`}
                             onClick={() => void onOpenCitationText(part.value)}
-                            className="rounded-full bg-[#d4af37]/12 px-2 py-0.5 text-left text-[#f4d884] transition hover:bg-[#d4af37]/20"
+                            className="rounded-full bg-[#B8B8B8]/12 px-2 py-0.5 text-left text-[#D4D4D4] transition hover:bg-[#B8B8B8]/20"
                           >
                             {part.value}
                           </button>

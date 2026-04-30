@@ -5,10 +5,12 @@
   "scripts": {
     "dev": "next dev",
     "dev:pm2": "pm2 start ecosystem.config.js --only frontend --update-env",
+    "prebuild": "npm run check:markdown-corruption",
     "build": "next build",
     "start": "next start",
     "start:pm2:prod": "pm2 start ecosystem.config.js --only frontend --env production --update-env",
     "lint": "eslint",
+    "check:markdown-corruption": "node scripts/check-markdown-corruption.mjs",
     "check:laws-parser": "node scripts/check-law-citation-parser.mjs"
   },
   "dependencies": {

@@ -59,16 +59,16 @@ export default function WarRoomStateScreen({
 
                 {/* Prominent Center Overlay */}
                 <div className="absolute inset-0 z-50 flex items-center justify-center bg-[#0a0a0a]/60 backdrop-blur-sm">
-                    <div className="bg-[#111] border border-[#d4af37]/30 p-8 rounded-2xl shadow-2xl flex flex-col items-center max-w-md text-center">
-                        <div className="w-16 h-16 rounded-full border border-[#d4af37]/20 bg-[#d4af37]/10 flex items-center justify-center mb-6">
-                            <span className="material-symbols-outlined text-[#d4af37] text-3xl animate-spin" style={{ animationDuration: '3s' }}>sync</span>
+                    <div className="bg-[#111] border border-zinc-700/60 p-8 rounded-2xl shadow-2xl flex flex-col items-center max-w-md text-center">
+                        <div className="w-16 h-16 rounded-full border border-[#3A3A3A] bg-[#1C1C1C] flex items-center justify-center mb-6">
+                            <span className="material-symbols-outlined text-[#B8B8B8] text-3xl animate-spin" style={{ animationDuration: '3s' }}>sync</span>
                         </div>
-                        <h3 className="text-white font-serif font-bold text-lg mb-3 tracking-wide text-[#d4af37]">AI Processing Documents</h3>
+                        <h3 className="font-serif font-bold text-lg mb-3 tracking-wide text-[#B8B8B8]">AI Processing Documents</h3>
                         <p className="text-zinc-400 text-sm leading-relaxed">
                             Please wait, AI Co-Counsel is comparing V1 against V2 and formulating BATNA strategies...
                         </p>
                         <div className="w-full h-1 bg-zinc-800 mt-6 rounded overflow-hidden">
-                            <div className="h-full bg-[#d4af37]/50 w-full animate-pulse"></div>
+                            <div className="h-full bg-[#B8B8B8]/70 w-full animate-pulse"></div>
                         </div>
                     </div>
                 </div>
@@ -132,8 +132,8 @@ export default function WarRoomStateScreen({
                     {/* Loading Overlay */}
                     <div className="absolute inset-0 bg-[#0a0a0a]/80 backdrop-blur-sm z-10 flex flex-col items-center justify-center">
                         <div className="flex items-center gap-4 mb-4">
-                            <span className="w-6 h-6 border-2 border-[#D4AF37]/20 rounded-full animate-spin border-t-[#D4AF37]"></span>
-                            <h3 className="font-serif text-[#D4AF37] text-lg tracking-wide animate-pulse">{waitingForRealtime ? 'Waiting for live updates...' : 'AI Co-Counsel is finalizing the War Room Diff...'}</h3>
+                            <span className="w-6 h-6 border-2 border-[#2A2A2A] rounded-full animate-spin border-t-[#B8B8B8]"></span>
+                            <h3 className="font-serif text-[#B8B8B8] text-lg tracking-wide animate-pulse">{waitingForRealtime ? 'Waiting for live updates...' : 'AI Co-Counsel is finalizing the War Room Diff...'}</h3>
                         </div>
                         <p className="text-xs text-zinc-500 uppercase tracking-widest max-w-sm text-center">{loadingStage}</p>
                     </div>

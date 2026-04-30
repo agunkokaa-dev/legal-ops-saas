@@ -16,7 +16,7 @@ export default function ClauseSyncIndicator({ status, lastSyncedAt, onSyncReques
   let isActionable = false;
 
   if (isLoading || status === 'ai_pending') {
-    indicatorColor = "bg-blue-500";
+    indicatorColor = "bg-[#B8B8B8]";
     label = "AI Translating...";
     pulse = true;
   } else if (status === 'synced') {

@@ -76,41 +76,41 @@ export default function LeftSidebar({
     return (
         <aside className="w-[280px] flex-shrink-0 border-r border-zinc-800/60 overflow-y-auto flex flex-col bg-[#0D0D14] custom-scrollbar">
             <div className="p-6 pb-4">
-                <h4 className="text-[10px] text-zinc-500 tracking-[0.2em] uppercase font-bold mb-4">Lineage Overview</h4>
+                <h4 className="text-[10px] text-neutral-500 tracking-[0.2em] uppercase font-bold mb-4">Lineage Overview</h4>
                 <div className="space-y-3 mb-6">
                     <div
-                        className={`p-3 rounded flex justify-between items-center opacity-70 cursor-pointer transition-all ${viewMode === 'v1' ? 'bg-[#141414] border-2 border-[#D4AF37]/40 shadow-[0_0_15px_rgba(212,175,55,0.05)]' : 'bg-[#111] border border-zinc-800/60 hover:opacity-100 hover:border-zinc-600'}`}
+                        className={`p-3 rounded flex justify-between items-center cursor-pointer transition-all ${viewMode === 'v1' ? 'bg-transparent border border-neutral-500/50' : 'bg-transparent border border-neutral-500/50 opacity-70 hover:opacity-100'}`}
                         onClick={() => onViewModeChange('v1')}
                     >
                         <div>
-                            <span className={`text-xs font-bold font-serif block break-words max-w-[120px] ${viewMode === 'v1' ? 'text-[#D4AF37]' : 'text-zinc-400'}`}>Baseline (V1)</span>
-                            <span className="text-[9px] text-zinc-600 uppercase">System Record</span>
+                            <span className={`text-xs font-bold font-serif block break-words max-w-[120px] ${viewMode === 'v1' ? 'text-neutral-200' : 'text-neutral-400'}`}>Baseline (V1)</span>
+                            <span className="text-[9px] uppercase text-neutral-400">System Record</span>
                         </div>
-                        <span className="text-[10px] bg-zinc-800 text-zinc-400 px-2 flex-shrink-0 py-0.5 rounded border border-zinc-700">Source</span>
+                        <span className="text-[10px] bg-transparent text-neutral-400 px-2 flex-shrink-0 py-0.5 rounded border border-neutral-500/50">Source</span>
                     </div>
-                    <div className="w-0.5 h-4 bg-zinc-800 ml-6"></div>
+                    <div className="w-0.5 h-4 bg-neutral-500/30 ml-6"></div>
 
                     <div
-                        className={`p-3 rounded flex justify-between items-center cursor-pointer transition-all ${viewMode === 'v2' ? 'bg-[#141414] border-2 border-[#D4AF37]/40 shadow-[0_0_15px_rgba(212,175,55,0.05)]' : 'bg-[#111] border border-[#D4AF37]/20 hover:border-[#D4AF37]/40 opacity-80 hover:opacity-100'}`}
+                        className={`p-3 rounded flex justify-between items-center cursor-pointer transition-all ${viewMode === 'v2' ? 'bg-transparent border border-neutral-500/50' : 'bg-transparent border border-neutral-500/50 opacity-70 hover:opacity-100'}`}
                         onClick={() => onViewModeChange('v2')}
                     >
                         <div>
-                            <span className={`text-xs font-bold font-serif block break-words max-w-[120px] ${viewMode === 'v2' ? 'text-[#D4AF37]' : 'text-zinc-500'}`}>Round 1 (V2)</span>
-                            <span className="text-[9px] text-zinc-500 uppercase">Counterparty Upload</span>
+                            <span className={`text-xs font-bold font-serif block break-words max-w-[120px] ${viewMode === 'v2' ? 'text-neutral-200' : 'text-neutral-400'}`}>Round 1 (V2)</span>
+                            <span className="text-[9px] uppercase text-neutral-400">Counterparty Upload</span>
                         </div>
-                        <span className="text-[10px] bg-[#D4AF37]/10 text-[#D4AF37] px-2 flex-shrink-0 py-0.5 rounded border border-[#D4AF37]/20">Active Diff</span>
+                        <span className={`text-[10px] bg-transparent px-2 flex-shrink-0 py-0.5 rounded border ${viewMode === 'v2' ? 'text-neutral-300 border-neutral-500/50' : 'text-neutral-400 border-neutral-500/50'}`}>Active Diff</span>
                     </div>
 
                     {v3Working && (
                         <>
-                            <div className="w-0.5 h-4 bg-[#D4AF37]/40 ml-6"></div>
+                            <div className="w-0.5 h-4 bg-neutral-500/30 ml-6"></div>
                             <div
-                                className={`bg-[#141414] border-y border-r border-zinc-800/40 border-l-2 border-l-emerald-900/60 rounded-lg p-3 flex justify-between items-center cursor-pointer transition-all ${viewMode === 'v3' ? 'shadow-[0_0_15px_rgba(16,185,129,0.05)] bg-[#141414]' : 'opacity-80 hover:opacity-100'}`}
+                                className={`p-3 rounded flex justify-between items-center cursor-pointer transition-all ${viewMode === 'v3' ? 'bg-transparent border border-neutral-500/50' : 'bg-transparent border border-neutral-500/50 opacity-70 hover:opacity-100'}`}
                                 onClick={() => onViewModeChange('v3')}
                             >
                                 <div>
-                                    <span className="text-xs text-zinc-300 font-medium block break-words max-w-[120px]">Working Draft (V3)</span>
-                                    <span className="text-[10px] text-zinc-500 uppercase tracking-widest block">MERGED</span>
+                                    <span className={`text-xs font-bold font-serif block break-words max-w-[120px] ${viewMode === 'v3' ? 'text-neutral-200' : 'text-neutral-400'}`}>Working Draft (V3)</span>
+                                    <span className="text-[10px] uppercase tracking-widest block text-neutral-400">MERGED</span>
                                 </div>
                             </div>
                         </>
@@ -151,7 +151,7 @@ export default function LeftSidebar({
                         className="h-full rounded-full transition-all duration-500"
                         style={{
                             width: `${resolutionPct}%`,
-                            background: 'linear-gradient(to right, #f59e0b, #10b981)',
+                            background: 'linear-gradient(to right, #B8B8B8, #10b981)',
                         }}
                     />
                 </div>
@@ -217,9 +217,9 @@ export default function LeftSidebar({
                     </button>
                     <button
                         onClick={() => setSeverityFilters(p => ({ ...p, info: !p.info }))}
-                        className={`flex items-center gap-1 text-[9px] px-2 py-1 rounded font-bold uppercase tracking-widest border transition-colors shrink-0 ${severityFilters.info ? 'bg-blue-500/20 text-blue-400 border-blue-500/40' : 'bg-transparent text-blue-500/60 border-blue-900/40 hover:border-blue-800/60'}`}
+                        className={`flex items-center gap-1 text-[9px] px-2 py-1 rounded font-bold uppercase tracking-widest border transition-colors shrink-0 ${severityFilters.info ? 'bg-[#B8B8B8]/20 text-[#B8B8B8] border-[#3A3A3A]' : 'bg-transparent text-[#888888]/60 border-[#2A2A2A] hover:border-[#3A3A3A]'}`}
                     >
-                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500 block"></span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#B8B8B8] block"></span>
                         Info
                     </button>
                 </div>
@@ -243,20 +243,20 @@ export default function LeftSidebar({
                                     selected: 'border-amber-500/60 ring-amber-500/30',
                                 }
                                 : {
-                                    dot: 'bg-blue-500',
-                                    text: 'text-blue-400/80',
-                                    selected: 'border-blue-500/60 ring-blue-500/30',
+                                    dot: 'bg-[#B8B8B8]',
+                                    text: 'text-[#888888]/80',
+                                    selected: 'border-[#3A3A3A] ring-[#888888]/30',
                                 };
                         const statusMeta = status === 'accepted' || status === 'resolved'
                             ? { border: 'border-l-emerald-500', text: 'text-emerald-400', label: `✓ ${status.toUpperCase()}`, dim: true }
                             : status === 'rejected'
                                 ? { border: 'border-l-rose-500', text: 'text-rose-400', label: '✗ REJECTED', dim: true }
                                 : status === 'countered'
-                                    ? { border: 'border-l-amber-500', text: 'text-amber-400', label: '↩ COUNTERED', dim: false }
+                                    ? { border: 'border-l-[#B8B8B8]', text: 'text-[#B8B8B8]', label: '↩ COUNTERED', dim: false }
                                     : status === 'under_review'
-                                        ? { border: 'border-l-blue-500', text: 'text-blue-400', label: '● UNDER REVIEW', dim: false }
+                                        ? { border: 'border-l-[#B8B8B8]', text: 'text-[#B8B8B8]', label: '● UNDER REVIEW', dim: false }
                                         : status === 'escalated'
-                                            ? { border: 'border-l-blue-500', text: 'text-blue-400', label: '⬆ ESCALATED', dim: false }
+                                            ? { border: 'border-l-[#B8B8B8]', text: 'text-[#B8B8B8]', label: '⬆ ESCALATED', dim: false }
                                             : status === 'dismissed'
                                                 ? { border: 'border-l-zinc-600', text: 'text-zinc-500', label: 'DISMISSED', dim: true }
                                                 : { border: 'border-l-zinc-500', text: 'text-zinc-400', label: 'OPEN', dim: false };

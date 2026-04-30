@@ -14,25 +14,25 @@ export default function ChildNode({ data }: { data: any }) {
         <div
             onClick={() => data.id && router.push(`/dashboard/contracts/${data.id}`)}
             className={`
-            bg-lux-sidebar rounded-lg p-4 w-64 shadow-xl transition-all duration-300 cursor-pointer hover:ring-1 hover:ring-lux-gold
-            ${isActive && !data.isCurrent ? 'border border-lux-amber/50 shadow-[0_0_20px_rgba(251,191,36,0.1)]' : ''}
+            bg-lux-sidebar rounded-lg p-4 w-64 shadow-xl transition-all duration-300 cursor-pointer hover:ring-1 hover:ring-[#888888]
+            ${isActive && !data.isCurrent ? 'border border-[#3A3A3A] shadow-[0_0_20px_rgba(184, 184, 184,0.1)]' : ''}
             ${isPending && !data.isCurrent ? 'border border-dashed border-lux-text-muted/50 opacity-70' : ''}
             ${isCompleted && !data.isCurrent ? 'border border-lux-border opacity-60' : ''}
-            ${data.isCurrent ? 'border-2 border-lux-gold ring-2 ring-lux-gold/50 shadow-[0_0_20px_rgba(212,175,55,0.4)] opacity-100' : ''}
+            ${data.isCurrent ? 'border-2 border-[#3A3A3A] ring-2 ring-[#888888]/50 shadow-[0_0_20px_rgba(184, 184, 184,0.4)] opacity-100' : ''}
         `}>
             {/* Invisible handle for incoming edges */}
             <Handle type="target" position={Position.Top} className="opacity-0" />
 
             <div className="flex justify-between items-center mb-3">
                 <span className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider
-                    ${isActive ? 'bg-lux-amber/10 text-lux-amber' : ''}
+                    ${isActive ? 'bg-[#D4D4D4]/10 text-[#B8B8B8]' : ''}
                     ${isCompleted ? 'bg-white/5 text-lux-text-muted' : ''}
                     ${isPending ? 'bg-white/5 text-lux-text-muted' : ''}
                 `}>
                     {data.category || 'Document'}
                 </span>
 
-                {isActive && <div className="size-2 rounded-full bg-lux-amber animate-pulse shadow-[0_0_10px_rgba(251,191,36,0.8)]"></div>}
+                {isActive && <div className="size-2 rounded-full bg-[#D4D4D4] animate-pulse shadow-[0_0_10px_rgba(184, 184, 184,0.8)]"></div>}
                 {isCompleted && <span className="material-symbols-outlined text-green-500 text-[14px]">check_circle</span>}
                 {isPending && <span className="material-symbols-outlined text-lux-text-muted text-[14px]">schedule</span>}
             </div>
@@ -49,10 +49,10 @@ export default function ChildNode({ data }: { data: any }) {
                 <div className="mt-4">
                     <div className="flex justify-between text-[9px] text-lux-text-muted mb-1 font-bold uppercase tracking-wider">
                         <span>Progress</span>
-                        <span className="text-lux-amber">{data.progress}%</span>
+                        <span className="text-[#B8B8B8]">{data.progress}%</span>
                     </div>
                     <div className="h-1 bg-white/10 rounded-full overflow-hidden">
-                        <div className="h-full bg-lux-amber shadow-[0_0_10px_rgba(251,191,36,0.5)]" style={{ width: `${data.progress}%` }}></div>
+                        <div className="h-full bg-[#D4D4D4] shadow-[0_0_10px_rgba(184, 184, 184,0.5)]" style={{ width: `${data.progress}%` }}></div>
                     </div>
                 </div>
             )}

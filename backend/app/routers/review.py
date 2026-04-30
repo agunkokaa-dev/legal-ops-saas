@@ -191,7 +191,11 @@ async def analyze_contract(
             clm_graph.invoke,
             {
                 "contract_id": payload.contract_id,
-                "raw_document": safe_document
+                "raw_document": safe_document,
+                "tenant_id": tenant_id,
+                "_tenant_id": tenant_id,
+                "playbook_rules": [],
+                "national_law_excerpts": [],
             }
         )
 

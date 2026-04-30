@@ -19,7 +19,7 @@ export default function PDFViewerPlaceholder() {
                     <div className="flex bg-black/40 rounded-full p-0.5">
                         <button className="px-3 py-1 text-[10px] font-medium rounded-full bg-white/10 text-white shadow-sm border border-white/5">Original</button>
                         <button className="px-3 py-1 text-[10px] font-medium rounded-full text-text-muted hover:text-white flex items-center gap-1 transition-colors">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#d4af37]"></span> AI Redline
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#B8B8B8]"></span> AI Redline
                         </button>
                     </div>
                 </div>
@@ -32,7 +32,7 @@ export default function PDFViewerPlaceholder() {
             {/* Scrollable Document Area */}
             <div className="flex-1 overflow-y-auto p-8 flex justify-center bg-background scroll-smooth pt-24">
                 <div
-                    className="w-full max-w-4xl bg-white min-h-[1200px] relative p-16 text-black font-sans text-sm leading-relaxed rounded-2xl shadow-2xl"
+                    className="w-full max-w-4xl bg-white min-h-[1200px] relative p-16 text-[#0A0A0A] font-sans text-sm leading-relaxed rounded-2xl shadow-2xl"
                     style={{ boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.75)' }}
                 >
                     <div className="flex items-center justify-between mb-8 border-b border-gray-200 pb-2">
@@ -54,7 +54,7 @@ export default function PDFViewerPlaceholder() {
                         2. <strong className="font-serif text-lg">Confidential Information.</strong> "Confidential Information" means any information disclosed by either party to the other party, either directly or indirectly, in writing, orally or by inspection of tangible objects.
                     </p>
 
-                    <div className="bg-amber-50 rounded-lg p-4 -mx-4 border-l-2 border-[#d4af37]/50 my-6">
+                    <div className="bg-[#E8E8E8] rounded-lg p-4 -mx-4 border-l-2 border-[#B8B8B8]/50 my-6">
                         <p className="mb-0 text-justify text-gray-800">
                             3. <strong className="font-serif text-lg">Exceptions.</strong> Confidential Information shall not include any information which (i) was publicly known and made generally available in the public domain prior to the time of disclosure by the disclosing party.
                         </p>

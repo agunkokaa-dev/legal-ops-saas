@@ -11,14 +11,14 @@ interface HistoryPanelProps {
 
 const actorConfig: Record<RevisionSnapshot['actor'], { icon: string; color: string }> = {
   'User': { icon: 'person', color: '#a1a1aa' },
-  'AI LangGraph': { icon: 'smart_toy', color: '#60a5fa' },
-  'AI Clause Assistant': { icon: 'auto_awesome', color: '#d4af37' },
+  'AI LangGraph': { icon: 'smart_toy', color: '#888888' },
+  'AI Clause Assistant': { icon: 'auto_awesome', color: '#B8B8B8' },
 };
 
 const actionBadgeColor: Record<RevisionSnapshot['action_type'], string> = {
   'Manual Save': 'bg-zinc-700/50 text-zinc-300',
-  'Compliance Audit': 'bg-blue-500/15 text-blue-400',
-  'Clause Insertion': 'bg-[#d4af37]/15 text-[#d4af37]',
+  'Compliance Audit': 'bg-[#1C1C1C] text-[#B8B8B8]',
+  'Clause Insertion': 'bg-[#B8B8B8]/15 text-[#B8B8B8]',
   'Restored': 'bg-emerald-500/15 text-emerald-400',
 };
 
@@ -84,7 +84,7 @@ export default function HistoryPanel({ history, onPreview, onRestore }: HistoryP
                     {/* Card */}
                     <div
                       onClick={() => onPreview(snap.content)}
-                      className="bg-[#141414] border border-zinc-800/60 rounded-lg p-4 cursor-pointer hover:border-[#d4af37]/30 transition-all group-hover:shadow-[0_0_20px_rgba(212,175,55,0.03)]"
+                      className="bg-[#141414] border border-zinc-800/60 rounded-lg p-4 cursor-pointer hover:border-[#B8B8B8]/30 transition-all group-hover:shadow-[0_0_20px_rgba(184, 184, 184,0.03)]"
                     >
                       {/* Header row */}
                       <div className="flex items-center justify-between mb-2">
@@ -120,7 +120,7 @@ export default function HistoryPanel({ history, onPreview, onRestore }: HistoryP
                           e.stopPropagation();
                           onRestore(snap);
                         }}
-                        className="w-full py-1.5 text-[9px] font-extrabold uppercase tracking-[0.15em] text-[#d4af37] border border-[#d4af37]/20 hover:border-[#d4af37]/60 hover:bg-[#d4af37]/10 rounded transition-all"
+                        className="w-full py-1.5 text-[9px] font-extrabold uppercase tracking-[0.15em] text-[#B8B8B8] border border-[#B8B8B8]/20 hover:border-[#B8B8B8]/60 hover:bg-[#B8B8B8]/10 rounded transition-all"
                       >
                         Restore This Version
                       </button>

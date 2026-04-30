@@ -12,8 +12,8 @@ const navItems = [
     { href: '/dashboard/matters', icon: 'briefcase_meal', label: 'Matters', exact: false, type: 'material' },
     { href: '/dashboard/drafting', icon: 'edit_document', label: 'Drafting', exact: false, type: 'material' },
     { href: '/dashboard/tasks', icon: ListTodo, label: 'Task Management', exact: false, type: 'lucide' },
-    { href: '/dashboard/documents', icon: 'description', label: 'Documents', exact: false, type: 'material' },
     { href: '/dashboard/calendar', icon: 'calendar_month', label: 'Calendar', exact: false, type: 'material' },
+    { href: '/dashboard/documents', icon: 'description', label: 'Documents', exact: false, type: 'material' },
 ]
 
 const secondaryItems = [
@@ -28,7 +28,8 @@ export default function Sidebar() {
     useEffect(() => {
         const saved = window.localStorage.getItem('sidebar-collapsed')
         if (saved !== null) {
-            setCollapsed(saved === 'true')
+            const frame = window.requestAnimationFrame(() => setCollapsed(saved === 'true'))
+            return () => window.cancelAnimationFrame(frame)
         }
     }, [])
 

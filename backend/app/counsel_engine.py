@@ -22,7 +22,8 @@ except Exception:  # pragma: no cover
 
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
-from app.config import ANTHROPIC_API_KEY, NATIONAL_LAWS_COLLECTION, openai_client, qdrant
+from app.ai_usage import log_ai_usage_sync
+from app.config import ANTHROPIC_API_KEY, NATIONAL_LAWS_COLLECTION, OUTPUT_TOKEN_CAPS, openai_client, qdrant
 from app.counsel_prompts import (
     DEVIATION_COUNSEL_SYSTEM,
     GENERAL_STRATEGY_COUNSEL_SYSTEM,
@@ -37,7 +38,7 @@ from app.dependencies import TenantQdrantClient
 from app.llm_output_sanitizer import sanitize_llm_text
 from app.review_schemas import CounselSessionType
 from app.pipeline_output_schema import parse_pipeline_output
-from app.token_budget import allocate_budget
+from app.token_budget import allocate_budget, count_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -507,7 +508,7 @@ async def _stream_counsel_completion(
     if hasattr(client.messages, "stream"):
         async with client.messages.stream(
             model=COUNSEL_MODEL,
-            max_tokens=4096,
+            max_tokens=OUTPUT_TOKEN_CAPS["counsel_default"],
             system=system_prompt,
             messages=messages,
         ) as stream:
@@ -517,7 +518,7 @@ async def _stream_counsel_completion(
 
     response = await client.messages.create(
         model=COUNSEL_MODEL,
-        max_tokens=4096,
+        max_tokens=OUTPUT_TOKEN_CAPS["counsel_default"],
         system=system_prompt,
         messages=messages,
     )
@@ -745,5 +746,17 @@ async def handle_counsel_message(
         status="completed",
         duration_ms=int((time.perf_counter() - started_at) * 1000),
         error_message=None,
+    )
+    prompt_text = system_prompt + "\n" + "\n".join(str(item.get("content", "")) for item in messages)
+    log_ai_usage_sync(
+        supabase,
+        tenant_id,
+        "counsel_default",
+        COUNSEL_MODEL,
+        count_tokens(prompt_text),
+        count_tokens(safe_response),
+        int((time.perf_counter() - started_at) * 1000),
+        contract_id=contract_id,
+        metadata={"session_id": session.get("id"), "session_type": effective_session_type},
     )
     yield _format_done()

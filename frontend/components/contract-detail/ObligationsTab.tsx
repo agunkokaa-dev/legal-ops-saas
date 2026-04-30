@@ -139,7 +139,7 @@ export default function ObligationsTab({ contractId }: { contractId: string }) {
 
                         <button
                             onClick={handleAutoExtract}
-                            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-transparent border border-[#d4af37]/30 text-[#d4af37] hover:bg-[#d4af37]/10 rounded-lg text-sm transition-all shadow-[0_0_15px_rgba(212,175,55,0.1)] hover:shadow-[0_0_20px_rgba(212,175,55,0.2)]"
+                            className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-transparent border border-[#B8B8B8]/30 text-[#B8B8B8] hover:bg-[#B8B8B8]/10 rounded-lg text-sm transition-all shadow-[0_0_15px_rgba(184, 184, 184,0.1)] hover:shadow-[0_0_20px_rgba(184, 184, 184,0.2)]"
                         >
                             <Sparkles className="w-4 h-4 stroke-[1.5]" />
                             Auto-Extract Obligations
@@ -148,8 +148,8 @@ export default function ObligationsTab({ contractId }: { contractId: string }) {
                 ) : isExtracting ? (
                     <div className="flex flex-col gap-3">
                         <div className="flex flex-col items-center justify-center p-4 mb-2">
-                            <h3 className="text-[#d4af37] text-[10px] font-mono tracking-widest uppercase animate-pulse">EXTRACTING GUIDELINES...</h3>
-                            <div className="w-full h-[1px] bg-gradient-to-r from-transparent via-[#d4af37]/50 to-transparent mt-3"></div>
+                            <h3 className="text-[#B8B8B8] text-[10px] font-mono tracking-widest uppercase animate-pulse">EXTRACTING GUIDELINES...</h3>
+                            <div className="w-full h-[1px] bg-gradient-to-r from-transparent via-[#B8B8B8]/50 to-transparent mt-3"></div>
                         </div>
                         {[1, 2, 3].map((i) => (
                             <div key={i} className="bg-neutral-900/50 backdrop-blur border border-neutral-800 rounded-xl p-4 flex flex-col gap-3 animate-pulse">
@@ -180,7 +180,7 @@ export default function ObligationsTab({ contractId }: { contractId: string }) {
                                         initial={{ opacity: 0, y: 10 }}
                                         animate={{ opacity: 1, y: 0 }}
                                         exit={{ opacity: 0, scale: 0.95 }}
-                                        className={`bg-neutral-900/50 backdrop-blur rounded-xl p-4 transition-all flex flex-col gap-3 group relative overflow-hidden ${isActive && !isConflict ? 'border border-neutral-800 border-l-2 border-l-amber-500' :
+                                        className={`bg-neutral-900/50 backdrop-blur rounded-xl p-4 transition-all flex flex-col gap-3 group relative overflow-hidden ${isActive && !isConflict ? 'border border-neutral-800 border-l-2 border-l-[#B8B8B8]' :
                                                 isActive && isConflict ? 'border border-red-500/30 border-l-2 border-l-red-500 shadow-[0_0_15px_rgba(239,68,68,0.1)]' :
                                                     'border border-neutral-800/50 opacity-60'
                                             }`}
@@ -241,7 +241,7 @@ export default function ObligationsTab({ contractId }: { contractId: string }) {
                             value={newDesc}
                             onChange={(e) => setNewDesc(e.target.value)}
                             placeholder="Describe the obligation..."
-                            className="w-full bg-[#121212] border border-neutral-700 rounded-md p-2 text-sm text-white focus:outline-none focus:border-[#d4af37]/50 resize-none h-20 mb-3 placeholder:text-neutral-600"
+                            className="w-full bg-[#121212] border border-neutral-700 rounded-md p-2 text-sm text-white focus:outline-none focus:border-[#B8B8B8]/50 resize-none h-20 mb-3 placeholder:text-neutral-600"
                             autoFocus
                         />
                         <div className="flex gap-2 justify-end">
@@ -254,7 +254,7 @@ export default function ObligationsTab({ contractId }: { contractId: string }) {
                             <button
                                 onClick={handleAddManual}
                                 disabled={!newDesc.trim() || isSubmitting}
-                                className="px-4 py-1.5 bg-[#d4af37] hover:bg-[#c4a137] text-black text-xs font-semibold rounded-md transition-colors disabled:opacity-50 flex items-center gap-2"
+                                className="px-4 py-1.5 bg-[#B8B8B8] hover:bg-[#D4D4D4] text-[#0A0A0A] text-xs font-semibold rounded-md transition-colors disabled:opacity-50 flex items-center gap-2"
                             >
                                 {isSubmitting && <Loader2 className="w-3 h-3 animate-spin" />}
                                 Save

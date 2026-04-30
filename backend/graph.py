@@ -35,6 +35,10 @@ from app.review_schemas import (
     ReviewFinding, BannerData, QuickInsight, TextCoordinate,
     assess_pipeline_output_quality,
 )
+from app.ai_usage import extract_openai_usage, log_ai_usage_sync
+from app.analysis_cache import build_cache_key, get_cached_analysis_sync, set_cached_analysis_sync
+from app.config import LAW_QDRANT_ACTIVE_ALIAS, OUTPUT_TOKEN_CAPS, admin_supabase
+from app.diff_utils import changed_clause_payload_size, find_changed_clauses
 from app.event_bus import SSEEvent
 from app.llm_output_sanitizer import sanitize_llm_text, sanitize_review_finding
 from app.token_budget import allocate_budget, count_tokens, get_budget, preflight_check, truncate_to_budget
@@ -73,6 +77,7 @@ class ContractState(TypedDict):
     """
     contract_id: str
     raw_document: str             # The raw text extracted from the PDF
+    tenant_id: str                # Tenant context for tenant-scoped retrieval
     extracted_clauses: Dict[str, Any] # Structured dictionary of key clauses
     contract_value: float         # Financial value or consideration found
     end_date: str                 # Termination or expiry date
@@ -88,6 +93,8 @@ class ContractState(TypedDict):
     extracted_obligations: Annotated[list, operator.add]  # Legacy: Obligations
     classified_clauses: Annotated[list, operator.add]     # Legacy: Classified clauses
     currency: str                 # ISO 4217 Currency Code
+    playbook_rules: list[str]     # Triple RAG: tenant playbook rules from Qdrant
+    national_law_excerpts: list[str]  # Triple RAG: active Indonesian law excerpts
 
     # ── V2 Coordinate-Aware Fields ──
     compliance_findings_v2: Annotated[list, operator.add]  # ComplianceFinding dicts
@@ -106,15 +113,17 @@ class ContractState(TypedDict):
 
 AGENT_PROGRESS = {
     "ingestion": {"name": "01_ingestion", "index": 1, "message": "Extracting contract metadata..."},
-    "compliance": {"name": "02_compliance", "index": 2, "message": "Analyzing compliance issues..."},
-    "risk": {"name": "03_risk", "index": 3, "message": "Calculating risk score..."},
-    "negotiation": {"name": "04_negotiation", "index": 4, "message": "Generating counter-proposal strategy..."},
-    "drafting": {"name": "05_drafting", "index": 5, "message": "Suggesting neutral rewrites..."},
-    "obligation_miner": {"name": "06_obligation_miner", "index": 6, "message": "Extracting contractual obligations..."},
-    "clause_classifier": {"name": "07_clause_classifier", "index": 7, "message": "Classifying clause types..."},
-    "review_aggregator": {"name": "08_review_aggregator", "index": 8, "message": "Merging and finalizing results..."},
+    "rag_prefetch": {"name": "rag_prefetch", "index": 2, "message": "Fetching playbook rules and Indonesian law context..."},
+    "compliance": {"name": "02_compliance", "index": 3, "message": "Analyzing compliance issues..."},
+    "risk": {"name": "03_risk", "index": 4, "message": "Calculating risk score..."},
+    "obligation_miner": {"name": "04_obligation_miner", "index": 5, "message": "Extracting contractual obligations..."},
+    "clause_classifier": {"name": "05_clause_classifier", "index": 6, "message": "Classifying clause types..."},
+    "review_aggregator": {"name": "06_review_aggregator", "index": 7, "message": "Merging and finalizing results..."},
+    "negotiation": {"name": "lazy_negotiation", "index": 1, "message": "Generating counter-proposal strategy..."},
+    "drafting": {"name": "lazy_drafting", "index": 1, "message": "Suggesting neutral rewrites..."},
 }
-TOTAL_AGENTS = len(AGENT_PROGRESS)
+PIPELINE_AGENT_KEYS = ("ingestion", "rag_prefetch", "compliance", "risk", "obligation_miner", "clause_classifier", "review_aggregator")
+TOTAL_AGENTS = len(PIPELINE_AGENT_KEYS)
 
 
 def _emit_pipeline_event(
@@ -207,6 +216,85 @@ def _fit_prompt(
     return rendered_prompt, adjusted_sections
 
 
+def _state_tenant_id(state: ContractState | dict) -> str | None:
+    return state.get("_tenant_id") or state.get("tenant_id")
+
+
+def _cache_key_for_state(
+    state: ContractState | dict,
+    *,
+    workflow: str,
+    document_text: str,
+    prompt_version: str = "v1",
+    schema_version: str = "v1",
+    model_family: str = "gpt-4o-mini",
+    playbook_version: str = "v1",
+    law_corpus_version: str = "v1",
+) -> str | None:
+    tenant_id = _state_tenant_id(state)
+    if not tenant_id:
+        return None
+    try:
+        return build_cache_key(
+            tenant_id=tenant_id,
+            workflow=workflow,
+            document_text=document_text,
+            prompt_version=prompt_version,
+            schema_version=schema_version,
+            model_family=model_family,
+            playbook_version=playbook_version,
+            law_corpus_version=law_corpus_version,
+        )
+    except Exception:
+        return None
+
+
+def _log_usage_for_state(
+    state: ContractState | dict,
+    *,
+    workflow: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    latency_ms: int,
+    cache_hit: bool = False,
+    metadata: dict | None = None,
+) -> None:
+    log_ai_usage_sync(
+        admin_supabase,
+        _state_tenant_id(state),
+        workflow,
+        model,
+        input_tokens,
+        output_tokens,
+        latency_ms,
+        contract_id=state.get("contract_id"),
+        cache_hit=cache_hit,
+        metadata=metadata,
+    )
+
+
+def _log_openai_response(
+    state: ContractState | dict,
+    *,
+    workflow: str,
+    model: str,
+    response: Any,
+    started_at: float,
+    metadata: dict | None = None,
+) -> None:
+    input_tokens, output_tokens = extract_openai_usage(response)
+    _log_usage_for_state(
+        state,
+        workflow=workflow,
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        latency_ms=int((time.time() - started_at) * 1000),
+        metadata=metadata,
+    )
+
+
 # ==========================================
 # Helper: Coordinate Instruction Block
 # ==========================================
@@ -223,6 +311,20 @@ HOW TO CALCULATE start_char and end_char:
 3. end_char = start_char + len(source_text).
 
 If you cannot find the exact text, use your best approximation but the source_text MUST still be a real quote from the document.
+"""
+
+
+ANTI_HALLUCINATION_GUARD = """
+CRITICAL ACCURACY REQUIREMENT:
+You are a legal analysis tool used by Indonesian lawyers. False findings are WORSE than
+missed findings — they damage professional credibility.
+
+Before flagging any issue, ask yourself:
+1. Is there EXPLICIT evidence in the contract text? (not implied, not assumed)
+2. Would a senior Indonesian lawyer agree this is a real violation?
+3. Am I confusing common industry terminology with actual legal violations?
+
+If the answer to any of these is NO or UNCERTAIN — do NOT flag it.
 """
 
 
@@ -263,15 +365,46 @@ def ingestion_agent(state: ContractState) -> ContractState:
         sections={"raw_document": state.get('raw_document', '')},
         priorities={"raw_document": 3},
     )
+    workflow_name = "ingestion"
+    model_name = "gpt-4o-mini"
+    cache_key = _cache_key_for_state(
+        state,
+        workflow=workflow_name,
+        document_text=prompt,
+        prompt_version="ingestion_v1",
+        schema_version="ContractMetadata_v1",
+        model_family=model_name,
+    )
+    if cache_key:
+        cached = get_cached_analysis_sync(cache_key)
+        if cached:
+            _log_usage_for_state(
+                state,
+                workflow=workflow_name,
+                model=model_name,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=int((time.time() - started_at) * 1000),
+                cache_hit=True,
+            )
+            return cached
 
     try:
         response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
+            model=model_name,
+            max_tokens=OUTPUT_TOKEN_CAPS["ingestion"],
             response_format=ContractMetadata,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ]
+        )
+        _log_openai_response(
+            state,
+            workflow=workflow_name,
+            model=model_name,
+            response=response,
+            started_at=started_at,
         )
         result = response.choices[0].message.parsed
         clauses_dict = {c.clause_name: c.clause_text for c in result.extracted_clauses} if result.extracted_clauses else {}
@@ -284,7 +417,7 @@ def ingestion_agent(state: ContractState) -> ContractState:
             duration_ms=int((time.time() - started_at) * 1000),
             metadata={"clauses_found": len(clauses_dict), "currency": result.currency},
         )
-        return {
+        payload = {
             "contract_value": result.contract_value,
             "currency": result.currency,
             "end_date": result.end_date,
@@ -293,6 +426,9 @@ def ingestion_agent(state: ContractState) -> ContractState:
             "governing_law": result.governing_law,
             "extracted_clauses": clauses_dict
         }
+        if cache_key:
+            set_cached_analysis_sync(cache_key, payload)
+        return payload
     except Exception as e:
         print(f"Ingestion Agent Error: {e}")
         import traceback
@@ -300,6 +436,224 @@ def ingestion_agent(state: ContractState) -> ContractState:
         if _logger: _logger.log_agent_failed('ingestion', e)
         _emit_pipeline_event(state, "pipeline.agent_failed", "ingestion", error=str(e))
         return {"contract_value": 0.0, "currency": "IDR", "end_date": "Error", "effective_date": None, "jurisdiction": None, "governing_law": None, "extracted_clauses": {}}
+
+
+# ==========================================
+# 2b. Triple RAG Prefetch Node (Qdrant-only)
+# ==========================================
+MAX_RULE_LENGTH = 300
+MAX_LAW_EXCERPT_LENGTH = 400
+MAX_PLAYBOOK_RULES = 15
+MAX_LAW_EXCERPTS = 8
+
+
+def _truncate_context_items(items: list[str], *, max_items: int, max_chars: int) -> list[str]:
+    seen: set[str] = set()
+    truncated: list[str] = []
+    for item in items:
+        normalized = " ".join(str(item or "").split())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        truncated.append(normalized[:max_chars])
+        if len(truncated) >= max_items:
+            break
+    return truncated
+
+
+def _format_playbook_rule(point: Any) -> str:
+    payload = dict(getattr(point, "payload", {}) or {})
+    rule_text = payload.get("rule_text") or payload.get("content") or payload.get("text") or ""
+    if not rule_text:
+        return ""
+
+    label = payload.get("category") or payload.get("rule_id") or payload.get("title") or ""
+    severity = payload.get("risk_severity") or ""
+    prefix = " | ".join(part for part in [str(label).strip(), str(severity).strip()] if part)
+    return f"{prefix}: {rule_text}" if prefix else str(rule_text)
+
+
+def _format_law_excerpt(point: Any) -> str:
+    payload = dict(getattr(point, "payload", {}) or {})
+    body = payload.get("body") or payload.get("text") or payload.get("content") or ""
+    if not body:
+        return ""
+
+    law_short = payload.get("law_short") or payload.get("source_law_short") or payload.get("source") or "Regulation"
+    identifier = payload.get("identifier_full") or payload.get("identifier") or ""
+    pasal = payload.get("pasal") or payload.get("article") or ""
+    if not identifier and pasal:
+        identifier = f"Pasal {pasal}"
+    elif pasal and "pasal" not in str(identifier).lower():
+        identifier = f"{identifier} Pasal {pasal}".strip()
+
+    label = " ".join(part for part in [str(law_short).strip(), str(identifier).strip()] if part)
+    return f"[{label}]: {body}" if label else str(body)
+
+
+def _infer_law_categories(raw_text: str) -> list[str]:
+    text = (raw_text or "")[:12000].lower()
+    keyword_groups = [
+        (
+            "data_protection",
+            (
+                "data pribadi",
+                "personal data",
+                "personal information",
+                "privacy",
+                "pdp",
+                "pemrosesan data",
+                "data processing",
+                "cross-border transfer",
+            ),
+        ),
+        (
+            "employment",
+            (
+                "pkwt",
+                "pekerja",
+                "buruh",
+                "employee",
+                "employment",
+                "alih daya",
+                "outsourcing",
+                "uang kompensasi",
+            ),
+        ),
+        (
+            "bahasa",
+            (
+                "bahasa indonesia",
+                "indonesian language",
+                "hukum indonesia",
+                "governing law of indonesia",
+                "perseroan terbatas",
+                " pt ",
+            ),
+        ),
+    ]
+    return [
+        category
+        for category, keywords in keyword_groups
+        if any(keyword in text for keyword in keywords)
+    ]
+
+
+def _scroll_qdrant_points(*, collection_name: str, limit: int, scroll_filter: Filter | None = None) -> list[Any]:
+    response = _qdrant.scroll(
+        collection_name=collection_name,
+        scroll_filter=scroll_filter,
+        limit=limit,
+        with_payload=True,
+        with_vectors=False,
+    )
+    if isinstance(response, tuple):
+        return response[0] or []
+    return getattr(response, "points", []) or []
+
+
+def _fetch_playbook_rules_for_tenant(tenant_id: str) -> list[str]:
+    if not tenant_id:
+        return []
+
+    points = _scroll_qdrant_points(
+        collection_name="company_rules",
+        scroll_filter=Filter(must=[
+            FieldCondition(key="tenant_id", match=MatchValue(value=tenant_id)),
+        ]),
+        limit=MAX_PLAYBOOK_RULES,
+    )
+    return _truncate_context_items(
+        [_format_playbook_rule(point) for point in points],
+        max_items=MAX_PLAYBOOK_RULES,
+        max_chars=MAX_RULE_LENGTH,
+    )
+
+
+def _fetch_national_law_excerpts(raw_text: str) -> list[str]:
+    categories = _infer_law_categories(raw_text)
+    excerpts: list[str] = []
+    collections_to_try = [LAW_QDRANT_ACTIVE_ALIAS, NATIONAL_LAWS_COLLECTION]
+
+    for collection_name in collections_to_try:
+        try:
+            if categories:
+                per_category_limit = max(2, (MAX_LAW_EXCERPTS // len(categories)) + 1)
+                for category in categories:
+                    try:
+                        points = _scroll_qdrant_points(
+                            collection_name=collection_name,
+                            scroll_filter=Filter(must=[
+                                FieldCondition(key="category", match=MatchValue(value=category)),
+                            ]),
+                            limit=per_category_limit,
+                        )
+                        excerpts.extend(_format_law_excerpt(point) for point in points)
+                    except Exception as exc:
+                        print(f"[RAG Prefetch] Law category fetch failed for {collection_name}/{category}: {exc}")
+
+            if len(_truncate_context_items(excerpts, max_items=MAX_LAW_EXCERPTS, max_chars=MAX_LAW_EXCERPT_LENGTH)) < MAX_LAW_EXCERPTS:
+                points = _scroll_qdrant_points(
+                    collection_name=collection_name,
+                    limit=MAX_LAW_EXCERPTS,
+                )
+                excerpts.extend(_format_law_excerpt(point) for point in points)
+
+            formatted = _truncate_context_items(
+                excerpts,
+                max_items=MAX_LAW_EXCERPTS,
+                max_chars=MAX_LAW_EXCERPT_LENGTH,
+            )
+            if formatted:
+                return formatted
+        except Exception as exc:
+            print(f"[RAG Prefetch] Law fetch failed for {collection_name}: {exc}")
+
+    return []
+
+
+def rag_prefetch_node(state: ContractState) -> ContractState:
+    """
+    Pre-fetch triple RAG context before compliance and risk agents.
+    This node performs Qdrant retrieval only; it does not call an LLM or embedding model.
+    """
+    _logger = state.get('_task_logger')
+    if _logger: _logger.log_agent_start('rag_prefetch')
+    _emit_pipeline_event(state, "pipeline.agent_started", "rag_prefetch")
+    started_at = time.time()
+
+    tenant_id = _state_tenant_id(state) or ""
+    raw_doc = state.get("raw_document", "")
+    playbook_rules: list[str] = []
+    national_law_excerpts: list[str] = []
+
+    try:
+        playbook_rules = _fetch_playbook_rules_for_tenant(tenant_id)
+    except Exception as exc:
+        print(f"[RAG Prefetch] Playbook retrieval failed (non-fatal): {exc}")
+
+    try:
+        national_law_excerpts = _fetch_national_law_excerpts(raw_doc)
+    except Exception as exc:
+        print(f"[RAG Prefetch] National law retrieval failed (non-fatal): {exc}")
+
+    metadata = {
+        "playbook_rules_count": len(playbook_rules),
+        "law_excerpts_count": len(national_law_excerpts),
+    }
+    if _logger: _logger.log_agent_complete('rag_prefetch', metadata)
+    _emit_pipeline_event(
+        state,
+        "pipeline.agent_completed",
+        "rag_prefetch",
+        duration_ms=int((time.time() - started_at) * 1000),
+        metadata=metadata,
+    )
+    return {
+        "tenant_id": tenant_id,
+        "playbook_rules": playbook_rules,
+        "national_law_excerpts": national_law_excerpts,
+    }
 
 
 # ==========================================
@@ -319,46 +673,44 @@ def compliance_agent(state: ContractState) -> ContractState:
 
     raw_doc = state.get('raw_document', '')
     clauses = state.get('extracted_clauses', {})
+    workflow_name = "compliance_first_pass"
+    model_name = "gpt-4o-mini"
 
-    # ── National Law RAG Retrieval ──
+    playbook_rules = state.get("playbook_rules", [])
+    national_law_excerpts = state.get("national_law_excerpts", [])
+
+    playbook_context = ""
+    if playbook_rules:
+        rules_text = "\n".join(f"- {rule}" for rule in playbook_rules)
+        playbook_context = f"""
+    COMPANY PLAYBOOK RULES (Internal standards):
+    {rules_text}
+
+    STRICT RULES for using playbook rules:
+    - Only flag if a contract clause CLEARLY and DIRECTLY violates a specific playbook rule
+    - Quote the exact contract text that violates the rule
+    - DO NOT flag general industry practices that happen to differ from the rule
+    - DO NOT flag if the contract is silent on a topic (only flag explicit contradictions)
+    """
+
     law_context = ""
-    try:
-        # Check if collection exists before querying
-        existing_cols = [c.name for c in _qdrant.get_collections().collections]
-        if NATIONAL_LAWS_COLLECTION in existing_cols:
-            # Embed a summary of the contract for semantic search
-            contract_summary = raw_doc[:3000]
-            embed_resp = client.embeddings.create(
-                input=contract_summary, model="text-embedding-3-small"
-            )
-            query_vector = embed_resp.data[0].embedding
+    if national_law_excerpts:
+        laws_text = "\n".join(national_law_excerpts)
+        law_context = f"""
+    INDONESIAN LAW REFERENCE CONTEXT (Read-only reference):
+    {laws_text}
 
-            # Search national laws — NO tenant filter (global corpus)
-            hits = _qdrant.query_points(
-                collection_name=NATIONAL_LAWS_COLLECTION,
-                query=query_vector,
-                query_filter=Filter(
-                    must=[FieldCondition(key="is_active", match=MatchValue(value=True))]
-                ),
-                limit=15,
-                with_payload=True,
-            )
-
-            if hits.points:
-                law_context = "\n\nRELEVANT INDONESIAN LAW PROVISIONS (from id_national_laws corpus):\n"
-                for hit in hits.points:
-                    p = hit.payload
-                    law_context += (
-                        f"--- [{p.get('source_law_short', '')} Pasal {p.get('pasal', '')}] ---\n"
-                        f"{p.get('text', '')}\n\n"
-                    )
-                print(f"[Agent 02] Retrieved {len(hits.points)} national law provisions for context.")
-        else:
-            print(f"[Agent 02] Collection '{NATIONAL_LAWS_COLLECTION}' not found — skipping law RAG.")
-    except Exception as e:
-        print(f"[Agent 02] National law retrieval failed (non-fatal): {e}")
+    STRICT RULES for using these law excerpts:
+    - ONLY flag a statutory violation if the contract text EXPLICITLY and UNAMBIGUOUSLY contradicts the provision
+    - ONLY flag if a MANDATORY clause required by law is COMPLETELY ABSENT from the contract
+    - DO NOT flag use of English technical/industry terms (MSA, SOW, NDA, Force Majeure, Vendor, Klien, etc.) — these are internationally accepted legal terms
+    - DO NOT flag a contract written in Indonesian simply because it contains some English terms or headings
+    - DO NOT infer violations — require explicit textual evidence
+    - When in doubt, DO NOT flag — false positives damage user trust
+    """
 
     system_prompt = (
+        ANTI_HALLUCINATION_GUARD + "\n"
         "You are a legal compliance engine that outputs structured findings with exact text coordinates. "
         "You have deep knowledge of Indonesian law and MUST cite specific pasal numbers when identifying statutory violations."
     )
@@ -383,6 +735,7 @@ def compliance_agent(state: ContractState) -> ContractState:
     - Quote the relevant statutory text in your issue description
 
     {COORDINATE_INSTRUCTION}
+    {playbook_context}
     {law_context}
 
     CRITICAL LANGUAGE INSTRUCTION (LANGUAGE MIRRORING):
@@ -397,32 +750,69 @@ def compliance_agent(state: ContractState) -> ContractState:
     {clauses}
     """
     prompt, _ = _fit_prompt(
-        model="gpt-4o-mini",
+        model=model_name,
         label="Agent 02 Compliance",
         system_prompt=system_prompt,
         user_template=user_template,
         sections={
             "COORDINATE_INSTRUCTION": COORDINATE_INSTRUCTION,
+            "playbook_context": playbook_context,
             "law_context": law_context,
             "raw_document": raw_doc,
             "clauses": _serialize_for_prompt(clauses),
         },
         priorities={
             "COORDINATE_INSTRUCTION": 1,
+            "playbook_context": 2,
             "law_context": 2,
             "raw_document": 3,
             "clauses": 1,
         },
     )
+    cache_key = _cache_key_for_state(
+        state,
+        workflow=workflow_name,
+        document_text=prompt,
+        prompt_version="compliance_v2_triple_rag",
+        schema_version="ComplianceAuditV2_v1",
+        model_family=model_name,
+        playbook_version="company_rules_v1",
+        law_corpus_version=LAW_QDRANT_ACTIVE_ALIAS,
+    )
+    if cache_key:
+        cached = get_cached_analysis_sync(cache_key)
+        if cached:
+            _log_usage_for_state(
+                state,
+                workflow=workflow_name,
+                model=model_name,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=int((time.time() - started_at) * 1000),
+                cache_hit=True,
+            )
+            return cached
 
     try:
         response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
+            model=model_name,
+            max_tokens=OUTPUT_TOKEN_CAPS[workflow_name],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=ComplianceAuditV2
+        )
+        _log_openai_response(
+            state,
+            workflow=workflow_name,
+            model=model_name,
+            response=response,
+            started_at=started_at,
+            metadata={
+                "playbook_context_chars": len(playbook_context),
+                "law_context_chars": len(law_context),
+            },
         )
         result = response.choices[0].message.parsed
 
@@ -444,10 +834,13 @@ def compliance_agent(state: ContractState) -> ContractState:
             duration_ms=int((time.time() - started_at) * 1000),
             metadata={"findings_count": len(v2_findings), "statutory_violations": statutory_count},
         )
-        return {
+        payload = {
             "compliance_issues": legacy_issues,
             "compliance_findings_v2": v2_findings
         }
+        if cache_key:
+            set_cached_analysis_sync(cache_key, payload)
+        return payload
     except Exception as e:
         print(f"Compliance Agent Error: {e}")
         if _logger: _logger.log_agent_failed('compliance', e)
@@ -476,8 +869,42 @@ def risk_agent(state: ContractState) -> ContractState:
     issues = state.get('compliance_issues', [])
     findings_v2 = state.get('compliance_findings_v2', [])
     value = state.get('contract_value', 'Unknown')
+    workflow_name = "risk_first_pass"
+    model_name = "gpt-4o-mini"
 
-    system_prompt = "You are a risk assessment engine that outputs structured risk flags with severity levels and exact text coordinates."
+    national_law_excerpts = state.get("national_law_excerpts", [])
+    playbook_rules = state.get("playbook_rules", [])
+
+    law_context = ""
+    if national_law_excerpts:
+        laws_text = "\n".join(national_law_excerpts[:5])
+        law_context = f"""
+    INDONESIAN LAW CONTEXT FOR RISK SCORING (Reference only):
+    {laws_text}
+
+    STRICT RULES for risk scoring based on laws:
+    - Only INCREASE risk score if there is CLEAR, EXPLICIT textual evidence of a violation
+    - A contract written in Indonesian with some English technical terms is NOT a language violation
+    - Common English legal terms (MSA, NDA, SOW, Force Majeure, Indemnity, etc.) are acceptable in Indonesian contracts
+    - Penalize ONLY for substantive violations, not stylistic or terminology choices
+    - When uncertain, DO NOT penalize — false positives are worse than false negatives for legal tools
+    """
+
+    playbook_context = ""
+    if playbook_rules:
+        rules_text = "\n".join(f"- {rule}" for rule in playbook_rules[:10])
+        playbook_context = f"""
+    COMPANY RISK THRESHOLDS (from Playbook):
+    {rules_text}
+
+    Only increase risk score if a contract clause EXPLICITLY contradicts a playbook rule.
+    Do not penalize for clauses that are merely different from, but not contradictory to, the rules.
+    """
+
+    system_prompt = (
+        ANTI_HALLUCINATION_GUARD + "\n"
+        "You are a risk assessment engine that outputs structured risk flags with severity levels and exact text coordinates."
+    )
     user_template = """
     You are a Chief Risk Officer AI.
     Evaluate the compliance issues, contract value, and the full contract text.
@@ -495,6 +922,9 @@ def risk_agent(state: ContractState) -> ContractState:
     2. Determine a 'risk_level': 75-100 = 'High', 40-74 = 'Medium', 1-39 = 'Low', 0 = 'Safe'.
     3. Generate a list of 'risk_flags' with severity and exact text locations.
 
+    {playbook_context}
+    {law_context}
+
     CRITICAL LANGUAGE INSTRUCTION (LANGUAGE MIRRORING):
     You MUST detect the language of the source text. 
     Your output MUST be in the EXACT SAME LANGUAGE as the source contract. 
@@ -510,32 +940,71 @@ def risk_agent(state: ContractState) -> ContractState:
     {issues}
     """
     prompt, _ = _fit_prompt(
-        model="gpt-4o-mini",
+        model=model_name,
         label="Agent 03 Risk",
         system_prompt=system_prompt,
         user_template=user_template,
         sections={
             "COORDINATE_INSTRUCTION": COORDINATE_INSTRUCTION,
+            "playbook_context": playbook_context,
+            "law_context": law_context,
             "raw_document": raw_doc,
             "contract_value": str(value),
             "issues": _serialize_for_prompt(issues),
         },
         priorities={
             "COORDINATE_INSTRUCTION": 1,
+            "playbook_context": 2,
+            "law_context": 2,
             "raw_document": 3,
             "contract_value": 1,
             "issues": 2,
         },
     )
+    cache_key = _cache_key_for_state(
+        state,
+        workflow=workflow_name,
+        document_text=prompt,
+        prompt_version="risk_v2_triple_rag",
+        schema_version="RiskAssessmentV2_v1",
+        model_family=model_name,
+        playbook_version="company_rules_v1",
+        law_corpus_version=LAW_QDRANT_ACTIVE_ALIAS,
+    )
+    if cache_key:
+        cached = get_cached_analysis_sync(cache_key)
+        if cached:
+            _log_usage_for_state(
+                state,
+                workflow=workflow_name,
+                model=model_name,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=int((time.time() - started_at) * 1000),
+                cache_hit=True,
+            )
+            return cached
 
     try:
         response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
+            model=model_name,
+            max_tokens=OUTPUT_TOKEN_CAPS[workflow_name],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=RiskAssessmentV2
+        )
+        _log_openai_response(
+            state,
+            workflow=workflow_name,
+            model=model_name,
+            response=response,
+            started_at=started_at,
+            metadata={
+                "playbook_context_chars": len(playbook_context),
+                "law_context_chars": len(law_context),
+            },
         )
         result = response.choices[0].message.parsed
         score = float(result.risk_score)
@@ -557,12 +1026,15 @@ def risk_agent(state: ContractState) -> ContractState:
             duration_ms=int((time.time() - started_at) * 1000),
             metadata={"risk_score": score, "risk_level": risk_level, "flags_count": len(v2_flags)},
         )
-        return {
+        payload = {
             "risk_score": score,
             "risk_level": risk_level,
             "risk_flags": legacy_flags,
             "risk_flags_v2": v2_flags
         }
+        if cache_key:
+            set_cached_analysis_sync(cache_key, payload)
+        return payload
     except Exception as e:
         print(f"Risk Agent Error: {e}")
         if _logger: _logger.log_agent_failed('risk', e)
@@ -586,6 +1058,8 @@ def negotiation_agent(state: ContractState) -> ContractState:
     issues = state.get('compliance_issues', [])
     flags = state.get('risk_flags', [])
     raw_doc_sample = state.get('raw_document', '')[:5000]
+    workflow_name = "negotiation"
+    model_name = "gpt-4o-mini"
 
     system_prompt = "You are a strategic negotiation JSON generator."
     user_template = """
@@ -609,7 +1083,7 @@ def negotiation_agent(state: ContractState) -> ContractState:
     {flags}
     """
     prompt, _ = _fit_prompt(
-        model="gpt-4o-mini",
+        model=model_name,
         label="Agent 04 Negotiation",
         system_prompt=system_prompt,
         user_template=user_template,
@@ -624,15 +1098,44 @@ def negotiation_agent(state: ContractState) -> ContractState:
             "flags": 2,
         },
     )
+    cache_key = _cache_key_for_state(
+        state,
+        workflow=workflow_name,
+        document_text=prompt,
+        prompt_version="negotiation_v1",
+        schema_version="NegotiationStrategy_v1",
+        model_family=model_name,
+    )
+    if cache_key:
+        cached = get_cached_analysis_sync(cache_key)
+        if cached:
+            _log_usage_for_state(
+                state,
+                workflow=workflow_name,
+                model=model_name,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=int((time.time() - started_at) * 1000),
+                cache_hit=True,
+            )
+            return cached
 
     try:
         response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
+            model=model_name,
+            max_tokens=OUTPUT_TOKEN_CAPS[workflow_name],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=NegotiationStrategy
+        )
+        _log_openai_response(
+            state,
+            workflow=workflow_name,
+            model=model_name,
+            response=response,
+            started_at=started_at,
         )
         result = response.choices[0].message.parsed
         if _logger: _logger.log_agent_complete('negotiation')
@@ -642,13 +1145,16 @@ def negotiation_agent(state: ContractState) -> ContractState:
             "negotiation",
             duration_ms=int((time.time() - started_at) * 1000),
         )
-        return {
+        payload = {
             "counter_proposal": sanitize_llm_text(
                 result.counter_proposal,
                 field_name="counter_proposal",
                 strict=False,
             )
         }
+        if cache_key:
+            set_cached_analysis_sync(cache_key, payload)
+        return payload
     except Exception as e:
         print(f"Negotiation Agent Error: {e}")
         if _logger: _logger.log_agent_failed('negotiation', e)
@@ -678,6 +1184,8 @@ def drafting_agent(state: ContractState) -> ContractState:
     raw_doc = state.get('raw_document', '')
     strategy = state.get('counter_proposal', '')
     issues = state.get('compliance_issues', [])
+    workflow_name = "drafting"
+    model_name = "gpt-4o-mini"
     system_prompt = "You are a legal contract drafting engine that outputs clause revisions with exact text coordinates."
     user_template = """
     You are a Senior Contract Drafter.
@@ -703,7 +1211,7 @@ def drafting_agent(state: ContractState) -> ContractState:
     {issues}
     """
     prompt, _ = _fit_prompt(
-        model="gpt-4o-mini",
+        model=model_name,
         label="Agent 05 Drafting",
         system_prompt=system_prompt,
         user_template=user_template,
@@ -720,15 +1228,44 @@ def drafting_agent(state: ContractState) -> ContractState:
             "issues": 2,
         },
     )
+    cache_key = _cache_key_for_state(
+        state,
+        workflow=workflow_name,
+        document_text=prompt,
+        prompt_version="drafting_v1",
+        schema_version="DraftingResultV2_v1",
+        model_family=model_name,
+    )
+    if cache_key:
+        cached = get_cached_analysis_sync(cache_key)
+        if cached:
+            _log_usage_for_state(
+                state,
+                workflow=workflow_name,
+                model=model_name,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=int((time.time() - started_at) * 1000),
+                cache_hit=True,
+            )
+            return cached
 
     try:
         response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
+            model=model_name,
+            max_tokens=OUTPUT_TOKEN_CAPS[workflow_name],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=DraftingResultV2
+        )
+        _log_openai_response(
+            state,
+            workflow=workflow_name,
+            model=model_name,
+            response=response,
+            started_at=started_at,
         )
         result = response.choices[0].message.parsed
 
@@ -746,10 +1283,13 @@ def drafting_agent(state: ContractState) -> ContractState:
             duration_ms=int((time.time() - started_at) * 1000),
             metadata={"revisions_count": len(v2_revisions)},
         )
-        return {
+        payload = {
             "draft_revisions": legacy_revisions,
             "draft_revisions_v2": v2_revisions
         }
+        if cache_key:
+            set_cached_analysis_sync(cache_key, payload)
+        return payload
     except Exception as e:
         print(f"Drafting Agent Error: {e}")
         if _logger: _logger.log_agent_failed('drafting', e)
@@ -771,6 +1311,8 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
     print("[Agent 06: Obligation Miner] Extracting contractual obligations...")
 
     raw_doc = state.get('raw_document', '')
+    workflow_name = "obligation_miner"
+    model_name = "gpt-4o-mini"
 
     system_prompt = "You are a precise obligation extraction engine with text coordinate output."
     user_template = """
@@ -797,7 +1339,7 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
     {raw_document}
     """
     prompt, _ = _fit_prompt(
-        model="gpt-4o-mini",
+        model=model_name,
         label="Agent 06 Obligation Miner",
         system_prompt=system_prompt,
         user_template=user_template,
@@ -810,15 +1352,44 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
             "raw_document": 3,
         },
     )
+    cache_key = _cache_key_for_state(
+        state,
+        workflow=workflow_name,
+        document_text=prompt,
+        prompt_version="obligation_miner_v1",
+        schema_version="ObligationMinerResultV2_v1",
+        model_family=model_name,
+    )
+    if cache_key:
+        cached = get_cached_analysis_sync(cache_key)
+        if cached:
+            _log_usage_for_state(
+                state,
+                workflow=workflow_name,
+                model=model_name,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=int((time.time() - started_at) * 1000),
+                cache_hit=True,
+            )
+            return cached
 
     try:
         response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
+            model=model_name,
+            max_tokens=OUTPUT_TOKEN_CAPS[workflow_name],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=ObligationMinerResultV2
+        )
+        _log_openai_response(
+            state,
+            workflow=workflow_name,
+            model=model_name,
+            response=response,
+            started_at=started_at,
         )
         result = response.choices[0].message.parsed
 
@@ -836,10 +1407,13 @@ def obligation_miner_agent(state: ContractState) -> ContractState:
             duration_ms=int((time.time() - started_at) * 1000),
             metadata={"obligations_count": len(v2_obligations)},
         )
-        return {
+        payload = {
             "extracted_obligations": legacy_obligations,
             "obligations_v2": v2_obligations
         }
+        if cache_key:
+            set_cached_analysis_sync(cache_key, payload)
+        return payload
     except Exception as e:
         print(f"Obligation Miner Error: {e}")
         if _logger: _logger.log_agent_failed('obligation_miner', e)
@@ -862,6 +1436,8 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
 
     raw_doc = state.get('raw_document', '')
     clauses = state.get('extracted_clauses', {})
+    workflow_name = "clause_classifier"
+    model_name = "gpt-4o-mini"
 
     system_prompt = "You are a legal clause classification engine with text coordinate output."
     user_template = """
@@ -892,7 +1468,7 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
     {clauses}
     """
     prompt, _ = _fit_prompt(
-        model="gpt-4o-mini",
+        model=model_name,
         label="Agent 07 Clause Classifier",
         system_prompt=system_prompt,
         user_template=user_template,
@@ -907,15 +1483,44 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
             "clauses": 1,
         },
     )
+    cache_key = _cache_key_for_state(
+        state,
+        workflow=workflow_name,
+        document_text=prompt,
+        prompt_version="clause_classifier_v1",
+        schema_version="ClauseClassifierResultV2_v1",
+        model_family=model_name,
+    )
+    if cache_key:
+        cached = get_cached_analysis_sync(cache_key)
+        if cached:
+            _log_usage_for_state(
+                state,
+                workflow=workflow_name,
+                model=model_name,
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=int((time.time() - started_at) * 1000),
+                cache_hit=True,
+            )
+            return cached
 
     try:
         response = client.beta.chat.completions.parse(
-            model="gpt-4o-mini",
+            model=model_name,
+            max_tokens=OUTPUT_TOKEN_CAPS[workflow_name],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=ClauseClassifierResultV2
+        )
+        _log_openai_response(
+            state,
+            workflow=workflow_name,
+            model=model_name,
+            response=response,
+            started_at=started_at,
         )
         result = response.choices[0].message.parsed
 
@@ -933,10 +1538,13 @@ def clause_classifier_agent(state: ContractState) -> ContractState:
             duration_ms=int((time.time() - started_at) * 1000),
             metadata={"clauses_count": len(v2_clauses)},
         )
-        return {
+        payload = {
             "classified_clauses": legacy_clauses,
             "classified_clauses_v2": v2_clauses
         }
+        if cache_key:
+            set_cached_analysis_sync(cache_key, payload)
+        return payload
     except Exception as e:
         print(f"Clause Classifier Error: {e}")
         if _logger: _logger.log_agent_failed('clause_classifier', e)
@@ -1132,21 +1740,20 @@ workflow = StateGraph(ContractState)
 
 # Add the agent nodes to the graph
 workflow.add_node("ingestion", ingestion_agent)
+workflow.add_node("rag_prefetch", rag_prefetch_node)
 workflow.add_node("compliance", compliance_agent)
 workflow.add_node("risk", risk_agent)
-workflow.add_node("negotiation", negotiation_agent)
-workflow.add_node("drafting", drafting_agent)
 workflow.add_node("obligation_miner", obligation_miner_agent)
 workflow.add_node("clause_classifier", clause_classifier_agent)
 workflow.add_node("review_aggregator", review_aggregator)
 
-# Define the sequential execution flow (7-Agent Pipeline + Aggregator)
+# Define the default upload/review flow. Drafting and Negotiation are lazy
+# on-demand operations and are intentionally excluded from this graph.
 workflow.add_edge(START, "ingestion")
-workflow.add_edge("ingestion", "compliance")
+workflow.add_edge("ingestion", "rag_prefetch")
+workflow.add_edge("rag_prefetch", "compliance")
 workflow.add_edge("compliance", "risk")
-workflow.add_edge("risk", "negotiation")
-workflow.add_edge("negotiation", "drafting")
-workflow.add_edge("drafting", "obligation_miner")
+workflow.add_edge("risk", "obligation_miner")
 workflow.add_edge("obligation_miner", "clause_classifier")
 workflow.add_edge("clause_classifier", "review_aggregator")
 workflow.add_edge("review_aggregator", END)
@@ -1154,7 +1761,7 @@ workflow.add_edge("review_aggregator", END)
 # Compile the graph into an executable application
 try:
     clm_graph = workflow.compile()
-    print("LangGraph CLM 7-Agent + Review Aggregator Orchestration initialized successfully.")
+    print("LangGraph CLM Cost-Optimized Review Orchestration initialized successfully.")
 except Exception as e:
     print(f"FATAL: Failed to compile LangGraph: {e}")
     clm_graph = None
@@ -1242,13 +1849,83 @@ def fuzzy_find_substring(haystack: str, needle: str, threshold: float = 0.75) ->
 
     return (-1, -1)
 
-def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: float, playbook_rules_text: str, prior_rounds_context: str = None) -> dict:
+def run_smart_diff_agent(
+    v1_raw_text: str,
+    v2_raw_text: str,
+    v1_risk_score: float,
+    playbook_rules_text: str,
+    prior_rounds_context: str = None,
+    tenant_id: str | None = None,
+    contract_id: str | None = None,
+) -> dict:
     """
     On-demand agent that compares V1 and V2 raw texts, applies playbook rules,
     and returns a structured SmartDiffResult containing deviations and BATNAs.
     Uses gpt-4o as requested for maximum reasoning capability.
     Optionally accepts prior_rounds_context for multi-round pattern detection.
     """
+    workflow_name = "smart_diff_triage"
+    model_name = "gpt-4o"
+    started_at = time.time()
+    full_v2_raw_text = v2_raw_text
+
+    changed_clauses = find_changed_clauses(v1_raw_text, v2_raw_text)
+    if not changed_clauses:
+        result = SmartDiffResult(
+            deviations=[],
+            batna_fallbacks=[],
+            risk_delta=0.0,
+            summary="No material changes detected.",
+            debate_protocol=None,
+        ).model_dump()
+        log_ai_usage_sync(
+            admin_supabase,
+            tenant_id,
+            workflow_name,
+            "deterministic_diff",
+            0,
+            0,
+            int((time.time() - started_at) * 1000),
+            contract_id=contract_id,
+            cache_hit=True,
+            metadata={"changed_clause_count": 0, "skipped_llm": True},
+        )
+        return result
+
+    changed_payload_chars = changed_clause_payload_size(changed_clauses)
+    original_payload_chars = len(v1_raw_text) + len(v2_raw_text)
+    use_compact_diff = (
+        changed_payload_chars > 0
+        and changed_payload_chars < int(original_payload_chars * 0.75)
+        and changed_payload_chars <= 80_000
+    )
+
+    if use_compact_diff:
+        changed_blocks = []
+        for item in changed_clauses:
+            changed_blocks.append(
+                "\n".join([
+                    f"CLAUSE: {item['identifier']}",
+                    f"CHANGE_TYPE: {item['change_type']}",
+                    f"SIMILARITY: {item.get('similarity', 0)}",
+                    f"V1_COORDINATES: {item.get('v1_start_char')}:{item.get('v1_end_char')}",
+                    f"V2_COORDINATES: {item.get('v2_start_char')}:{item.get('v2_end_char')}",
+                    "V1_CLAUSE_TEXT:",
+                    item.get("v1_text") or "",
+                    "V2_CLAUSE_TEXT:",
+                    item.get("v2_text") or "",
+                ])
+            )
+        compact_changed_clause_text = "\n\n---\n\n".join(changed_blocks)
+        prompt_v1_text = "Only changed clauses are included. Use each V1_CLAUSE_TEXT block below."
+        prompt_v2_text = (
+            "CHANGED CLAUSES ONLY. Coordinates listed in V2_COORDINATES are relative to the full V2 contract.\n\n"
+            f"{compact_changed_clause_text}"
+        )
+    else:
+        prompt_v1_text = v1_raw_text
+        prompt_v2_text = v2_raw_text
+
     # Build multi-round context block if available
     rounds_block = ""
     if prior_rounds_context:
@@ -1339,7 +2016,7 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
     {v2_raw_text}
     """
     prompt, adjusted_sections = _fit_prompt(
-        model="gpt-4o",
+        model=model_name,
         label="Smart Diff Agent",
         system_prompt=system_prompt,
         user_template=user_template,
@@ -1349,8 +2026,8 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
             "rounds_block": rounds_block,
             "v1_risk_score": str(v1_risk_score),
             "playbook_rules_text": playbook_rules_text,
-            "v1_raw_text": v1_raw_text,
-            "v2_raw_text": v2_raw_text,
+            "v1_raw_text": prompt_v1_text,
+            "v2_raw_text": prompt_v2_text,
         },
         priorities={
             "COORDINATE_INSTRUCTION": 1,
@@ -1363,17 +2040,64 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
         },
         reserve_tokens=4096,
     )
-    v1_raw_text = adjusted_sections["v1_raw_text"]
-    v2_raw_text = adjusted_sections["v2_raw_text"]
+    cache_key = None
+    if tenant_id:
+        try:
+            cache_key = build_cache_key(
+                tenant_id=tenant_id,
+                workflow=workflow_name,
+                document_text=prompt,
+                prompt_version="smart_diff_v2_changed_clauses",
+                schema_version="SmartDiffResult_v1",
+                model_family=model_name,
+                playbook_version="v1",
+                law_corpus_version="v1",
+            )
+            cached = get_cached_analysis_sync(cache_key)
+            if cached:
+                log_ai_usage_sync(
+                    admin_supabase,
+                    tenant_id,
+                    workflow_name,
+                    model_name,
+                    0,
+                    0,
+                    int((time.time() - started_at) * 1000),
+                    contract_id=contract_id,
+                    cache_hit=True,
+                    metadata={
+                        "changed_clause_count": len(changed_clauses),
+                        "compact_diff": use_compact_diff,
+                    },
+                )
+                return cached
+        except Exception:
+            cache_key = None
 
     try:
         response = client.beta.chat.completions.parse(
-            model="gpt-4o",
+            model=model_name,
+            max_tokens=OUTPUT_TOKEN_CAPS[workflow_name],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt}
             ],
             response_format=SmartDiffResult
+        )
+        log_ai_usage_sync(
+            admin_supabase,
+            tenant_id,
+            workflow_name,
+            model_name,
+            *extract_openai_usage(response),
+            int((time.time() - started_at) * 1000),
+            contract_id=contract_id,
+            metadata={
+                "changed_clause_count": len(changed_clauses),
+                "changed_payload_chars": changed_payload_chars,
+                "original_payload_chars": original_payload_chars,
+                "compact_diff": use_compact_diff,
+            },
         )
         parsed_result = response.choices[0].message.parsed
         
@@ -1386,7 +2110,7 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
         for dev in parsed_result.deviations:
             if dev.category in ["Added", "Modified"] and dev.v2_text:
                 # ── Tier 1: Exact string match ──
-                idx = v2_raw_text.find(dev.v2_text)
+                idx = full_v2_raw_text.find(dev.v2_text)
                 
                 if idx != -1:
                     dev.v2_coordinates = TextCoordinate(
@@ -1398,19 +2122,19 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
                 else:
                     # ── Tier 2: Markdown-stripped match ──
                     stripped_v2_text = strip_markdown(dev.v2_text)
-                    stripped_raw = strip_markdown(v2_raw_text)
+                    stripped_raw = strip_markdown(full_v2_raw_text)
                     idx_strip = stripped_raw.find(stripped_v2_text)
                     
                     if idx_strip != -1:
                         # Map the stripped index back to the original text
                         # by finding the approximate position using ratio
                         ratio = idx_strip / max(len(stripped_raw), 1)
-                        approx_start = int(ratio * len(v2_raw_text))
+                        approx_start = int(ratio * len(full_v2_raw_text))
                         
                         # Search a window around the approximate position for exact boundaries
                         search_start = max(0, approx_start - 200)
-                        search_end = min(len(v2_raw_text), approx_start + len(dev.v2_text) + 200)
-                        search_window = v2_raw_text[search_start:search_end]
+                        search_end = min(len(full_v2_raw_text), approx_start + len(dev.v2_text) + 200)
+                        search_window = full_v2_raw_text[search_start:search_end]
                         
                         # Try to find the stripped text in the original window
                         best_start, best_end = fuzzy_find_substring(
@@ -1419,7 +2143,7 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
                         if best_start != -1:
                             actual_start = search_start + best_start
                             actual_end = search_start + best_end
-                            matched_text = v2_raw_text[actual_start:actual_end]
+                            matched_text = full_v2_raw_text[actual_start:actual_end]
                             dev.v2_coordinates = TextCoordinate(
                                 start_char=actual_start,
                                 end_char=actual_end,
@@ -1428,7 +2152,7 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
                             print(f"  ✅ Tier 2 (Stripped) anchored: '{dev.title[:40]}' at [{actual_start}:{actual_end}]")
                         else:
                             # Fallback: use the LLM's coordinates if plausible
-                            if dev.v2_coordinates and dev.v2_coordinates.start_char < len(v2_raw_text):
+                            if dev.v2_coordinates and dev.v2_coordinates.start_char < len(full_v2_raw_text):
                                 print(f"  ⚠️ Tier 2 partial: '{dev.title[:40]}' — using LLM coordinates")
                             else:
                                 dev.v2_coordinates = None
@@ -1436,10 +2160,10 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
                                 
                                 # ── Tier 3: Fuzzy substring match ──
                                 fuzzy_start, fuzzy_end = fuzzy_find_substring(
-                                    v2_raw_text, dev.v2_text, threshold=0.75
+                                    full_v2_raw_text, dev.v2_text, threshold=0.75
                                 )
                                 if fuzzy_start != -1:
-                                    matched_text = v2_raw_text[fuzzy_start:fuzzy_end]
+                                    matched_text = full_v2_raw_text[fuzzy_start:fuzzy_end]
                                     dev.v2_coordinates = TextCoordinate(
                                         start_char=fuzzy_start,
                                         end_char=fuzzy_end,
@@ -1452,10 +2176,10 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
                     else:
                         # Stripped match failed entirely, go straight to Tier 3
                         fuzzy_start, fuzzy_end = fuzzy_find_substring(
-                            v2_raw_text, dev.v2_text, threshold=0.75
+                            full_v2_raw_text, dev.v2_text, threshold=0.75
                         )
                         if fuzzy_start != -1:
-                            matched_text = v2_raw_text[fuzzy_start:fuzzy_end]
+                            matched_text = full_v2_raw_text[fuzzy_start:fuzzy_end]
                             dev.v2_coordinates = TextCoordinate(
                                 start_char=fuzzy_start,
                                 end_char=fuzzy_end,
@@ -1467,8 +2191,11 @@ def run_smart_diff_agent(v1_raw_text: str, v2_raw_text: str, v1_risk_score: floa
                             print(f"  ❌ All tiers failed: '{dev.title[:40]}' — UNMAPPED")
             elif dev.category == "Removed":
                 dev.v2_coordinates = None  # Removed clauses have no V2 position
-                
-        return parsed_result.model_dump()
+
+        result_payload = parsed_result.model_dump()
+        if cache_key:
+            set_cached_analysis_sync(cache_key, result_payload)
+        return result_payload
     except Exception as e:
         print(f"Smart Diff Agent Error: {e}")
         import traceback
@@ -1498,6 +2225,8 @@ async def run_smart_diff_with_debate(
         v1_risk_score=v1_risk_score,
         playbook_rules_text=playbook_rules,
         prior_rounds_context=prior_rounds,
+        tenant_id=tenant_id,
+        contract_id=contract_id,
     )
 
     if enable_debate and diff_result:
@@ -1604,13 +2333,24 @@ def run_presign_checklist_agent(
     """
 
     try:
+        started_at = time.time()
         response = client.beta.chat.completions.parse(
             model="gpt-4o-mini",
+            max_tokens=OUTPUT_TOKEN_CAPS["presign_checklist"],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             response_format=PreSignChecklistAssessment,
+        )
+        log_ai_usage_sync(
+            admin_supabase,
+            contract.get("tenant_id"),
+            "presign_checklist",
+            "gpt-4o-mini",
+            *extract_openai_usage(response),
+            int((time.time() - started_at) * 1000),
+            contract_id=contract.get("id"),
         )
         parsed = response.choices[0].message.parsed
         return parsed.model_dump()

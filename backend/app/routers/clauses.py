@@ -6,12 +6,14 @@ Enforces strict tenant isolation via verify_clerk_token + manual .eq() scoping.
 from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import List
 import uuid
+import time
 from supabase import Client
 
+from app.ai_usage import log_openai_response_sync
 from app.schemas import ClauseCreate, ClauseResponse, ClauseMatchRequest, ClauseMatchResult
 from app.rate_limiter import limiter
 from app.dependencies import TenantQdrantClient, get_tenant_qdrant, get_tenant_supabase, verify_clerk_token
-from app.config import openai_client
+from app.config import admin_supabase, openai_client
 from qdrant_client.http.models import PointStruct, Filter, FieldCondition, MatchValue
 
 router = APIRouter()
@@ -82,9 +84,19 @@ async def create_clause(
 
     # 2. Generate embedding via OpenAI
     try:
+        started_at = time.perf_counter()
         embedding_response = openai_client.embeddings.create(
             model="text-embedding-3-small",
             input=clause.content
+        )
+        log_openai_response_sync(
+            admin_supabase,
+            tenant_id,
+            "clause_library_embedding",
+            "text-embedding-3-small",
+            embedding_response,
+            int((time.perf_counter() - started_at) * 1000),
+            metadata={"clause_id": new_clause_id},
         )
         embedding_vector = embedding_response.data[0].embedding
     except Exception as e:
@@ -136,9 +148,18 @@ async def match_clause(
 
     try:
         # 1. Embed the incoming risky vendor clause
+        started_at = time.perf_counter()
         embedding_response = openai_client.embeddings.create(
             model="text-embedding-3-small",
             input=body.query_text
+        )
+        log_openai_response_sync(
+            admin_supabase,
+            tenant_id,
+            "clause_match_embedding",
+            "text-embedding-3-small",
+            embedding_response,
+            int((time.perf_counter() - started_at) * 1000),
         )
         query_vector = embedding_response.data[0].embedding
 
@@ -244,9 +265,19 @@ async def repair_clause_vectors(
 
                 # 2. Re-embed
                 embed_text = f"{title}\n{content}\n{guidance}"
+                started_at = time.perf_counter()
                 embedding_response = openai_client.embeddings.create(
                     model="text-embedding-3-small",
                     input=embed_text
+                )
+                log_openai_response_sync(
+                    admin_supabase,
+                    tenant_id,
+                    "clause_repair_embedding",
+                    "text-embedding-3-small",
+                    embedding_response,
+                    int((time.perf_counter() - started_at) * 1000),
+                    metadata={"clause_id": clause_id},
                 )
                 vector = embedding_response.data[0].embedding
 

@@ -103,7 +103,7 @@ async def search_laws(
 ):
     _enforce_daily_quota(claims=claims, endpoint_key="search", user_limit=500, tenant_limit=5000)
     try:
-        response = await service.search(body)
+        response = await service.search(body, usage_tenant_id=str(claims.get("verified_tenant_id") or ""))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

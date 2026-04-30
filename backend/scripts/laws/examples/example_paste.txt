@@ -1,0 +1,16 @@
+BAB I
+KETENTUAN UMUM
+
+Pasal 1
+Dalam Undang-Undang ini yang dimaksud dengan:
+1. Data Pribadi adalah setiap data tentang seseorang.
+2. Pengendali Data adalah pihak yang menentukan tujuan pemrosesan data.
+
+Pasal 2
+Setiap pihak yang memproses Data Pribadi wajib melakukannya secara sah, terbatas, dan transparan.
+
+BAB II
+KEWAJIBAN PENGENDALI
+
+Pasal 3
+Pengendali Data wajib menjaga kerahasiaan, keutuhan, dan ketersediaan Data Pribadi.

@@ -9,7 +9,7 @@ from typing import Any
 
 from anthropic import AsyncAnthropic
 
-from app.config import ANTHROPIC_API_KEY
+from app.config import ANTHROPIC_API_KEY, OUTPUT_TOKEN_CAPS
 from app.debate_prompts import (
     CLIENT_ADVOCATE_SYSTEM,
     COUNTERPARTY_ADVOCATE_SYSTEM,
@@ -149,7 +149,7 @@ async def _call_json_completion(
     for prompt_system, prompt_user in prompts:
         response = await client.messages.create(
             model=model,
-            max_tokens=2500,
+            max_tokens=OUTPUT_TOKEN_CAPS["debate_turn"],
             temperature=0.2,
             system=prompt_system,
             messages=[{"role": "user", "content": prompt_user}],
@@ -168,7 +168,7 @@ async def _call_json_completion(
     if last_raw_text:
         repair_response = await client.messages.create(
             model=model,
-            max_tokens=1800,
+            max_tokens=OUTPUT_TOKEN_CAPS["debate_turn"],
             temperature=0.0,
             system=(
                 "You repair malformed or truncated JSON outputs.\n"

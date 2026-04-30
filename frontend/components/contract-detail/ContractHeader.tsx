@@ -80,7 +80,7 @@ export default function ContractHeader({
     }
 
     // Modal Style Helpers
-    const modalInputStyling = "w-full bg-neutral-800 border border-neutral-700 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-lux-gold focus:border-lux-gold transition-colors"
+    const modalInputStyling = "w-full bg-neutral-800 border border-neutral-700 rounded-lg px-4 py-2.5 text-sm text-white focus:outline-none focus:ring-1 focus:ring-[#888888] focus:border-[#3A3A3A] transition-colors"
     const labelStyling = "block text-xs font-medium text-neutral-400 mb-1.5"
 
     return (
@@ -94,7 +94,7 @@ export default function ContractHeader({
                         <h2 className="text-base font-serif font-bold text-white tracking-tight">
                             {contract.title || contract.file_url || 'Unknown Contract'}
                         </h2>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-[#fbbf24]/10 text-[#fbbf24] border border-[#fbbf24]/20">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-zinc-800/70 text-zinc-300 border border-zinc-700">
                             Status: {contract.status || 'DRAFT'}
                         </span>
                         <button
@@ -185,7 +185,7 @@ export default function ContractHeader({
                                 <button
                                     type="submit"
                                     disabled={isSaving}
-                                    className="px-5 py-2.5 rounded-lg text-sm font-medium bg-lux-gold text-black hover:bg-amber-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center min-w-[100px]"
+                                    className="px-5 py-2.5 rounded-lg text-sm font-medium bg-[#B8B8B8] text-[#0A0A0A] hover:bg-[#D4D4D4] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center min-w-[100px]"
                                 >
                                     {isSaving ? (
                                         <span className="w-5 h-5 border-2 border-black/20 border-t-black rounded-full animate-spin"></span>

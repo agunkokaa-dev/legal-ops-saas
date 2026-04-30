@@ -25,7 +25,13 @@ export default function IntelligenceSidebar({
     onNoteDeleted,
     isLocked = false,
     currentDraftVersion = null,
-    onApplySuggestion
+    onApplySuggestion,
+    hasDraftingSuggestions = false,
+    hasNegotiationStrategy = false,
+    isGeneratingDrafting = false,
+    isGeneratingNegotiation = false,
+    onGenerateDrafting,
+    onGenerateNegotiation
 }: {
     contract?: any,
     obligations?: any[],
@@ -38,6 +44,12 @@ export default function IntelligenceSidebar({
     isLocked?: boolean,
     currentDraftVersion?: string | null,
     onApplySuggestion?: (originalText: string, newText: string) => Promise<void>
+    hasDraftingSuggestions?: boolean,
+    hasNegotiationStrategy?: boolean,
+    isGeneratingDrafting?: boolean,
+    isGeneratingNegotiation?: boolean,
+    onGenerateDrafting?: () => void,
+    onGenerateNegotiation?: () => void
 }) {
     const [activeTab, setActiveTab] = useState<'Analysis' | 'Obligations' | 'Notes' | 'Genealogy' | 'Assistant'>('Analysis')
     const [genealogyView, setGenealogyView] = useState<'family' | 'versions'>('family')
@@ -88,8 +100,8 @@ export default function IntelligenceSidebar({
             if (res.error) throw new Error(res.error);
 
             toast.success("Task added to Backlog!", {
-                icon: <span className="material-symbols-outlined text-clause-gold text-[16px]">task_alt</span>,
-                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+                icon: <span className="material-symbols-outlined text-[#B8B8B8] text-[16px]">task_alt</span>,
+                style: { background: '#1a1a1a', border: '1px solid #B8B8B8', color: '#fff' }
             });
         } catch (error: any) {
             console.error("Failed to push to Kanban:", error);
@@ -109,14 +121,14 @@ export default function IntelligenceSidebar({
                     <button
                         key={tab}
                         onClick={() => setActiveTab(tab as any)}
-                        className={`px-4 py-3 text-sm font-medium transition-all relative whitespace-nowrap ${activeTab === tab ? 'text-lux-gold' : 'text-text-muted hover:text-white'
+                        className={`px-4 py-3 text-sm font-medium transition-all relative whitespace-nowrap ${activeTab === tab ? 'text-[#B8B8B8]' : 'text-text-muted hover:text-white'
                             }`}
                     >
                         {tab}
                         {activeTab === tab && (
                             <motion.div
                                 layoutId="activeTabIndicator"
-                                className="absolute bottom-0 left-0 w-full h-[2px] bg-lux-gold"
+                                className="absolute bottom-0 left-0 w-full h-[2px] bg-[#B8B8B8]"
                                 transition={{ type: 'spring', bounce: 0.2, duration: 0.6 }}
                             />
                         )}
@@ -175,17 +187,89 @@ export default function IntelligenceSidebar({
                                     <h3 className="text-white font-serif font-semibold text-sm mb-3 flex items-center gap-2 tracking-wide">
                                         Counterparty Info
                                     </h3>
-                                    <div className="bg-background rounded-lg p-3 border border-surface-border flex items-center gap-3 hover:border-[#d4af37]/30 transition-colors cursor-pointer group">
-                                        <div className="w-10 h-10 rounded-full bg-surface border border-surface-border flex items-center justify-center text-[#d4af37] font-bold text-xs shrink-0 group-hover:border-[#d4af37]/50 transition-colors">
+                                    <div className="bg-background rounded-lg p-3 border border-surface-border flex items-center gap-3 hover:border-[#B8B8B8]/30 transition-colors cursor-pointer group">
+                                        <div className="w-10 h-10 rounded-full bg-surface border border-surface-border flex items-center justify-center text-[#B8B8B8] font-bold text-xs shrink-0 group-hover:border-[#B8B8B8]/50 transition-colors">
                                             {clientName?.substring(0, 2).toUpperCase()}
                                         </div>
                                         <div className="flex flex-col">
-                                            <div className="text-white font-bold text-xs group-hover:text-[#d4af37] transition-colors">{clientName}</div>
+                                            <div className="text-white font-bold text-xs group-hover:text-[#B8B8B8] transition-colors">{clientName}</div>
                                             <div className="text-text-muted text-[10px]">Counterparty</div>
                                         </div>
                                     </div>
                                 </div>
 
+
+                                <div className="mt-2 pt-6 border-t border-zinc-800/60 space-y-3">
+                                    <div className="text-xs text-zinc-500 uppercase tracking-wider mb-4">
+                                        Analisis Tambahan (On-Demand)
+                                    </div>
+
+                                    {!hasDraftingSuggestions && (
+                                        <div className="flex items-center justify-between gap-4 p-4 rounded-lg bg-zinc-900/60 border border-zinc-800">
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-medium text-zinc-200 mb-1">
+                                                    Saran Redrafting
+                                                </div>
+                                                <div className="text-xs text-zinc-500 leading-5">
+                                                    Generate saran perbaikan klausul bermasalah
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={onGenerateDrafting}
+                                                disabled={isGeneratingDrafting || !onGenerateDrafting}
+                                                className="flex shrink-0 items-center gap-2 px-4 py-2 text-xs font-medium bg-[#1C1C1C] border border-[#3A3A3A] text-[#B8B8B8] hover:bg-[#222222] hover:text-[#D4D4D4] rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                                {isGeneratingDrafting ? (
+                                                    <>
+                                                        <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                                                        Generating...
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <span className="material-symbols-outlined text-[14px]">edit_document</span>
+                                                        Generate Redrafting
+                                                    </>
+                                                )}
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {!hasNegotiationStrategy && (
+                                        <div className="flex items-center justify-between gap-4 p-4 rounded-lg bg-zinc-900/60 border border-zinc-800">
+                                            <div className="min-w-0">
+                                                <div className="text-sm font-medium text-zinc-200 mb-1">
+                                                    Strategi Negosiasi
+                                                </div>
+                                                <div className="text-xs text-zinc-500 leading-5">
+                                                    Generate counter-proposal dan BATNA untuk klausul berisiko
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={onGenerateNegotiation}
+                                                disabled={isGeneratingNegotiation || !onGenerateNegotiation}
+                                                className="flex shrink-0 items-center gap-2 px-4 py-2 text-xs font-medium bg-[#1C1C1C] border border-[#3A3A3A] text-[#B8B8B8] hover:bg-[#222222] hover:text-[#D4D4D4] rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                                {isGeneratingNegotiation ? (
+                                                    <>
+                                                        <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                                                        Generating...
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <span className="material-symbols-outlined text-[14px]">swords</span>
+                                                        Generate Negosiasi
+                                                    </>
+                                                )}
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {hasDraftingSuggestions && hasNegotiationStrategy && (
+                                        <div className="text-xs text-zinc-600 text-center py-2">
+                                            Semua analisis tersedia
+                                        </div>
+                                    )}
+                                </div>
 
                             </div>
                         </motion.div>
@@ -226,11 +310,11 @@ export default function IntelligenceSidebar({
                                         return (
                                             <div
                                                 key={note.id || idx}
-                                                className={`bg-background rounded-lg p-3 border ${isOutdated ? 'border-amber-500/50 opacity-80' : 'border-surface-border hover:border-[#d4af37]/30'} transition-colors relative cursor-pointer group`}
+                                                className={`bg-background rounded-lg p-3 border ${isOutdated ? 'border-amber-500/50 opacity-80' : 'border-surface-border hover:border-[#B8B8B8]/30'} transition-colors relative cursor-pointer group`}
                                                 onClick={() => !isOutdated && onNoteClick?.(note.id)}
                                             >
                                                 {isOutdated && (
-                                                    <div className="absolute -top-2 -right-2 bg-amber-500 text-black text-[9px] font-bold px-1.5 py-0.5 rounded shadow flex items-center gap-1 z-20">
+                                                    <div className="absolute -top-2 -right-2 bg-amber-500 text-[#0A0A0A] text-[9px] font-bold px-1.5 py-0.5 rounded shadow flex items-center gap-1 z-20">
                                                         <span className="material-symbols-outlined text-[10px]">warning</span>
                                                         Previous Version
                                                     </div>
@@ -253,7 +337,7 @@ export default function IntelligenceSidebar({
                                                     }
                                                 />
 
-                                                <div className="text-[11px] text-gray-300 leading-relaxed mb-2 px-2 border-l-2 border-[#d4af37]/50 pr-6 prose-invert prose-xs max-w-none prose-p:leading-relaxed prose-blockquote:border-l-lux-gold prose-blockquote:bg-white/5 prose-blockquote:py-1 prose-blockquote:px-3">
+                                                <div className="text-[11px] text-gray-300 leading-relaxed mb-2 px-2 border-l-2 border-[#B8B8B8]/50 pr-6 prose-invert prose-xs max-w-none prose-p:leading-relaxed prose-blockquote:border-l-[#B8B8B8] prose-blockquote:bg-white/5 prose-blockquote:py-1 prose-blockquote:px-3">
                                                     <ReactMarkdown>
                                                         {note.quote}
                                                     </ReactMarkdown>
@@ -266,7 +350,7 @@ export default function IntelligenceSidebar({
                                                 <button
                                                     onClick={(e) => { e.stopPropagation(); handlePushToKanban(note); }}
                                                     disabled={isSaving}
-                                                    className="absolute bottom-2 right-2 p-1.5 text-gray-400 bg-gray-800 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:text-white hover:bg-[#d4af37]/80 flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider z-10 disabled:opacity-50"
+                                                    className="absolute bottom-2 right-2 p-1.5 text-gray-400 bg-gray-800 rounded opacity-0 group-hover:opacity-100 transition-opacity hover:text-white hover:bg-[#B8B8B8]/80 flex items-center gap-1 text-[10px] uppercase font-bold tracking-wider z-10 disabled:opacity-50"
                                                     title="Convert to Kanban Task"
                                                 >
                                                     <span className="material-symbols-outlined text-[14px]">format_list_bulleted_add</span>
@@ -294,14 +378,14 @@ export default function IntelligenceSidebar({
                                 <div className="bg-[#141414] p-1 rounded-lg border border-white/5 flex items-center gap-1">
                                     <button
                                         onClick={() => setGenealogyView('family')}
-                                        className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${genealogyView === 'family' ? 'bg-[#D4AF37]/10 text-[#D4AF37]' : 'text-zinc-500 hover:text-zinc-300'
+                                        className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${genealogyView === 'family' ? 'bg-[#B8B8B8]/10 text-[#B8B8B8]' : 'text-zinc-500 hover:text-zinc-300'
                                             }`}
                                     >
                                         Document Family
                                     </button>
                                     <button
                                         onClick={() => setGenealogyView('versions')}
-                                        className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${genealogyView === 'versions' ? 'bg-[#D4AF37]/10 text-[#D4AF37]' : 'text-zinc-500 hover:text-zinc-300'
+                                        className={`px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-md transition-all ${genealogyView === 'versions' ? 'bg-[#B8B8B8]/10 text-[#B8B8B8]' : 'text-zinc-500 hover:text-zinc-300'
                                             }`}
                                     >
                                         Version History

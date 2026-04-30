@@ -1,6 +1,8 @@
 'use client';
 
 import { useMemo } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import V2ContextualDiffView from './V2ContextualDiffView';
 import V3WorkingDraftView from './V3WorkingDraftView';
 import { RESOLVED_STATUSES } from './warRoomUtils';
@@ -35,13 +37,10 @@ export function WarRoomCenterPanel({
     v1RawText, v2RawText,
     deviations, selectedDeviationId, onDeviationSelect,
     issueStatuses, batnaFallbacks, severityFilters, statusFilter,
-    versions, pendingCount, contractTitle,
+    versions, pendingCount,
 }: WarRoomCenterPanelProps) {
 
     const v2Version = versions.find(v => v.version_number === 2);
-    const displayFilename = v2Version?.uploaded_filename?.split('/').pop()
-        || contractTitle
-        || 'Contract Document';
 
     const structuralChangeDeviationIds = useMemo(() => {
         return new Set(
@@ -59,7 +58,7 @@ export function WarRoomCenterPanel({
             <div className="flex items-center gap-1 px-4 py-2 border-b border-zinc-800/60 flex-shrink-0">
                 <button
                     onClick={() => onViewModeChange('v1')}
-                    className={`flex flex-col items-center px-5 py-2 rounded-lg text-xs transition-all ${viewMode === 'v1' ? 'bg-amber-500/20 border border-amber-500/40 text-amber-300' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40 border border-transparent'}`}
+                    className={`flex flex-col items-center px-5 py-2 rounded-lg text-xs transition-all ${viewMode === 'v1' ? 'bg-[#1C1C1C] border border-[#3A3A3A] text-[#D4D4D4]' : 'bg-transparent border border-zinc-700/60 text-zinc-400 hover:text-zinc-300'}`}
                 >
                     <span className="font-semibold">V1</span>
                     <span className="text-[10px] opacity-70">Baseline</span>
@@ -67,7 +66,7 @@ export function WarRoomCenterPanel({
 
                 <button
                     onClick={() => onViewModeChange('v2')}
-                    className={`flex flex-col items-center px-5 py-2 rounded-lg text-xs transition-all ${viewMode === 'v2' ? 'bg-amber-500/20 border border-amber-500/40 text-amber-300' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40 border border-transparent'}`}
+                    className={`flex flex-col items-center px-5 py-2 rounded-lg text-xs transition-all ${viewMode === 'v2' ? 'bg-[#1C1C1C] border border-[#3A3A3A] text-[#D4D4D4]' : 'bg-transparent border border-zinc-700/60 text-zinc-400 hover:text-zinc-300'}`}
                 >
                     <span className="font-semibold">V2</span>
                     <span className="text-[10px] opacity-70">Counterparty</span>
@@ -75,7 +74,7 @@ export function WarRoomCenterPanel({
 
                 <button
                     onClick={() => onViewModeChange('v3')}
-                    className={`flex flex-col items-center px-5 py-2 rounded-lg text-xs transition-all ${viewMode === 'v3' ? 'bg-amber-500/20 border border-amber-500/40 text-amber-300' : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/40 border border-transparent'}`}
+                    className={`flex flex-col items-center px-5 py-2 rounded-lg text-xs transition-all ${viewMode === 'v3' ? 'bg-[#1C1C1C] border border-[#3A3A3A] text-[#D4D4D4]' : 'bg-transparent border border-zinc-700/60 text-zinc-400 hover:text-zinc-300'}`}
                 >
                     <span className="font-semibold">V3</span>
                     <span className="text-[10px] opacity-70">Draft</span>
@@ -108,11 +107,15 @@ export function WarRoomCenterPanel({
             {/* Main content area — scrollable */}
             <div className="flex-1 min-h-0 overflow-auto bg-[#0A0A0F]">
                 {viewMode === 'v1' && (
-                    /* V1 Baseline — plain text, no diff */
-                    <div className="mx-auto max-w-4xl p-6">
+                    /* V1 Baseline — markdown render, no diff */
+                    <div className="mx-auto flex h-full min-h-0 max-w-5xl flex-col p-6">
                         {v1RawText ? (
-                            <div className="whitespace-pre-wrap font-['Georgia',serif] text-sm leading-relaxed text-zinc-200">
-                                {v1RawText}
+                            <div className="flex-1 min-h-0 overflow-y-auto rounded-xl border border-zinc-200 bg-white p-8 text-[#0A0A0A] shadow-md custom-scrollbar">
+                                <div className="prose prose-zinc prose-sm max-w-none font-['Georgia',serif] prose-headings:text-[#0A0A0A] prose-headings:font-semibold prose-p:text-zinc-800 prose-p:leading-relaxed prose-strong:text-[#0A0A0A] prose-strong:font-semibold prose-li:text-zinc-800 prose-table:text-zinc-800 prose-th:text-[#0A0A0A] prose-td:border-zinc-300">
+                                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                                        {v1RawText}
+                                    </ReactMarkdown>
+                                </div>
                             </div>
                         ) : (
                             <div className="flex items-center justify-center h-40">
@@ -145,13 +148,15 @@ export function WarRoomCenterPanel({
 
                 {viewMode === 'v3' && (
                     /* V3 Working Draft — shows decisions applied */
-                    <div className="w-full min-w-0 px-6">
-                        <V3WorkingDraftView
-                            v2RawText={v2RawText || ''}
-                            deviations={deviations}
-                            issueStatuses={issueStatuses}
-                            batnaFallbacks={batnaFallbacks}
-                        />
+                    <div className="mx-auto flex h-full min-h-0 w-full max-w-5xl flex-col p-6">
+                        <div className="flex-1 min-h-0 overflow-y-auto rounded-xl border border-zinc-200 bg-white p-8 text-[#0A0A0A] shadow-md custom-scrollbar">
+                            <V3WorkingDraftView
+                                v2RawText={v2RawText || ''}
+                                deviations={deviations}
+                                issueStatuses={issueStatuses}
+                                batnaFallbacks={batnaFallbacks}
+                            />
+                        </div>
                     </div>
                 )}
             </div>

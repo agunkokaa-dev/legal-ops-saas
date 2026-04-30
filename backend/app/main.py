@@ -7,16 +7,40 @@ the `app/routers/` package, applies middleware, and starts the app.
 Run with: uvicorn app.main:app --host 0.0.0.0 --port 8000
 """
 from contextlib import asynccontextmanager
+from datetime import datetime
+import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import sentry_sdk
+from sentry_sdk.integrations.fastapi import FastApiIntegration
+from sentry_sdk.integrations.starlette import StarletteIntegration
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from app.rate_limiter import limiter, rate_limit_exceeded_handler
 
 from app.config import ALLOWED_ORIGINS, init_qdrant_collections
 from app.event_bus import event_bus
-from app.routers import matters, contracts, chat, templates, tasks, playbook, intake, drafting, clauses, review, negotiation, bilingual, national_laws, signing, sse, laws
+from app.routers import matters, contracts, chat, templates, tasks, playbook, intake, drafting, clauses, review, negotiation, bilingual, national_laws, signing, sse, laws, onboarding, calendar
+
+SENTRY_DSN = os.getenv("SENTRY_DSN_BACKEND") or os.getenv("SENTRY_DSN")
+if SENTRY_DSN:
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=os.getenv("SENTRY_ENVIRONMENT", "production"),
+        integrations=[
+            StarletteIntegration(transaction_style="endpoint"),
+            FastApiIntegration(transaction_style="endpoint"),
+        ],
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.1")),
+        send_default_pii=False,
+        max_request_body_size="never",
+        before_send=lambda event, hint: (
+            None if event.get("request", {}).get("url", "").endswith("/health")
+            else event
+        ),
+    )
+    print("Sentry initialized for backend")
 
 # --- Lifespan ---
 @asynccontextmanager
@@ -67,6 +91,8 @@ app.include_router(review.router,     prefix="/api/v1/review",       tags=["Cont
 app.include_router(negotiation.router, prefix="/api/v1/negotiation",  tags=["Negotiation War Room"])
 app.include_router(bilingual.router,  prefix="/api/v1/bilingual",    tags=["Bilingual Editor"])
 app.include_router(laws.router, prefix="/api/v1", tags=["Laws"])
+app.include_router(onboarding.router, prefix="/api/v1", tags=["Onboarding"])
+app.include_router(calendar.router, prefix="/api/v1/calendar", tags=["Calendar"])
 app.include_router(national_laws.router, prefix="/api/v1/admin",       tags=["National Law Admin"])
 app.include_router(sse.admin_router,      prefix="/api/v1/admin",       tags=["Worker Admin"])
 app.include_router(signing.router,       prefix="/api/v1/signing",       tags=["E-Signature & E-Meterai"])
@@ -77,3 +103,14 @@ app.include_router(sse.router,           prefix="/api/v1/events",        tags=["
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "version": "2.0.0"}
+
+
+@app.get("/api/health")
+async def api_health_check():
+    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.get("/api/admin/sentry-test")
+async def test_sentry():
+    """Test endpoint for verifying backend Sentry capture."""
+    raise ValueError("Sentry test error dari clause.id backend")

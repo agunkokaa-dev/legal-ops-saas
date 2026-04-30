@@ -91,7 +91,7 @@ export default function DocumentList({ documents }: { documents: any[] }) {
                                         <td className="px-6 py-4 text-right" onClick={(e) => e.stopPropagation()}>
                                             <button 
                                                 onClick={(e) => { e.stopPropagation(); setLinkingDoc(doc); }}
-                                                className="text-text-muted hover:text-[#d4af37] transition-colors p-1"
+                                                className="text-text-muted hover:text-[#B8B8B8] transition-colors p-1"
                                                 title="Link as Version"
                                             >
                                                 <span className="material-symbols-outlined text-[16px]">link</span>
@@ -183,13 +183,13 @@ export default function DocumentList({ documents }: { documents: any[] }) {
             {linkingDoc && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setLinkingDoc(null)}>
                     <div className="bg-[#111] border border-surface-border p-6 rounded-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
-                        <h3 className="text-[#d4af37] font-serif text-lg mb-2">Link as New Version</h3>
+                        <h3 className="text-[#B8B8B8] font-serif text-lg mb-2">Link as New Version</h3>
                         <p className="text-sm text-text-muted mb-6">Select the parent document. "{linkingDoc.title}" will become the newly active version (V2+) for the selected parent contract.</p>
                         
                         <div className="flex flex-col gap-2 mb-6">
                             <label className="text-xs text-text-muted font-semibold uppercase tracking-widest">Parent Document</label>
                             <select 
-                                className="w-full bg-[#0a0a0a] border border-surface-border p-3 rounded text-sm text-white focus:outline-none focus:border-[#d4af37]"
+                                className="w-full bg-[#0a0a0a] border border-surface-border p-3 rounded text-sm text-white focus:outline-none focus:border-[#B8B8B8]"
                                 value={selectedParentId}
                                 onChange={e => setSelectedParentId(e.target.value)}
                             >
@@ -205,7 +205,7 @@ export default function DocumentList({ documents }: { documents: any[] }) {
                             <button 
                                 disabled={!selectedParentId || isLinking}
                                 onClick={handleLinkSubmit}
-                                className="px-4 py-2 bg-[#d4af37]/20 border border-[#d4af37]/40 text-[#d4af37] rounded text-sm font-bold tracking-wider uppercase disabled:opacity-50"
+                                className="px-4 py-2 bg-[#B8B8B8]/20 border border-[#B8B8B8]/40 text-[#B8B8B8] rounded text-sm font-bold tracking-wider uppercase disabled:opacity-50"
                             >
                                 {isLinking ? "Linking..." : "Confirm Link"}
                             </button>

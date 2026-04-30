@@ -69,7 +69,7 @@ export default function AIRecommendedTasks({ matterId, initialTasks }: { matterI
                                         className="w-5 h-5 rounded border-surface-border bg-transparent checked:bg-primary checked:border-primary focus:ring-offset-0 focus:ring-1 focus:ring-primary cursor-pointer transition-all appearance-none"
                                     />
                                     {task.is_completed && (
-                                        <span className="material-symbols-outlined text-[16px] text-black absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-none">
+                                        <span className="material-symbols-outlined text-[16px] text-[#0A0A0A] absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 pointer-events-none">
                                             check
                                         </span>
                                     )}

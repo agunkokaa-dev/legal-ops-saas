@@ -20,7 +20,7 @@ export default async function ContractReviewPage({ params }: { params: Promise<{
                 <p className="text-sm">Failed to load contract for review.</p>
                 <Link
                     href={`/dashboard/contracts/${contractId}`}
-                    className="text-xs text-[#d4af37] hover:underline"
+                    className="text-xs text-[#B8B8B8] hover:underline"
                 >
                     ← Back to Contract Detail
                 </Link>

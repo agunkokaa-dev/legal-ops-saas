@@ -230,19 +230,19 @@ export default function FinalizeRoundButton({
                     className={isHeaderVariant
                         ? `inline-flex items-center gap-2 rounded-lg px-4 py-1.5 text-sm font-semibold transition-all ${allResolved
                             ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-500'
-                            : 'bg-amber-500 text-black shadow-lg shadow-amber-500/20 hover:bg-amber-400'
+                            : 'bg-[#B8B8B8] text-[#0A0A0A] shadow-lg shadow-[#888888]/20 hover:bg-[#D4D4D4]'
                         }`
                         : `inline-flex items-center gap-2 rounded-lg px-4 py-2 text-[10px] font-bold uppercase tracking-[0.22em] transition ${allResolved
                             ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-900/30 hover:bg-emerald-500'
                             : 'border border-zinc-700 bg-zinc-900 text-zinc-300 hover:bg-zinc-800'
                         }`}
                 >
-                    <span className={`material-symbols-outlined text-sm ${isHeaderVariant && !allResolved ? 'text-black' : ''}`}>task_alt</span>
+                    <span className={`material-symbols-outlined text-sm ${isHeaderVariant && !allResolved ? 'text-[#0A0A0A]' : ''}`}>task_alt</span>
                     {isHeaderVariant
                         ? 'Finalize Round'
                         : (allResolved ? `Finalize Round V${nextVersionNumber}` : `Finalize Round (${pendingIssueCount} pending)`)}
                     {isHeaderVariant && pendingIssueCount > 0 && (
-                        <span className={`rounded-full px-1.5 py-0.5 text-xs ${allResolved ? 'bg-black/20 text-white' : 'bg-black/20 text-black'}`}>
+                        <span className={`rounded-full px-1.5 py-0.5 text-xs ${allResolved ? 'bg-black/20 text-white' : 'bg-zinc-900/15 text-[#0A0A0A]'}`}>
                             {pendingIssueCount}
                         </span>
                     )}
@@ -285,7 +285,7 @@ export default function FinalizeRoundButton({
                             <div className="flex-1 overflow-y-auto p-6">
                                 {isLoadingPreview ? (
                                     <div className="py-12 text-center">
-                                        <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-zinc-800 border-t-[#D4AF37]" />
+                                        <div className="mx-auto mb-4 h-8 w-8 animate-spin rounded-full border-2 border-zinc-800 border-t-[#B8B8B8]" />
                                         <p className="text-sm text-zinc-400">Memuat preview finalisasi...</p>
                                     </div>
                                 ) : previewError ? (
@@ -303,8 +303,8 @@ export default function FinalizeRoundButton({
                                         <div className="grid gap-3 md:grid-cols-2">
                                             <DecisionRow label="Diterima" count={summary.accepted || 0} tone="text-emerald-400" />
                                             <DecisionRow label="Ditolak" count={summary.rejected || 0} tone="text-rose-400" />
-                                            <DecisionRow label="Counter BATNA" count={summary.countered || 0} tone="text-amber-400" />
-                                            <DecisionRow label="Eskalasi" count={summary.escalated || 0} tone="text-blue-400" />
+                                            <DecisionRow label="Counter BATNA" count={summary.countered || 0} tone="text-[#B8B8B8]" />
+                                            <DecisionRow label="Eskalasi" count={summary.escalated || 0} tone="text-[#B8B8B8]" />
                                         </div>
 
                                         {hasBlockingIssues ? (
@@ -391,7 +391,7 @@ export default function FinalizeRoundButton({
                                                 onChange={(event) => setConfirmationNote(event.target.value)}
                                                 maxLength={500}
                                                 placeholder="Opsional: ringkas konteks round ini."
-                                                className="min-h-[92px] w-full rounded-xl border border-zinc-800 bg-[#111] px-4 py-3 text-sm text-zinc-200 outline-none transition focus:border-[#D4AF37]/40"
+                                                className="min-h-[92px] w-full rounded-xl border border-zinc-800 bg-[#111] px-4 py-3 text-sm text-zinc-200 outline-none transition focus:border-[#3A3A3A]"
                                             />
                                         </div>
                                     </div>

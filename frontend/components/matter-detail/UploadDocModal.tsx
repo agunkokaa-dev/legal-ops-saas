@@ -86,8 +86,8 @@ export default function UploadDocModal({ matterId, existingDocs = [] }: { matter
 
                         {candidateInfo ? (
                             <div className="flex flex-col gap-6 items-center text-center py-4">
-                                <div className="w-16 h-16 rounded-full bg-[#d4af37]/20 flex items-center justify-center border border-[#d4af37]/40 ring-4 ring-[#d4af37]/10">
-                                    <span className="material-symbols-outlined text-[32px] text-[#d4af37]">history_edu</span>
+                                <div className="w-16 h-16 rounded-full bg-[#B8B8B8]/20 flex items-center justify-center border border-[#B8B8B8]/40 ring-4 ring-[#B8B8B8]/10">
+                                    <span className="material-symbols-outlined text-[32px] text-[#B8B8B8]">history_edu</span>
                                 </div>
                                 
                                 <div className="w-full">
@@ -96,7 +96,7 @@ export default function UploadDocModal({ matterId, existingDocs = [] }: { matter
                                         This document looks like an iteration of:
                                     </p>
                                     <div className="bg-[#111] border border-white/10 rounded-md p-3 mt-3 shadow-inner max-w-sm mx-auto w-full">
-                                        <p className="text-sm font-medium text-[#d4af37] truncate" title={candidateInfo.matched_contract_title}>
+                                        <p className="text-sm font-medium text-[#B8B8B8] truncate" title={candidateInfo.matched_contract_title}>
                                             {candidateInfo.matched_contract_title}
                                         </p>
                                     </div>
@@ -140,7 +140,7 @@ export default function UploadDocModal({ matterId, existingDocs = [] }: { matter
                                     <button
                                         type="button"
                                         disabled={isConfirmingVersion}
-                                        className="flex-1 bg-gradient-to-r from-[#d4af37] to-[#bda036] hover:from-[#e5c158] hover:to-[#ceb145] text-black font-bold px-4 py-2.5 rounded text-sm transition-all disabled:opacity-50 flex justify-center items-center gap-2 shadow-[0_0_15px_rgba(212,175,55,0.3)] hover:scale-[1.02]"
+                                        className="flex-1 bg-gradient-to-r from-[#B8B8B8] to-[#B8B8B8] hover:from-[#B8B8B8] hover:to-[#B8B8B8] text-[#0A0A0A] font-bold px-4 py-2.5 rounded text-sm transition-all disabled:opacity-50 flex justify-center items-center gap-2 shadow-[0_0_15px_rgba(184, 184, 184,0.3)] hover:scale-[1.02]"
                                         onClick={async () => {
                                             setIsConfirmingVersion(true)
                                             try {

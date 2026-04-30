@@ -38,8 +38,8 @@ const SEVERITY_CONFIG: Record<string, { color: string; bg: string; icon: string;
         riskText: 'This non-standard clause could create issues during disputes or enforcement.',
     },
     info: {
-        color: 'text-blue-400',
-        bg: 'bg-blue-500/8',
+        color: 'text-[#B8B8B8]',
+        bg: 'bg-[#161616]',
         icon: 'info',
         riskText: 'Informational note — review for compliance with internal standards.',
     },
@@ -157,7 +157,7 @@ export default function FindingCard({
                             <button
                                 key={`${part.value}-${index}`}
                                 onClick={() => void openCitationText(part.value)}
-                                className="rounded-full bg-[#d4af37]/12 px-2 py-0.5 text-left text-[#f4d884] transition hover:bg-[#d4af37]/20"
+                                className="rounded-full bg-[#B8B8B8]/12 px-2 py-0.5 text-left text-[#D4D4D4] transition hover:bg-[#B8B8B8]/20"
                             >
                                 {part.value}
                             </button>
@@ -173,8 +173,8 @@ export default function FindingCard({
                         {config.riskText}
                     </p>
                     {finding.playbook_reference && (
-                        <div className="mt-3 p-2.5 rounded-lg bg-[#d4af37]/5 border border-[#d4af37]/10 flex items-start gap-2">
-                            <span className="material-symbols-outlined text-[#d4af37] text-xs mt-0.5">menu_book</span>
+                        <div className="mt-3 p-2.5 rounded-lg bg-[#B8B8B8]/5 border border-[#B8B8B8]/10 flex items-start gap-2">
+                            <span className="material-symbols-outlined text-[#B8B8B8] text-xs mt-0.5">menu_book</span>
                             <p className="text-zinc-500 text-[11px] leading-relaxed">{finding.playbook_reference}</p>
                         </div>
                     )}
@@ -200,7 +200,7 @@ export default function FindingCard({
                                 <button
                                     key={`${part.value}-${index}`}
                                     onClick={() => void openCitationText(part.value)}
-                                    className="rounded-full bg-[#d4af37]/12 px-1.5 py-0.5 text-left text-[#f4d884] transition hover:bg-[#d4af37]/20"
+                                    className="rounded-full bg-[#B8B8B8]/12 px-1.5 py-0.5 text-left text-[#D4D4D4] transition hover:bg-[#B8B8B8]/20"
                                 >
                                     {part.value}
                                 </button>
@@ -239,7 +239,7 @@ export default function FindingCard({
                         <button
                             onClick={handleAccept}
                             disabled={isAccepting}
-                            className="w-full py-3 bg-gradient-to-r from-[#d4af37] to-[#bda036] text-black text-xs font-bold uppercase tracking-[0.15em] rounded-xl hover:shadow-[0_0_20px_rgba(212,175,55,0.3)] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                            className="w-full py-3 bg-gradient-to-r from-[#B8B8B8] to-[#B8B8B8] text-[#0A0A0A] text-xs font-bold uppercase tracking-[0.15em] rounded-xl hover:shadow-[0_0_20px_rgba(184, 184, 184,0.3)] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                         >
                             {isAccepting ? (
                                 <>
@@ -275,7 +275,7 @@ export default function FindingCard({
                     {onEditInDrafting && (
                         <button
                             onClick={() => onEditInDrafting(finding)}
-                            className="w-full py-2.5 bg-transparent border border-blue-500/20 text-blue-400 hover:text-blue-300 hover:border-blue-500/40 hover:bg-blue-500/5 text-xs font-bold uppercase tracking-[0.12em] rounded-xl transition-all flex items-center justify-center gap-2"
+                            className="w-full py-2.5 bg-transparent border border-[#2A2A2A] text-[#B8B8B8] hover:text-[#D4D4D4] hover:border-[#3A3A3A] hover:bg-[#B8B8B8]/5 text-xs font-bold uppercase tracking-[0.12em] rounded-xl transition-all flex items-center justify-center gap-2"
                         >
                             <span className="material-symbols-outlined text-sm">edit_note</span>
                             Edit & Apply in Drafting

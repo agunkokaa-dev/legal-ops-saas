@@ -60,9 +60,9 @@ const SEVERITY_CONFIG: Record<string, { icon: string; label: string; color: stri
         label: 'Informational',
         color: 'text-zinc-400',
         bg: 'bg-[#141414]',
-        border: 'border border-zinc-800/40 border-l-2 border-l-blue-900/60',
+        border: 'border border-zinc-800/40 border-l-2 border-l-[#2A2A2A]',
         glow: '',
-        badge: 'bg-blue-950/40 text-blue-400/80',
+        badge: 'bg-[#1C1C1C] text-[#888888]/80',
     },
     summary: {
         icon: 'description',
@@ -119,14 +119,14 @@ export default function AISidebar({
             {/* AI Directive Header */}
             <div className="flex-shrink-0 p-5 pb-4 border-b border-white/5">
                 <div className="flex items-start gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-[#141414] border border-[#d4af37]/20 flex items-center justify-center flex-shrink-0">
-                        <span className="material-symbols-outlined text-[#d4af37] text-lg" style={{ fontVariationSettings: "'FILL' 1" }}>
+                    <div className="w-9 h-9 rounded-xl bg-[#141414] border border-[#B8B8B8]/20 flex items-center justify-center flex-shrink-0">
+                        <span className="material-symbols-outlined text-[#B8B8B8] text-lg" style={{ fontVariationSettings: "'FILL' 1" }}>
                             psychology
                         </span>
                     </div>
                     <div>
                         <p className="text-white text-[13px] font-serif leading-relaxed">
-                            I found <span className="text-[#d4af37] font-bold">{banner.total_count} issue{banner.total_count !== 1 ? 's' : ''}</span> in this contract.
+                            I found <span className="text-[#B8B8B8] font-bold">{banner.total_count} issue{banner.total_count !== 1 ? 's' : ''}</span> in this contract.
                             {banner.critical_count > 0
                                 ? ' I suggest we start with the highest risks.'
                                 : ' Nothing critical — review at your convenience.'
@@ -205,7 +205,7 @@ export default function AISidebar({
                                 className="bg-white/[0.03] border border-white/5 rounded-lg p-2.5"
                             >
                                 <div className="flex items-center gap-1.5 mb-1">
-                                    <span className="material-symbols-outlined text-[11px] text-[#d4af37]">{insight.icon || 'info'}</span>
+                                    <span className="material-symbols-outlined text-[11px] text-[#B8B8B8]">{insight.icon || 'info'}</span>
                                     <span className="text-[8px] text-zinc-600 uppercase tracking-wider font-bold">{insight.label}</span>
                                 </div>
                                 <p className="text-white text-[11px] font-semibold truncate" title={insight.value}>{insight.value}</p>
@@ -327,13 +327,13 @@ function FindingList({
                     transition={{ delay: i * 0.04 }}
                     className={`group flex items-center gap-2 p-2.5 rounded-lg cursor-pointer transition-all ${
                         selectedId === f.finding_id
-                            ? 'bg-white/10 border border-[#d4af37]/30'
+                            ? 'bg-white/10 border border-[#B8B8B8]/30'
                             : 'bg-white/[0.02] border border-transparent hover:bg-white/[0.06] hover:border-white/10'
                     }`}
                     onClick={() => onFindingClick(f)}
                 >
                     <div className="flex-1 min-w-0">
-                        <p className="text-zinc-300 text-[12px] font-medium truncate group-hover:text-[#d4af37] transition-colors">
+                        <p className="text-zinc-300 text-[12px] font-medium truncate group-hover:text-[#B8B8B8] transition-colors">
                             {f.title}
                         </p>
                         <p className="text-zinc-600 text-[10px] mt-0.5 truncate">{f.category}</p>
@@ -341,12 +341,12 @@ function FindingList({
                     <div className="flex items-center gap-1 flex-shrink-0">
                         <button
                             onClick={(e) => { e.stopPropagation(); onConvertToTask(f) }}
-                            className="p-1 rounded opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-[#d4af37] hover:bg-white/5 transition-all"
+                            className="p-1 rounded opacity-0 group-hover:opacity-100 text-zinc-500 hover:text-[#B8B8B8] hover:bg-white/5 transition-all"
                             title="Convert to Task"
                         >
                             <span className="material-symbols-outlined text-[14px]">add_task</span>
                         </button>
-                        <span className="material-symbols-outlined text-sm text-zinc-700 group-hover:text-[#d4af37] transition-colors">
+                        <span className="material-symbols-outlined text-sm text-zinc-700 group-hover:text-[#B8B8B8] transition-colors">
                             chevron_right
                         </span>
                     </div>

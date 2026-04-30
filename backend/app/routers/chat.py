@@ -21,6 +21,7 @@ WHY asyncio.to_thread()?
 import asyncio
 import json
 import logging
+import time
 import traceback
 from typing import Any
 
@@ -29,7 +30,8 @@ from supabase import Client
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 from qdrant_client import models
 
-from app.config import openai_client, COLLECTION_NAME
+from app.ai_usage import log_openai_response_sync
+from app.config import OUTPUT_TOKEN_CAPS, admin_supabase, openai_client, COLLECTION_NAME
 from app.laws.schemas import LawSearchContext, LawSearchRequest
 from app.laws.service import LawRetrievalService, build_law_retrieval_service
 from app.rate_limiter import limiter
@@ -44,25 +46,64 @@ chat_logger = logging.getLogger("pariana.chat.router")
 # ASYNC WRAPPERS — Prevent Event Loop Starvation
 # =====================================================================
 
-async def async_embed(text: str) -> list[float]:
+async def async_embed(
+    text: str,
+    *,
+    tenant_id: str | None = None,
+    workflow: str = "chat_embedding",
+    contract_id: str | None = None,
+) -> list[float]:
     """Offloads the synchronous OpenAI embedding call to a background thread."""
+    started_at = time.perf_counter()
     response = await asyncio.to_thread(
         openai_client.embeddings.create,
         input=text,
         model="text-embedding-3-small"
     )
+    log_openai_response_sync(
+        admin_supabase,
+        tenant_id,
+        workflow,
+        "text-embedding-3-small",
+        response,
+        int((time.perf_counter() - started_at) * 1000),
+        contract_id=contract_id,
+    )
     return response.data[0].embedding
 
 
-async def async_chat_completion(messages: list, tools=None, tool_choice=None) -> Any:
+async def async_chat_completion(
+    messages: list,
+    tools=None,
+    tool_choice=None,
+    *,
+    tenant_id: str | None = None,
+    workflow: str = "clause_assistant_simple",
+    contract_id: str | None = None,
+) -> Any:
     """Offloads the synchronous OpenAI chat completion call to a background thread."""
-    kwargs = {"model": "gpt-4o-mini", "messages": messages}
+    started_at = time.perf_counter()
+    kwargs = {
+        "model": "gpt-4o-mini",
+        "messages": messages,
+        "max_tokens": OUTPUT_TOKEN_CAPS["clause_assistant_simple"],
+    }
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = tool_choice or "auto"
     response = await asyncio.to_thread(
         openai_client.chat.completions.create,
         **kwargs
+    )
+    log_openai_response_sync(
+        admin_supabase,
+        tenant_id,
+        workflow,
+        "gpt-4o-mini",
+        response,
+        int((time.perf_counter() - started_at) * 1000),
+        contract_id=contract_id,
+        metadata={"tool_enabled": bool(tools)},
     )
     return response
 
@@ -359,6 +400,170 @@ def _format_graph_context(graph_results: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _get_clause_assistant_item_value(item: Any, key: str, default: Any = None) -> Any:
+    if isinstance(item, dict):
+        return item.get(key, default)
+    return getattr(item, key, default)
+
+
+def _truncate_clause_assistant_source_body(value: Any, limit: int = 300) -> str:
+    if value is None:
+        return ""
+    cleaned = " ".join(str(value).split())
+    if not cleaned:
+        return ""
+    return cleaned[:limit]
+
+
+def _round_clause_assistant_score(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return round(float(value), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_clause_assistant_contract_sources(
+    contract_results: list[Any],
+    contract_titles: dict[str, str],
+) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for hit in contract_results[:4]:
+        payload = dict(getattr(hit, "payload", {}) or {})
+        contract_id = str(payload.get("contract_id") or "").strip()
+        title = contract_titles.get(contract_id, "Unknown Document")
+        page = payload.get("page_number", payload.get("chunk_index"))
+        identifier = f"Kontrak — {title}"
+        identifier_full = identifier if page in (None, "") else f"{identifier} (Bagian/Halaman: {page})"
+        body = _truncate_clause_assistant_source_body(payload.get("text"))
+        if not body:
+            continue
+        sources.append(
+            {
+                "type": "document",
+                "identifier": identifier,
+                "identifier_full": identifier_full,
+                "body": body,
+                "official_source_url": None,
+                "relevance_score": _round_clause_assistant_score(getattr(hit, "score", None)),
+                "contract_id": contract_id or None,
+                "file_name": title,
+                "page_reference": str(page) if page not in (None, "") else None,
+            }
+        )
+    return sources
+
+
+def _build_clause_assistant_playbook_sources(playbook_results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for item in playbook_results[:5]:
+        identifier = str(item.get("rule_id") or item.get("category") or "Playbook Rule").strip() or "Playbook Rule"
+        body = _truncate_clause_assistant_source_body(item.get("rule_text") or item.get("text"))
+        if not body:
+            continue
+        sources.append(
+            {
+                "type": "playbook",
+                "identifier": identifier,
+                "identifier_full": f"Playbook Perusahaan — {identifier}",
+                "body": body,
+                "official_source_url": None,
+                "relevance_score": _round_clause_assistant_score(item.get("confidence_score")),
+                "category": item.get("category"),
+            }
+        )
+    return sources
+
+
+def _build_clause_assistant_law_sources(law_results: list[Any]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for item in law_results[:6]:
+        identifier = str(_get_clause_assistant_item_value(item, "identifier", "") or "").strip()
+        identifier_full = str(_get_clause_assistant_item_value(item, "identifier_full", "") or "").strip()
+        law_short = str(_get_clause_assistant_item_value(item, "law_short", "") or "").strip()
+        law_full_name = str(_get_clause_assistant_item_value(item, "law_full_name", "") or "").strip()
+        body = _truncate_clause_assistant_source_body(
+            _get_clause_assistant_item_value(item, "body", None)
+            or _get_clause_assistant_item_value(item, "body_snippet", None)
+        )
+        if not (identifier or identifier_full or body):
+            continue
+        short_identifier = f"{law_short} {identifier}".strip() if law_short and identifier else (identifier or identifier_full)
+        full_identifier = (
+            f"{law_full_name} {identifier}".strip()
+            if law_full_name and identifier
+            else identifier_full or short_identifier
+        )
+        sources.append(
+            {
+                "type": "law",
+                "identifier": short_identifier,
+                "identifier_full": full_identifier,
+                "short_name": law_short or None,
+                "law_type": _get_clause_assistant_item_value(item, "law_type", None),
+                "number": _get_clause_assistant_item_value(item, "number", None),
+                "year": _get_clause_assistant_item_value(item, "year", None),
+                "body": body,
+                "official_source_url": _get_clause_assistant_item_value(item, "official_source_url", None),
+                "relevance_score": _round_clause_assistant_score(
+                    _get_clause_assistant_item_value(item, "relevance_score", None)
+                    or _get_clause_assistant_item_value(item, "confidence_score", None)
+                    or _get_clause_assistant_item_value(item, "score", None)
+                ),
+            }
+        )
+    return sources
+
+
+def _dedupe_clause_assistant_sources(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for source in sources:
+        key = "::".join(
+            [
+                str(source.get("type") or ""),
+                str(source.get("contract_id") or ""),
+                str(source.get("identifier_full") or source.get("identifier") or ""),
+                str(source.get("body") or "")[:120],
+            ]
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(source)
+    return deduped
+
+
+def _extract_clause_assistant_sources_from_tool_result(
+    *,
+    tool_name: str,
+    tool_result: str,
+) -> list[dict[str, Any]]:
+    try:
+        payload = json.loads(tool_result)
+    except json.JSONDecodeError:
+        return []
+
+    items = payload.get("items")
+    if not isinstance(items, list) or not items:
+        return []
+
+    if tool_name == "search_playbook_rules":
+        return _build_clause_assistant_playbook_sources(items)
+    if tool_name in {"search_national_laws", "get_graph_dependencies"}:
+        return _build_clause_assistant_law_sources(items)
+    return []
+
+
+CLAUSE_ASSISTANT_CITATION_INSTRUCTION = """
+Saat menjawab, selalu sertakan referensi inline ke sumber yang relevan.
+Gunakan format seperti [UU PDP Pasal 24], [Playbook Rule #3], atau [Kontrak — Nama Dokumen].
+Jika tidak ada sumber yang relevan ditemukan, nyatakan dengan jelas bahwa tidak ada dasar yang cukup
+dan jangan membuat klaim hukum tanpa dukungan sumber primer.
+"""
+
+
 async def _run_clause_assistant_tool(
     *,
     tool_name: str,
@@ -376,6 +581,7 @@ async def _run_clause_assistant_tool(
                 query=query,
                 context=context,
                 limit=4,
+                usage_tenant_id=getattr(qdrant_client, "tenant_id", None),
             )
             return json.dumps({"items": results}, ensure_ascii=False)
 
@@ -385,16 +591,23 @@ async def _run_clause_assistant_tool(
                     query=query,
                     context=context,
                     limit=4,
-                )
+                ),
+                usage_tenant_id=getattr(qdrant_client, "tenant_id", None),
             )
             return json.dumps(
                 {
                     "items": [
                         {
                             "node_id": item.node_id,
+                            "identifier": item.identifier,
                             "law_short": item.law_short,
+                            "law_full_name": item.law_full_name,
+                            "law_type": item.law_type,
+                            "number": item.number,
+                            "year": item.year,
                             "identifier_full": item.identifier_full,
                             "body_snippet": item.body_snippet,
+                            "official_source_url": item.official_source_url,
                             "legal_status": item.legal_status,
                             "retrieval_path": item.retrieval_path,
                             "reference_type": item.reference_type,
@@ -416,7 +629,8 @@ async def _run_clause_assistant_tool(
                         query=query,
                         context=context,
                         limit=4,
-                    )
+                    ),
+                    usage_tenant_id=getattr(qdrant_client, "tenant_id", None),
                 )
                 node_ids = [item.node_id for item in response.results]
                 score_by_node_id = {item.node_id: float(item.confidence_score) for item in response.results}
@@ -431,11 +645,18 @@ async def _run_clause_assistant_tool(
                     "items": [
                         {
                             "node_id": item.get("node_id"),
+                            "identifier": item.get("identifier"),
                             "law_short": item.get("law_short"),
+                            "law_full_name": item.get("law_full_name"),
+                            "law_type": item.get("law_type"),
+                            "number": item.get("number"),
+                            "year": item.get("year"),
                             "identifier_full": item.get("identifier_full"),
                             "reference_type": item.get("reference_type"),
                             "reference_context": item.get("reference_context"),
                             "body_snippet": item.get("body_snippet"),
+                            "official_source_url": item.get("official_source_url"),
+                            "confidence_score": item.get("confidence_score"),
                         }
                         for item in results
                     ]
@@ -465,7 +686,11 @@ async def chat_with_clause(
         tenant_id = claims["verified_tenant_id"]
 
         # 1. Embed question (NON-BLOCKING)
-        question_vector = await async_embed(question)
+        question_vector = await async_embed(
+            question,
+            tenant_id=tenant_id,
+            workflow="dashboard_rag_embedding",
+        )
 
         # 2. Tenant-isolated vector search (NON-BLOCKING)
         search_results = await async_qdrant_search(
@@ -632,7 +857,7 @@ Anda memiliki 2 tugas aktif di dalam *Backlog* yang membutuhkan perhatian Anda h
         response = await async_chat_completion([
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": question}
-        ])
+        ], tenant_id=tenant_id, workflow="dashboard_chat")
 
         return {
             "answer": response.choices[0].message.content,
@@ -710,7 +935,10 @@ async def chat_clause_assistant(
 
         # 3. Embed User Query (NON-BLOCKING)
         question_vector = await async_embed(
-            _build_clause_assistant_contract_query(body.message, body.context)
+            _build_clause_assistant_contract_query(body.message, body.context),
+            tenant_id=tenant_id,
+            workflow="clause_assistant_embedding",
+            contract_id=primary_contract_id,
         )
 
         # 4. Contract retrieval for clause-local context
@@ -728,13 +956,15 @@ async def chat_clause_assistant(
             query=body.message,
             context=search_context,
             limit=4,
+            usage_tenant_id=tenant_id,
         )
         law_task = law_service.search(
             LawSearchRequest(
                 query=body.message,
                 context=search_context,
                 limit=4,
-            )
+            ),
+            usage_tenant_id=tenant_id,
         )
 
         try:
@@ -762,6 +992,15 @@ async def chat_clause_assistant(
             except Exception as exc:
                 chat_logger.warning("Clause assistant graph expansion failed: %s", exc)
                 graph_results = []
+
+        accumulated_sources = _dedupe_clause_assistant_sources(
+            [
+                *_build_clause_assistant_contract_sources(contract_results, contract_titles),
+                *_build_clause_assistant_playbook_sources(playbook_results),
+                *_build_clause_assistant_law_sources(law_results),
+                *_build_clause_assistant_law_sources(graph_results),
+            ]
+        )
 
         # 5. Assemble Context — PRIMARY document is the single source of truth
         combined_context = ""
@@ -824,6 +1063,9 @@ ANALYSIS INSTRUCTIONS:
 12. Answer in professional Indonesian, maintaining legal terminology.
 13. If SELECTED DEVIATION CONTEXT is present, treat it as the focal clause for the analysis.
 
+INLINE CITATION RULE:
+{CLAUSE_ASSISTANT_CITATION_INSTRUCTION}
+
 HISTORICAL AGENT DATA:
 {historical_context}
 
@@ -847,7 +1089,14 @@ Context:
         ]
         final_content = ""
         for _ in range(2):
-            response = await async_chat_completion(messages, tools=CLAUSE_ASSISTANT_TOOLS, tool_choice="auto")
+            response = await async_chat_completion(
+                messages,
+                tools=CLAUSE_ASSISTANT_TOOLS,
+                tool_choice="auto",
+                tenant_id=tenant_id,
+                workflow="clause_assistant_synthesis",
+                contract_id=primary_contract_id,
+            )
             response_message = response.choices[0].message
             if response_message.tool_calls:
                 messages.append(response_message)
@@ -863,6 +1112,15 @@ Context:
                         law_service=law_service,
                         qdrant_client=qdrant_client,
                     )
+                    accumulated_sources = _dedupe_clause_assistant_sources(
+                        [
+                            *accumulated_sources,
+                            *_extract_clause_assistant_sources_from_tool_result(
+                                tool_name=tool_call.function.name,
+                                tool_result=tool_result,
+                            ),
+                        ]
+                    )
                     messages.append(
                         {
                             "tool_call_id": tool_call.id,
@@ -876,12 +1134,19 @@ Context:
             break
 
         if not final_content:
-            fallback_response = await async_chat_completion(messages)
+            fallback_response = await async_chat_completion(
+                messages,
+                tenant_id=tenant_id,
+                workflow="clause_assistant_synthesis",
+                contract_id=primary_contract_id,
+            )
             final_content = fallback_response.choices[0].message.content or ""
 
         return {
             "reply": final_content,
-            "answer": final_content
+            "answer": final_content,
+            "sources": accumulated_sources,
+            "citations": accumulated_sources,
         }
 
     except Exception as e:

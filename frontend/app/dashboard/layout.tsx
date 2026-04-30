@@ -7,6 +7,8 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import { useTenantSSE } from '@/hooks/useTenantSSE'
 import { toast } from 'sonner'
+import { WelcomeModal } from '@/components/onboarding/WelcomeModal'
+import { SampleDataGate } from '@/components/onboarding/SampleDataGate'
 
 export default function DashboardLayout({
     children,
@@ -65,6 +67,10 @@ export default function DashboardLayout({
         setIsCollapsed(!isCollapsed);
     };
 
+    const handleWelcomeStart = () => {
+        router.push('/dashboard/documents?onboarding=sample');
+    };
+
     useTenantSSE({
         onContractCreated: (event) => {
             router.refresh();
@@ -102,7 +108,9 @@ export default function DashboardLayout({
 
             {/* Main Dashboard Panel */}
             <div className="flex-1 min-w-0 flex flex-col overflow-hidden relative">
+                <SampleDataGate />
                 {children}
+                <WelcomeModal onStart={handleWelcomeStart} />
 
                 {/* ==================== BOTTOM STATUS RAIL ==================== */}
                 <aside

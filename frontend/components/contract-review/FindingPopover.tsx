@@ -25,7 +25,7 @@ interface ReviewFinding {
 const SEVERITY_STYLES: Record<string, { bg: string; border: string; label: string; icon: string }> = {
     critical: { bg: 'bg-red-500/10', border: 'border-red-500/30', label: 'text-red-400', icon: 'error' },
     warning: { bg: 'bg-amber-500/10', border: 'border-amber-500/30', label: 'text-amber-400', icon: 'warning' },
-    info: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', label: 'text-blue-400', icon: 'info' },
+    info: { bg: 'bg-[#1C1C1C]', border: 'border-[#3A3A3A]', label: 'text-[#B8B8B8]', icon: 'info' },
 }
 
 export default function FindingPopover({
@@ -135,7 +135,7 @@ export default function FindingPopover({
                     <button
                         onClick={handleFix}
                         disabled={isFixing}
-                        className="flex-1 py-2 bg-gradient-to-r from-[#d4af37] to-[#bda036] text-black text-[10px] font-bold uppercase tracking-wider rounded-lg hover:shadow-[0_0_12px_rgba(212,175,55,0.3)] transition-all disabled:opacity-50 flex items-center justify-center gap-1"
+                        className="flex-1 py-2 bg-gradient-to-r from-[#B8B8B8] to-[#B8B8B8] text-[#0A0A0A] text-[10px] font-bold uppercase tracking-wider rounded-lg hover:shadow-[0_0_12px_rgba(184, 184, 184,0.3)] transition-all disabled:opacity-50 flex items-center justify-center gap-1"
                     >
                         {isFixing ? (
                             <span className="w-2.5 h-2.5 border-2 border-black/20 border-t-black rounded-full animate-spin" />
@@ -155,7 +155,7 @@ export default function FindingPopover({
                 </button>
                 <button
                     onClick={handleDetails}
-                    className="py-2 px-3 bg-white/5 border border-white/10 text-zinc-400 hover:text-[#d4af37] text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all flex items-center justify-center gap-1"
+                    className="py-2 px-3 bg-white/5 border border-white/10 text-zinc-400 hover:text-[#B8B8B8] text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all flex items-center justify-center gap-1"
                 >
                     <span className="material-symbols-outlined text-xs">open_in_full</span>
                     Details

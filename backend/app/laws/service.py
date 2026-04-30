@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from dataclasses import asdict
 from datetime import date
 from typing import Any, Literal
@@ -41,6 +42,8 @@ from app.laws.schemas import (
     LawSearchResponse,
     LawSearchResult,
 )
+from app.ai_usage import log_anthropic_response_sync, log_openai_response_sync
+from app.config import OUTPUT_TOKEN_CAPS, admin_supabase
 from app.laws.utils import (
     LAW_CATEGORY_ALIASES,
     build_status_warning,
@@ -120,11 +123,26 @@ class LawRetrievalService:
         self.openai_client = openai_client
         self.anthropic_client_factory = anthropic_client_factory
 
-    async def embed_query(self, query: str) -> list[float]:
+    async def embed_query(
+        self,
+        query: str,
+        *,
+        usage_tenant_id: str | None = None,
+        workflow: str = "law_embedding",
+    ) -> list[float]:
+        started_at = time.perf_counter()
         response = await asyncio.to_thread(
             self.openai_client.embeddings.create,
             input=query[:8000],
             model="text-embedding-3-small",
+        )
+        log_openai_response_sync(
+            admin_supabase,
+            usage_tenant_id,
+            workflow,
+            "text-embedding-3-small",
+            response,
+            int((time.perf_counter() - started_at) * 1000),
         )
         return response.data[0].embedding
 
@@ -216,11 +234,16 @@ class LawRetrievalService:
             hydrated.append(
                 {
                     "node_id": str(node["id"]),
+                    "identifier": str(node.get("identifier") or ""),
                     "law_short": str(law.get("short_name") or ""),
                     "law_full_name": str(law.get("full_name") or ""),
+                    "law_type": str(law.get("law_type") or "") or None,
+                    "number": str(law.get("number") or "") or None,
+                    "year": int(law["year"]) if law.get("year") is not None else None,
                     "identifier_full": identifier_full or str(node.get("identifier") or ""),
                     "body_snippet": (node.get("body") or "")[:500],
                     "category": str(law.get("category") or ""),
+                    "official_source_url": str(law.get("official_source_url") or "") or None,
                     "legal_status": str(node.get("legal_status") or law.get("legal_status") or ""),
                     "is_currently_citable": is_currently_citable,
                     "effective_from": str(node_effective_from) if node_effective_from else None,
@@ -326,6 +349,7 @@ class LawRetrievalService:
         query: str,
         *,
         context: LawSearchContext | None = None,
+        usage_tenant_id: str | None = None,
     ) -> QueryExpansionOutput:
         fallback = self._build_fallback_query_expansion(query, context)
         parser = getattr(getattr(getattr(self.openai_client, "beta", None), "chat", None), "completions", None)
@@ -339,14 +363,24 @@ class LawRetrievalService:
             f"<context>{json.dumps(context_payload, ensure_ascii=False)}</context>"
         )
         try:
+            started_at = time.perf_counter()
             response = await asyncio.to_thread(
                 parse_fn,
                 model="gpt-4o-mini",
+                max_tokens=OUTPUT_TOKEN_CAPS["law_rerank"],
                 messages=[
                     {"role": "system", "content": QUERY_EXPANSION_SYSTEM},
                     {"role": "user", "content": user_prompt},
                 ],
                 response_format=QueryExpansionOutput,
+            )
+            log_openai_response_sync(
+                admin_supabase,
+                usage_tenant_id,
+                "law_query_expansion",
+                "gpt-4o-mini",
+                response,
+                int((time.perf_counter() - started_at) * 1000),
             )
             parsed = response.choices[0].message.parsed
             if not parsed:
@@ -371,7 +405,13 @@ class LawRetrievalService:
         ]
         return self._dedupe_texts(variants, limit=MAX_QUERY_VARIANTS)
 
-    async def _rerank_candidates(self, query: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    async def _rerank_candidates(
+        self,
+        query: str,
+        candidates: list[dict[str, Any]],
+        *,
+        usage_tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         if not candidates or self.anthropic_client_factory is None:
             return candidates
 
@@ -395,11 +435,20 @@ class LawRetrievalService:
             'Return: {"scores": [{"id": "...", "score": 0.0}]}'
         )
         try:
+            started_at = time.perf_counter()
             response = await client.messages.create(
                 model="claude-3-5-haiku-latest",
-                max_tokens=600,
+                max_tokens=OUTPUT_TOKEN_CAPS["law_rerank"],
                 system=RERANK_SYSTEM,
                 messages=[{"role": "user", "content": user_prompt}],
+            )
+            log_anthropic_response_sync(
+                admin_supabase,
+                usage_tenant_id,
+                "law_rerank",
+                "claude-3-5-haiku-latest",
+                response,
+                int((time.perf_counter() - started_at) * 1000),
             )
         except Exception as exc:
             logger.warning("Law rerank skipped due to Anthropic error: %s", exc)
@@ -479,12 +528,23 @@ class LawRetrievalService:
         filters: LawSearchFilter | None,
         effective_as_of: date,
         limit: int,
+        usage_tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
         variants = self._build_query_variants(query, expansion)
         if not variants:
             return []
 
-        vectors = await asyncio.gather(*(self.embed_query(variant) for variant in variants), return_exceptions=True)
+        vectors = await asyncio.gather(
+            *(
+                self.embed_query(
+                    variant,
+                    usage_tenant_id=usage_tenant_id,
+                    workflow="law_embedding",
+                )
+                for variant in variants
+            ),
+            return_exceptions=True,
+        )
         query_filter = self._build_search_filter(filters)
         query_tasks = []
         for vector in vectors:
@@ -684,7 +744,12 @@ class LawRetrievalService:
             ),
         )
 
-    async def search(self, body: LawSearchRequest) -> LawSearchResponse:
+    async def search(
+        self,
+        body: LawSearchRequest,
+        *,
+        usage_tenant_id: str | None = None,
+    ) -> LawSearchResponse:
         effective_as_of = body.effective_as_of or date.today()
         parsed = parse_citation(body.query)
         intent = await self.classify_intent(body.query, parsed, body.filters)
@@ -695,7 +760,7 @@ class LawRetrievalService:
             if body.filters.law_short.upper() not in known:
                 raise ValueError("Unknown law_short filter value")
 
-        expansion = await self.expand_query(body.query, context=body.context)
+        expansion = await self.expand_query(body.query, context=body.context, usage_tenant_id=usage_tenant_id)
         resolved_query_category = (
             body.filters.category
             if body.filters and body.filters.category
@@ -730,6 +795,7 @@ class LawRetrievalService:
             filters=body.filters,
             effective_as_of=effective_as_of,
             limit=body.limit,
+            usage_tenant_id=usage_tenant_id,
         )
         if not semantic_candidates:
             return self._build_search_response(
@@ -755,6 +821,7 @@ class LawRetrievalService:
         reranked_semantic = await self._rerank_candidates(
             expansion.normalized_query or body.query,
             semantic_candidates[:10],
+            usage_tenant_id=usage_tenant_id,
         )
         if len(semantic_candidates) > 10:
             reranked_semantic.extend(semantic_candidates[10:])
@@ -782,16 +849,27 @@ class LawRetrievalService:
         query: str,
         context: LawSearchContext | None = None,
         limit: int = 5,
+        usage_tenant_id: str | None = None,
     ) -> list[dict[str, Any]]:
         if not query.strip():
             return []
 
-        expansion = await self.expand_query(query, context=context)
+        expansion = await self.expand_query(query, context=context, usage_tenant_id=usage_tenant_id)
         variants = self._build_query_variants(query, expansion)
         if not variants:
             return []
 
-        vectors = await asyncio.gather(*(self.embed_query(variant) for variant in variants), return_exceptions=True)
+        vectors = await asyncio.gather(
+            *(
+                self.embed_query(
+                    variant,
+                    usage_tenant_id=usage_tenant_id,
+                    workflow="playbook_search_embedding",
+                )
+                for variant in variants
+            ),
+            return_exceptions=True,
+        )
         tasks = []
         for vector in vectors:
             if isinstance(vector, BaseException):

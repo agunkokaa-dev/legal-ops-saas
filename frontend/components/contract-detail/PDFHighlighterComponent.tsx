@@ -260,7 +260,7 @@ function HighlightCommentPrompt({ onSave, onCancel }: { onSave: (comment: string
                 autoFocus
                 onChange={(e) => setComment(e.target.value)}
                 placeholder="What exactly is important about this clause?"
-                className="w-full bg-background border border-surface-border rounded p-2 text-xs text-white placeholder-text-muted focus:ring-1 focus:ring-[#d4af37] focus:border-[#d4af37] resize-none h-20 mb-3"
+                className="w-full bg-background border border-surface-border rounded p-2 text-xs text-white placeholder-text-muted focus:ring-1 focus:ring-[#B8B8B8] focus:border-[#B8B8B8] resize-none h-20 mb-3"
             />
             <div className="flex items-center justify-end gap-2">
                 <button
@@ -271,7 +271,7 @@ function HighlightCommentPrompt({ onSave, onCancel }: { onSave: (comment: string
                 </button>
                 <button
                     onClick={() => onSave(comment)}
-                    className="px-3 py-1 text-xs bg-white text-black font-medium rounded hover:bg-gray-200 transition-colors"
+                    className="px-3 py-1 text-xs bg-white text-[#0A0A0A] font-medium rounded hover:bg-gray-200 transition-colors"
                 >
                     Save Note
                 </button>

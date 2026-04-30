@@ -104,11 +104,11 @@ function StatusBadge({ status }: { status: string }) {
     const map: Record<string, string> = {
         signed: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
         completed: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30',
-        notified: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-        viewed: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+        notified: 'bg-[#1C1C1C] text-[#B8B8B8] border-[#3A3A3A]',
+        viewed: 'bg-[#1C1C1C] text-[#B8B8B8] border-[#3A3A3A]',
         pending: 'bg-neutral-500/15 text-neutral-400 border-neutral-500/30',
-        pending_signatures: 'bg-blue-500/15 text-blue-400 border-blue-500/30',
-        partially_signed: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+        pending_signatures: 'bg-[#1C1C1C] text-[#B8B8B8] border-[#3A3A3A]',
+        partially_signed: 'bg-[#1C1C1C] text-[#B8B8B8] border-[#3A3A3A]',
         rejected: 'bg-red-500/15 text-red-400 border-red-500/30',
         cancelled: 'bg-neutral-500/15 text-neutral-400 border-neutral-500/30',
         expired: 'bg-orange-500/15 text-orange-400 border-orange-500/30',
@@ -211,7 +211,7 @@ function SignerRow({
                             href={signer.signing_url}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-[11px] text-[#fbbf24] hover:underline mt-1 inline-block"
+                            className="text-[11px] text-[#B8B8B8] hover:text-[#D4D4D4] hover:underline mt-1 inline-block"
                         >
                             Open signing link →
                         </a>
@@ -359,7 +359,7 @@ export default function SigningCenterClient({
         window.open(`${apiUrl}/api/v1/signing/${contractId}/download?token=${encodeURIComponent(token)}`, '_blank')
     }
 
-    const inputStyle = "w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-[#fbbf24] focus:border-[#fbbf24] transition-colors"
+    const inputStyle = "w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-[#888888] focus:border-[#3A3A3A] transition-colors"
     const labelStyle = "block text-[11px] font-medium text-neutral-400 mb-1"
 
     return (
@@ -412,8 +412,8 @@ export default function SigningCenterClient({
                                     </div>
                                     {session.emeterai_provider_id && (
                                         <div className="text-right">
-                                            <p className="text-[10px] uppercase tracking-wider text-amber-300">e-Meterai</p>
-                                            <p className="text-[11px] text-amber-400">{session.emeterai_provider_id}</p>
+                                            <p className="text-[10px] uppercase tracking-wider text-[#B8B8B8]">e-Meterai</p>
+                                            <p className="text-[11px] text-[#B8B8B8]">{session.emeterai_provider_id}</p>
                                         </div>
                                     )}
                                 </div>
@@ -464,7 +464,7 @@ export default function SigningCenterClient({
                                         </div>
                                         <div className="w-full bg-neutral-800 rounded-full h-1.5">
                                             <div
-                                                className="bg-[#fbbf24] h-1.5 rounded-full transition-all duration-500"
+                                                className="bg-[#B8B8B8] h-1.5 rounded-full transition-all duration-500"
                                                 style={{ width: `${progress.percentage}%` }}
                                             />
                                         </div>
@@ -493,10 +493,10 @@ export default function SigningCenterClient({
 
                                 {/* e-Meterai badge */}
                                 {session.emeterai_provider_id && (
-                                    <div className="px-5 py-3 border-t border-neutral-800 bg-amber-500/5">
+                                    <div className="px-5 py-3 border-t border-neutral-800 bg-[#161616]">
                                         <div className="flex items-center gap-2">
-                                            <span className="material-symbols-outlined text-sm text-amber-400">verified</span>
-                                            <p className="text-[11px] text-amber-300">
+                                            <span className="material-symbols-outlined text-sm text-[#B8B8B8]">verified</span>
+                                            <p className="text-[11px] text-[#D4D4D4]">
                                                 e-Meterai applied · Serial: {session.emeterai_provider_id}
                                             </p>
                                         </div>
@@ -598,7 +598,7 @@ export default function SigningCenterClient({
                                         <div
                                             onClick={() => setRequireEmeterai(v => !v)}
                                             className={`w-10 h-5 rounded-full transition-colors relative cursor-pointer
-                                                ${requireEmeterai ? 'bg-[#fbbf24]' : 'bg-neutral-700'}`}
+                                                ${requireEmeterai ? 'bg-[#B8B8B8]' : 'bg-neutral-700'}`}
                                         >
                                             <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform
                                                 ${requireEmeterai ? 'left-5' : 'left-0.5'}`} />
@@ -617,7 +617,7 @@ export default function SigningCenterClient({
                                             <label className={`${labelStyle} mb-0`}>Signers</label>
                                             <button
                                                 onClick={addSigner}
-                                                className="text-[11px] text-[#fbbf24] hover:underline flex items-center gap-1"
+                                                className="text-[11px] text-[#B8B8B8] hover:text-[#D4D4D4] hover:underline flex items-center gap-1"
                                             >
                                                 <span className="material-symbols-outlined text-sm">add</span>
                                                 Add Signer
@@ -715,7 +715,7 @@ export default function SigningCenterClient({
                                     <button
                                         onClick={handleInitiate}
                                         disabled={isLoading || !checklist?.ready_to_sign}
-                                        className="w-full bg-[#fbbf24] text-black font-bold text-sm rounded-xl py-3 hover:bg-[#f59e0b] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                                        className="w-full bg-[#B8B8B8] text-[#0A0A0A] font-bold text-sm rounded-xl py-3 hover:bg-[#D4D4D4] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                                     >
                                         {isLoading ? (
                                             <>
@@ -810,7 +810,7 @@ export default function SigningCenterClient({
                                 <div className="px-5 py-4 border-t border-neutral-800 flex flex-col gap-2">
                                     <div className="flex items-center justify-between">
                                         <span className="text-[11px] text-neutral-500">e-Meterai</span>
-                                        <span className={`text-[11px] font-medium ${checklist.emeterai_required ? 'text-amber-400' : 'text-neutral-400'}`}>
+                                        <span className={`text-[11px] font-medium ${checklist.emeterai_required ? 'text-[#B8B8B8]' : 'text-neutral-400'}`}>
                                             {checklist.emeterai_required ? 'Required' : 'Not required'}
                                         </span>
                                     </div>
@@ -870,7 +870,7 @@ export default function SigningCenterClient({
                         {checklist && !checklist.ready_to_sign && (
                             <Link
                                 href={`/dashboard/contracts/${contractId}/war-room`}
-                                className="text-xs text-[#fbbf24] hover:underline text-center"
+                                className="text-xs text-[#B8B8B8] hover:text-[#D4D4D4] hover:underline text-center"
                             >
                                 Resolve issues in War Room →
                             </Link>

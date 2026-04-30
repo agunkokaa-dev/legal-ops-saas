@@ -5,10 +5,12 @@ Handles:
   - POST /api/playbook/vectorize → Vectorize a playbook rule into Qdrant
 """
 import asyncio
+import time
 from fastapi import APIRouter, HTTPException, Depends, Request
 from supabase import Client
 
-from app.config import openai_client
+from app.ai_usage import log_openai_response_sync
+from app.config import admin_supabase, openai_client
 from app.rate_limiter import limiter
 from app.dependencies import TenantQdrantClient, get_tenant_qdrant, get_tenant_supabase, verify_clerk_token
 from app.schemas import PlaybookRuleCreateRequest, PlaybookVectorizeRequest
@@ -17,8 +19,18 @@ from qdrant_client.http.models import PointStruct
 router = APIRouter()
 
 
-async def async_embed(text: str) -> list[float]:
+async def async_embed(text: str, *, tenant_id: str | None = None, rule_id: str | None = None) -> list[float]:
+    started_at = time.perf_counter()
     response = await asyncio.to_thread(openai_client.embeddings.create, input=text, model="text-embedding-3-small")
+    log_openai_response_sync(
+        admin_supabase,
+        tenant_id,
+        "playbook_embedding",
+        "text-embedding-3-small",
+        response,
+        int((time.perf_counter() - started_at) * 1000),
+        metadata={"rule_id": rule_id} if rule_id else None,
+    )
     return response.data[0].embedding
 
 
@@ -42,7 +54,7 @@ async def _vectorize_rule(
     redline: str | None,
     risk_severity: str | None,
 ):
-    vector = await async_embed(rule_text)
+    vector = await async_embed(rule_text, tenant_id=tenant_id, rule_id=rule_id)
     await async_qdrant_upsert(
         qdrant_client=qdrant_client,
         collection="company_rules",

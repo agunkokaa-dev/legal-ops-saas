@@ -38,12 +38,12 @@ export function LuxuryThinkingStepper({ isLoading, steps }: LuxuryThinkingSteppe
                     <div key={index} className={`flex items-start gap-4 relative ${!isLast ? 'before:absolute before:left-[9px] before:top-[24px] before:-bottom-[8px] before:w-[1px] before:bg-white/10' : ''}`}>
                         <div className="mt-1 flex items-center justify-center relative z-10 bg-inherit shrink-0 rounded-full w-5 h-5">
                             {isCompleted && (
-                                <svg className="w-3 h-3 text-[#D4AF37]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                                <svg className="w-3 h-3 text-[#B8B8B8]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
                             )}
                             {isActive && (
                                 <>
-                                    <div className="absolute inset-0 rounded-full bg-[#D4AF37]/20 animate-ping"></div>
-                                    <div className="w-2 h-2 rounded-full bg-[#D4AF37] shadow-[0_0_8px_rgba(212,175,55,0.8)]"></div>
+                                    <div className="absolute inset-0 rounded-full bg-[#B8B8B8]/20 animate-ping"></div>
+                                    <div className="w-2 h-2 rounded-full bg-[#B8B8B8] shadow-[0_0_8px_rgba(184, 184, 184,0.8)]"></div>
                                 </>
                             )}
                             {isPending && (

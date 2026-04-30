@@ -120,3 +120,32 @@ openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # --- Anthropic ---
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+
+# --- LLM Cost Controls ---
+# Output tokens are materially more expensive than input tokens. Keep these
+# caps explicit by workflow so agent call sites cannot accidentally emit
+# unbounded responses.
+OUTPUT_TOKEN_CAPS = {
+    "ingestion": 500,
+    "compliance_first_pass": 1200,
+    "compliance_recheck": 1500,
+    "risk_first_pass": 1000,
+    "risk_recheck": 1500,
+    "drafting": 2000,
+    "negotiation": 2000,
+    "obligation_miner": 1200,
+    "clause_classifier": 1000,
+    "smart_diff_triage": 1500,
+    "smart_diff_recheck": 1500,
+    "counsel_default": 900,
+    "clause_assistant_simple": 700,
+    "clause_assistant_synthesis": 1500,
+    "debate_turn": 1800,
+    "debate_judge": 2500,
+    "law_rerank": 1200,
+    "bilingual": 1500,
+    "task_assistant": 900,
+    "draft_generate": 2000,
+    "draft_apply_suggestion": 2500,
+    "presign_checklist": 900,
+}

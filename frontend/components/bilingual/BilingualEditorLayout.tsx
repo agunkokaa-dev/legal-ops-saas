@@ -353,7 +353,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
             PENDING REVIEW
           </div>
           
-          <div className="text-zinc-400 border border-zinc-800 rounded px-2 py-0.5 text-xs hover:border-[#D4AF37]/30 hover:text-white cursor-pointer transition flex items-center gap-1">
+          <div className="text-zinc-400 border border-zinc-800 rounded px-2 py-0.5 text-xs hover:border-[#B8B8B8]/30 hover:text-white cursor-pointer transition flex items-center gap-1">
             ID / EN ▾
           </div>
         </div>
@@ -364,7 +364,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
           <button
             onClick={handleValidate}
             disabled={isValidating || clauses.length === 0}
-            className="text-zinc-400 border border-zinc-700/60 text-xs px-4 py-1.5 rounded-md hover:border-[#D4AF37]/40 hover:text-white transition disabled:opacity-40"
+            className="text-zinc-400 border border-zinc-700/60 text-xs px-4 py-1.5 rounded-md hover:border-[#B8B8B8]/40 hover:text-white transition disabled:opacity-40"
           >
             {isValidating ? "Validating..." : "Validate Sync"}
           </button>
@@ -373,7 +373,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
           <button
             onClick={handleExportPDF}
             disabled={isExporting || clauses.length === 0}
-            className="text-zinc-400 border border-zinc-700/60 text-xs px-4 py-1.5 rounded-md hover:border-[#D4AF37]/40 hover:text-white transition disabled:opacity-40"
+            className="text-zinc-400 border border-zinc-700/60 text-xs px-4 py-1.5 rounded-md hover:border-[#B8B8B8]/40 hover:text-white transition disabled:opacity-40"
           >
             Save Draft
           </button>
@@ -385,7 +385,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
           <button
             onClick={handleFinalize}
             disabled={isFinalizing || clauses.length === 0}
-            className="bg-[#D4AF37] text-black text-xs font-bold px-4 py-1.5 rounded-md hover:bg-[#D4AF37]/90 transition disabled:opacity-40 disabled:hover:bg-[#D4AF37]"
+            className="bg-[#B8B8B8] text-[#0A0A0A] text-xs font-bold px-4 py-1.5 rounded-md hover:bg-[#B8B8B8]/90 transition disabled:opacity-40 disabled:hover:bg-[#D4D4D4]"
           >
             {isFinalizing ? "Generating..." : "Generate Final"}
           </button>
@@ -485,17 +485,17 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
                 
                 {/* Indonesian Pane (Primary) */}
                 <div className="flex-1 flex flex-col space-y-2">
-                  <div className="text-sm font-medium text-[#d4af37]">Bahasa Indonesia — Versi Primer (Mengikat)</div>
+                  <div className="text-sm font-medium text-[#B8B8B8]">Bahasa Indonesia — Versi Primer (Mengikat)</div>
                   <textarea
-                    className="w-full h-64 bg-gray-900 border border-[#d4af37]/40 rounded-md p-4 text-gray-200 placeholder-gray-600 focus:outline-none focus:border-[#d4af37] focus:ring-1 focus:ring-[#d4af37]/50 transition-all resize-y"
+                    className="w-full h-64 bg-gray-900 border border-[#B8B8B8]/40 rounded-md p-4 text-gray-200 placeholder-gray-600 focus:outline-none focus:border-[#B8B8B8] focus:ring-1 focus:ring-[#B8B8B8]/50 transition-all resize-y"
                     value={clause.id_text}
                     onChange={(e) => handleTextChange(clause.id, 'id', e.target.value)}
                     placeholder="Masukkan redaksi pasal dalam Bahasa Indonesia..."
                   />
                   
                   {syncSuggestion && syncSuggestion.clauseId === clause.id && syncSuggestion.targetLang === 'id' && (
-                    <div className="bg-[#111111] border border-blue-500/30 rounded-md p-4 mt-4 shadow-xl">
-                      <div className="text-sm font-semibold text-blue-400 mb-2">AI Suggested Translation</div>
+                    <div className="bg-[#111111] border border-[#3A3A3A] rounded-md p-4 mt-4 shadow-xl">
+                      <div className="text-sm font-semibold text-[#B8B8B8] mb-2">AI Suggested Translation</div>
                       <div className="text-sm text-gray-300 whitespace-pre-wrap bg-gray-900 p-3 rounded mb-3 border border-gray-800">
                         {syncSuggestion.suggestion.suggested_translation}
                       </div>
@@ -503,7 +503,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
                         {syncSuggestion.suggestion.legal_notes}
                       </div>
                       <div className="flex space-x-3">
-                        <button onClick={acceptSyncSuggestion} className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded shadow-sm transition">Accept Translation</button>
+                        <button onClick={acceptSyncSuggestion} className="px-4 py-1.5 bg-[#B8B8B8] hover:bg-[#D4D4D4] text-[#0A0A0A] text-sm rounded shadow-sm transition">Accept Translation</button>
                         <button onClick={dismissSyncSuggestion} className="px-4 py-1.5 bg-transparent border border-gray-600 hover:bg-gray-800 text-gray-300 text-sm rounded transition">Dismiss</button>
                       </div>
                     </div>
@@ -521,8 +521,8 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
                   />
 
                   {syncSuggestion && syncSuggestion.clauseId === clause.id && syncSuggestion.targetLang === 'en' && (
-                    <div className="bg-[#111111] border border-blue-500/30 rounded-md p-4 mt-4 shadow-xl">
-                      <div className="text-sm font-semibold text-blue-400 mb-2">AI Suggested Translation</div>
+                    <div className="bg-[#111111] border border-[#3A3A3A] rounded-md p-4 mt-4 shadow-xl">
+                      <div className="text-sm font-semibold text-[#B8B8B8] mb-2">AI Suggested Translation</div>
                       <div className="text-sm text-gray-300 whitespace-pre-wrap bg-gray-900 p-3 rounded mb-3 border border-gray-800">
                         {syncSuggestion.suggestion.suggested_translation}
                       </div>
@@ -530,7 +530,7 @@ export default function BilingualEditorLayout({ contractId, initialClauses }: Bi
                         {syncSuggestion.suggestion.legal_notes}
                       </div>
                       <div className="flex space-x-3">
-                        <button onClick={acceptSyncSuggestion} className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm rounded shadow-sm transition">Accept Translation</button>
+                        <button onClick={acceptSyncSuggestion} className="px-4 py-1.5 bg-[#B8B8B8] hover:bg-[#D4D4D4] text-[#0A0A0A] text-sm rounded shadow-sm transition">Accept Translation</button>
                         <button onClick={dismissSyncSuggestion} className="px-4 py-1.5 bg-transparent border border-gray-600 hover:bg-gray-800 text-gray-300 text-sm rounded transition">Dismiss</button>
                       </div>
                     </div>

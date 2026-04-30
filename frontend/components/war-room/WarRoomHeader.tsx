@@ -123,7 +123,7 @@ export function WarRoomHeader({
                                    border border-zinc-700/60 rounded-lg text-sm
                                    text-zinc-300 hover:bg-zinc-700/60 transition-colors"
                     >
-                        <BarChart2 className="w-3.5 h-3.5 text-amber-400" />
+                        <BarChart2 className="w-3.5 h-3.5 text-zinc-400" />
                         Analysis Mode
                         <ChevronDown className={`w-3 h-3 text-zinc-500 transition-transform ${analysisMenuOpen ? 'rotate-180' : ''}`} />
                     </button>
@@ -138,7 +138,7 @@ export function WarRoomHeader({
                                 }}
                                 className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-zinc-300 transition-colors hover:bg-zinc-800/60 hover:text-white"
                             >
-                                <FilePenLine className="h-4 w-4 text-amber-300" />
+                                <FilePenLine className="h-4 w-4 text-[#B8B8B8]" />
                                 <span>Edit Mode</span>
                                 <span className="ml-auto text-[10px] uppercase tracking-wider text-zinc-500">Smart Composer</span>
                             </button>
@@ -151,13 +151,13 @@ export function WarRoomHeader({
                     onClick={onFinalizeClick}
                     className={`inline-flex items-center gap-2 rounded-lg px-4 py-1.5 text-sm font-semibold transition-all ${allResolved
                         ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20 hover:bg-emerald-500'
-                        : 'bg-amber-500 text-black shadow-lg shadow-amber-500/20 hover:bg-amber-400'
+                        : 'bg-[#B8B8B8] text-[#0A0A0A] shadow-lg shadow-[#888888]/20 hover:bg-[#D4D4D4]'
                     }`}
                 >
-                    <span className={`material-symbols-outlined text-sm ${allResolved ? 'text-white' : 'text-black'}`}>task_alt</span>
+                    <span className={`material-symbols-outlined text-sm ${allResolved ? 'text-white' : 'text-[#0A0A0A]'}`}>task_alt</span>
                     Finalize Round
                     {pendingIssueCount > 0 && (
-                        <span className={`rounded-full px-1.5 py-0.5 text-xs ${allResolved ? 'bg-black/20 text-white' : 'bg-black/20 text-black'}`}>
+                        <span className={`rounded-full px-1.5 py-0.5 text-xs ${allResolved ? 'bg-black/20 text-white' : 'bg-zinc-900/15 text-[#0A0A0A]'}`}>
                             {pendingIssueCount}
                         </span>
                     )}

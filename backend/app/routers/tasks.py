@@ -6,6 +6,7 @@ Handles:
   - POST /api/v1/ai/task-assistant     → Agentic AI assistant with tool calling
 """
 import asyncio
+import time
 import traceback
 from datetime import datetime, timedelta
 from typing import Any
@@ -15,7 +16,8 @@ from supabase import Client
 from qdrant_client.http.models import Filter, FieldCondition, MatchAny
 import json
 
-from app.config import openai_client, qdrant, COLLECTION_NAME
+from app.ai_usage import log_openai_response_sync
+from app.config import OUTPUT_TOKEN_CAPS, admin_supabase, openai_client, qdrant, COLLECTION_NAME
 from app.rate_limiter import limiter
 from app.dependencies import (
     TenantQdrantClient,
@@ -185,16 +187,36 @@ GET_HIGH_RISK_CONTRACTS_TOOL_DEF = {
 # Tools bound ONLY for dashboard / matters source pages
 DASHBOARD_TOOLS = [GET_TASKS_TOOL_DEF, GET_HIGH_RISK_CONTRACTS_TOOL_DEF]
 
-async def async_embed(text: str) -> list[float]:
+async def async_embed(text: str, *, tenant_id: str | None = None) -> list[float]:
+    started_at = time.perf_counter()
     response = await asyncio.to_thread(openai_client.embeddings.create, input=text, model="text-embedding-3-small")
+    log_openai_response_sync(
+        admin_supabase,
+        tenant_id,
+        "task_assistant_embedding",
+        "text-embedding-3-small",
+        response,
+        int((time.perf_counter() - started_at) * 1000),
+    )
     return response.data[0].embedding
 
-async def async_chat_completion(messages: list, tools=None) -> any:
-    kwargs = {"model": "gpt-4o-mini", "messages": messages}
+async def async_chat_completion(messages: list, tools=None, *, tenant_id: str | None = None) -> any:
+    started_at = time.perf_counter()
+    kwargs = {"model": "gpt-4o-mini", "messages": messages, "max_tokens": OUTPUT_TOKEN_CAPS["task_assistant"]}
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
-    return await asyncio.to_thread(openai_client.chat.completions.create, **kwargs)
+    response = await asyncio.to_thread(openai_client.chat.completions.create, **kwargs)
+    log_openai_response_sync(
+        admin_supabase,
+        tenant_id,
+        "task_assistant",
+        "gpt-4o-mini",
+        response,
+        int((time.perf_counter() - started_at) * 1000),
+        metadata={"tool_enabled": bool(tools)},
+    )
+    return response
 
 async def async_qdrant_search(qdrant_client: Any, collection: str, query_vector: list, limit: int, query_filter=None) -> list:
     """Async wrapper for qdrant-client v1.17+ query_points API."""
@@ -358,7 +380,7 @@ async def ask_task_assistant(
                 pass
 
         # NON-BLOCKING Execution
-        question_vector = await async_embed(req.message)
+        question_vector = await async_embed(req.message, tenant_id=tenant_id)
 
         combined_context = ""
         if source != "document":
@@ -437,7 +459,7 @@ Context:
         
         # Max 5 iterations to prevent infinite loops
         for _ in range(5):
-            current_response = await async_chat_completion(messages, tools=active_tools)
+            current_response = await async_chat_completion(messages, tools=active_tools, tenant_id=tenant_id)
             response_message = current_response.choices[0].message
             
             if response_message.tool_calls:

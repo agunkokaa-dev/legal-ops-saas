@@ -65,7 +65,7 @@ function severityTone(severity: string) {
         case 'warning':
             return 'text-amber-300 bg-amber-500/10 border-amber-500/30'
         default:
-            return 'text-sky-300 bg-sky-500/10 border-sky-500/30'
+            return 'text-[#B8B8B8] bg-[#1C1C1C] border-[#3A3A3A]'
     }
 }
 
@@ -82,7 +82,7 @@ function severityEmoji(severity: string) {
 
 function confidenceBarTone(confidence: number) {
     if (confidence >= 0.8) return 'bg-emerald-400'
-    if (confidence >= 0.6) return 'bg-amber-400'
+    if (confidence >= 0.6) return 'bg-[#B8B8B8]'
     return 'bg-rose-400'
 }
 
@@ -112,16 +112,16 @@ function perspectiveMeta(perspective: DebatePerspective) {
                 title: 'Client Advocate',
                 icon: '💼',
                 model: 'Sonnet',
-                border: 'border-blue-500',
-                badge: 'bg-blue-500/10 text-blue-300 border-blue-500/30',
+                border: 'border-[#3A3A3A]',
+                badge: 'bg-[#1C1C1C] text-[#D4D4D4] border-[#3A3A3A]',
             }
         case 'counterparty_advocate':
             return {
                 title: 'Counterparty Advocate',
                 icon: '🎭',
                 model: 'Sonnet',
-                border: 'border-amber-500',
-                badge: 'bg-amber-500/10 text-amber-300 border-amber-500/30',
+                border: 'border-[#3A3A3A]',
+                badge: 'bg-[#1C1C1C] text-[#B8B8B8] border-[#3A3A3A]',
             }
         default:
             return {
@@ -217,7 +217,7 @@ export default function DebatePanel({
                             </span>
                         )}
                         {verdict?.severity_changed && (
-                            <span className="rounded-full border border-[#D4AF37]/30 bg-[#D4AF37]/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-[#f2ca50]">
+                            <span className="rounded-full border border-[#3A3A3A] bg-[#1C1C1C] px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-[#B8B8B8]">
                                 Changed by Debate
                             </span>
                         )}
@@ -273,7 +273,7 @@ export default function DebatePanel({
                                 <span>→</span>
                                 <span>Final: {severityEmoji(finalSeverity)} {finalSeverity}</span>
                                 {verdict.severity_changed && (
-                                    <span className="rounded-full border border-[#D4AF37]/30 bg-[#D4AF37]/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-[#f2ca50]">
+                                    <span className="rounded-full border border-[#3A3A3A] bg-[#1C1C1C] px-2 py-0.5 text-[10px] uppercase tracking-[0.2em] text-[#B8B8B8]">
                                         Changed by Debate
                                     </span>
                                 )}
@@ -284,9 +284,9 @@ export default function DebatePanel({
                                 <p className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-zinc-300">{safeAdjustedImpactAnalysis}</p>
                             </div>
                             {safeAdjustedBatna && (
-                                <div className="mt-3 rounded-xl border border-[#D4AF37]/20 bg-[#D4AF37]/5 p-3">
-                                    <p className="text-[10px] uppercase tracking-[0.22em] text-[#D4AF37]">Adjusted BATNA</p>
-                                    <p className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-[#f2ca50]/90">{safeAdjustedBatna}</p>
+                                <div className="mt-3 rounded-xl border border-[#3A3A3A] bg-[#161616] p-3">
+                                    <p className="text-[10px] uppercase tracking-[0.22em] text-[#B8B8B8]">Adjusted BATNA</p>
+                                    <p className="mt-2 whitespace-pre-wrap text-[12px] leading-5 text-[#D4D4D4]/90">{safeAdjustedBatna}</p>
                                 </div>
                             )}
                             <div className="mt-4">

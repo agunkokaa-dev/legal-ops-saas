@@ -182,12 +182,12 @@ export default function HeroOverlay({
                                     initial={{ opacity: 0, y: 10 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ delay: 0.55 }}
-                                    className="mb-8 p-3.5 rounded-xl bg-[#d4af37]/5 border border-[#d4af37]/15 flex items-center gap-3"
+                                    className="mb-8 p-3.5 rounded-xl bg-[#B8B8B8]/5 border border-[#B8B8B8]/15 flex items-center gap-3"
                                 >
-                                    <span className="material-symbols-outlined text-[#d4af37] text-lg">payments</span>
+                                    <span className="material-symbols-outlined text-[#B8B8B8] text-lg">payments</span>
                                     <div>
-                                        <p className="text-[9px] text-[#d4af37]/60 uppercase tracking-widest font-bold">Potential Exposure</p>
-                                        <p className="text-[#d4af37] text-sm font-bold">{valueInsight.value}</p>
+                                        <p className="text-[9px] text-[#B8B8B8]/60 uppercase tracking-widest font-bold">Potential Exposure</p>
+                                        <p className="text-[#B8B8B8] text-sm font-bold">{valueInsight.value}</p>
                                     </div>
                                 </motion.div>
                             )}
@@ -202,7 +202,7 @@ export default function HeroOverlay({
                                 {/* Primary: View Details */}
                                 <button
                                     onClick={handleDismiss}
-                                    className="w-full py-3.5 bg-white text-black text-xs font-bold uppercase tracking-[0.15em] rounded-xl hover:bg-zinc-100 transition-all flex items-center justify-center gap-2"
+                                    className="w-full py-3.5 bg-white text-[#0A0A0A] text-xs font-bold uppercase tracking-[0.15em] rounded-xl hover:bg-zinc-100 transition-all flex items-center justify-center gap-2"
                                 >
                                     <span className="material-symbols-outlined text-sm">search</span>
                                     View Details
@@ -213,7 +213,7 @@ export default function HeroOverlay({
                                     {criticalFindings.length > 0 && (
                                         <button
                                             onClick={handleWizard}
-                                            className="flex-1 py-3 bg-gradient-to-r from-[#d4af37] to-[#bda036] text-black text-xs font-bold uppercase tracking-[0.12em] rounded-xl hover:shadow-[0_0_20px_rgba(212,175,55,0.3)] transition-all flex items-center justify-center gap-2"
+                                            className="flex-1 py-3 bg-gradient-to-r from-[#B8B8B8] to-[#B8B8B8] text-[#0A0A0A] text-xs font-bold uppercase tracking-[0.12em] rounded-xl hover:shadow-[0_0_20px_rgba(184, 184, 184,0.3)] transition-all flex items-center justify-center gap-2"
                                         >
                                             <span className="material-symbols-outlined text-sm">auto_fix_high</span>
                                             Review & Apply Fixes

@@ -60,12 +60,12 @@ export default function DocumentHeader({
             </div>
 
             {/* ENHANCEMENT 3: VIEW MODE TOGGLE */}
-            <div className="inline-flex bg-[#141414] border border-zinc-800/80 rounded-lg p-1.5 shadow-inner mx-auto mb-4">
+            <div className="inline-flex bg-transparent border border-zinc-500/60 rounded-lg p-1.5 mx-auto mb-4">
                 <button
                     onClick={() => onViewModeChange('v1')}
                     className={`px-6 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${viewMode === 'v1'
-                            ? 'bg-zinc-800 text-zinc-200 shadow-sm'
-                            : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
+                            ? 'bg-transparent border border-zinc-500/60 text-zinc-200'
+                            : 'bg-transparent border border-zinc-500/60 text-zinc-400 hover:text-zinc-300'
                         }`}
                 >
                     V1 Original
@@ -73,8 +73,8 @@ export default function DocumentHeader({
                 <button
                     onClick={() => onViewModeChange('v2')}
                     className={`px-6 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${viewMode === 'v2'
-                            ? 'bg-[#1a1410] text-[#D4AF37] border border-[#D4AF37]/20 shadow-sm'
-                            : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
+                            ? 'bg-transparent border border-zinc-500/60 text-zinc-200'
+                            : 'bg-transparent border border-zinc-500/60 text-zinc-400 hover:text-zinc-300'
                         }`}
                 >
                     V2 Counterparty
@@ -82,8 +82,8 @@ export default function DocumentHeader({
                 <button
                     onClick={() => onViewModeChange('v3')}
                     className={`px-6 py-2 rounded-md text-[10px] font-bold uppercase tracking-widest transition-all ${viewMode === 'v3'
-                            ? 'bg-emerald-950/40 text-emerald-400 border border-emerald-900/50 shadow-sm'
-                            : 'text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50'
+                            ? 'bg-transparent border border-zinc-500/60 text-zinc-200'
+                            : 'bg-transparent border border-zinc-500/60 text-zinc-400 hover:text-zinc-300'
                         }`}
                 >
                     V3 Draft

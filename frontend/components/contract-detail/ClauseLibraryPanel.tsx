@@ -105,18 +105,18 @@ export default function ClauseLibraryPanel({ onInsert }: { onInsert: (text: stri
                 {/* Area B: Categories */}
                 <div className="flex flex-col gap-4">
                     <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-bold text-[#D4AF37] tracking-wider uppercase font-['Inter']">APPROVED CLAUSES</span>
+                        <span className="text-[11px] font-bold text-[#B8B8B8] tracking-wider uppercase font-['Inter']">APPROVED CLAUSES</span>
                         <span className="text-[10px] text-zinc-500 font-['Inter']">{clauses.length} TOTAL</span>
                     </div>
 
                     {isLoading ? (
                         <div className="flex justify-center py-10">
-                            <div className="w-5 h-5 border-2 border-[#D4AF37] border-t-transparent rounded-full animate-spin"></div>
+                            <div className="w-5 h-5 border-2 border-[#B8B8B8] border-t-transparent rounded-full animate-spin"></div>
                         </div>
                     ) : clauses.length === 0 ? (
                         <div className="flex flex-col items-center justify-center mt-8 p-6 text-center border border-dashed border-white/10 rounded-xl bg-white/[0.02]">
-                            <div className="w-10 h-10 rounded-full bg-[#d4af37]/10 flex items-center justify-center mb-4">
-                                <span className="material-symbols-outlined text-[#d4af37] text-xl">menu_book</span>
+                            <div className="w-10 h-10 rounded-full bg-[#B8B8B8]/10 flex items-center justify-center mb-4">
+                                <span className="material-symbols-outlined text-[#B8B8B8] text-xl">menu_book</span>
                             </div>
                             <h4 className="text-zinc-300 text-[11px] font-bold uppercase tracking-widest mb-2">
                                 Library Empty
@@ -126,7 +126,7 @@ export default function ClauseLibraryPanel({ onInsert }: { onInsert: (text: stri
                             </p>
                             <Link 
                                 href="/dashboard/settings/clause-library" 
-                                className="text-[10px] text-[#d4af37] border border-[#d4af37]/30 hover:border-[#d4af37] hover:bg-[#d4af37]/10 px-5 py-2 rounded tracking-wider uppercase font-semibold transition-all"
+                                className="text-[10px] text-[#B8B8B8] border border-[#B8B8B8]/30 hover:border-[#B8B8B8] hover:bg-[#B8B8B8]/10 px-5 py-2 rounded tracking-wider uppercase font-semibold transition-all"
                             >
                                 Configure Settings
                             </Link>
@@ -151,14 +151,14 @@ export default function ClauseLibraryPanel({ onInsert }: { onInsert: (text: stri
                                 {openCategories[categoryName] && (
                                     <div className="p-2 flex flex-col gap-3">
                                         {items.map(clause => (
-                                            <div key={clause.id} className="bg-[#0a0a0a] border border-zinc-800 rounded-lg p-3 hover:border-[#D4AF37]/40 transition-all flex items-center justify-between group">
+                                            <div key={clause.id} className="bg-[#0a0a0a] border border-zinc-800 rounded-lg p-3 hover:border-[#B8B8B8]/40 transition-all flex items-center justify-between group">
                                                 <div className="flex flex-col">
                                                     <div className="flex items-center gap-2">
                                                         <span className="text-sm text-white font-medium font-['Inter']">
                                                             {clause.title}
                                                         </span>
                                                         {clause.clause_type !== 'Standard' && (
-                                                            <span className="text-[10px] text-[#D4AF37] bg-[#D4AF37]/15 rounded-md px-1.5 py-0.5 border border-[#D4AF37]/30 font-medium font-['Inter']">
+                                                            <span className="text-[10px] text-[#B8B8B8] bg-[#B8B8B8]/15 rounded-md px-1.5 py-0.5 border border-[#B8B8B8]/30 font-medium font-['Inter']">
                                                                 Fallback
                                                             </span>
                                                         )}
@@ -169,7 +169,7 @@ export default function ClauseLibraryPanel({ onInsert }: { onInsert: (text: stri
                                                 </div>
                                                 <button 
                                                     onClick={() => onInsert(clause.content)}
-                                                    className="text-[#D4AF37] bg-[#D4AF37]/10 rounded-full w-7 h-7 flex items-center justify-center border border-[#D4AF37]/30 hover:bg-[#D4AF37]/20 transition-colors flex-shrink-0 ml-3"
+                                                    className="text-[#B8B8B8] bg-[#B8B8B8]/10 rounded-full w-7 h-7 flex items-center justify-center border border-[#B8B8B8]/30 hover:bg-[#B8B8B8]/20 transition-colors flex-shrink-0 ml-3"
                                                     title="Insert Clause"
                                                 >
                                                     <span className="material-symbols-outlined text-base">add</span>
@@ -187,11 +187,11 @@ export default function ClauseLibraryPanel({ onInsert }: { onInsert: (text: stri
             {/* Bottom Metadata */}
             <div className="mt-auto p-5 border-t border-zinc-800/60 bg-[#0c0c0c]">
                 <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 rounded-full bg-[#d4af37]/10 flex items-center justify-center border border-[#d4af37]/20">
-                        <span className="material-symbols-outlined text-[#d4af37] text-sm">auto_awesome</span>
+                    <div className="w-8 h-8 rounded-full bg-[#B8B8B8]/10 flex items-center justify-center border border-[#B8B8B8]/20">
+                        <span className="material-symbols-outlined text-[#B8B8B8] text-sm">auto_awesome</span>
                     </div>
                     <div className="flex flex-col">
-                        <span className="text-[10px] text-[#d4af37]/80 font-bold uppercase tracking-widest font-['Inter']">Library Pulse</span>
+                        <span className="text-[10px] text-[#B8B8B8]/80 font-bold uppercase tracking-widest font-['Inter']">Library Pulse</span>
                         <span className="text-[11px] text-zinc-500 italic font-['Inter']">Library vectors mapped asynchronously.</span>
                     </div>
                 </div>

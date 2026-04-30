@@ -143,11 +143,11 @@ export default function IntakePortal() {
       {/* TopNavBar - Anchored Shared Component */}
       <nav className="bg-[#0a0a0a] dark:bg-[#0a0a0a] sticky full-width top-0 z-50">
         <div className="flex justify-between items-center w-full px-8 py-6 max-w-[800px] mx-auto">
-          <div className="text-lg font-light tracking-[0.2em] text-[#D4AF37] uppercase">
+          <div className="text-lg font-light tracking-[0.2em] text-[#B8B8B8] uppercase">
             CLAUSE | Business Portal
           </div>
           <div className="flex items-center gap-6">
-            <button className="text-zinc-400 hover:text-[#D4AF37] transition-colors duration-300 scale-95 ease-in-out">
+            <button className="text-zinc-400 hover:text-[#B8B8B8] transition-colors duration-300 scale-95 ease-in-out">
               <span className="material-symbols-outlined" data-icon="notifications">notifications</span>
             </button>
             <div className="w-8 h-8 rounded-full overflow-hidden border border-zinc-700/30">
@@ -175,7 +175,7 @@ export default function IntakePortal() {
         {/* Section 2: Intake Form Card */}
         <section className="bg-[#1C1917] border border-zinc-800 rounded-2xl p-8 mb-16 shadow-2xl relative overflow-hidden">
           {/* Subtle architectural glow */}
-          <div className="absolute -top-24 -right-24 w-64 h-64 bg-[#f2ca50]/5 blur-[100px] rounded-full"></div>
+          <div className="absolute -top-24 -right-24 w-64 h-64 bg-[#B8B8B8]/5 blur-[100px] rounded-full"></div>
           
           <form onSubmit={handleSubmit} className="space-y-8 relative z-10">
             
@@ -191,7 +191,7 @@ export default function IntakePortal() {
               <select 
                 value={selectedMatterId}
                 onChange={(e) => setSelectedMatterId(e.target.value)}
-                className="bg-[#292524] border border-zinc-700/50 rounded-lg p-3 text-zinc-200 text-sm focus:ring-1 focus:ring-[#f2ca50]/30 focus:border-[#f2ca50]/30 outline-none transition-all appearance-none cursor-pointer"
+                className="bg-[#292524] border border-zinc-700/50 rounded-lg p-3 text-zinc-200 text-sm focus:ring-1 focus:ring-[#B8B8B8]/30 focus:border-[#B8B8B8]/30 outline-none transition-all appearance-none cursor-pointer"
               >
                 <option value="">+ Create New Project / Matter</option>
                 {matters.map((m) => (
@@ -210,7 +210,7 @@ export default function IntakePortal() {
                 <select 
                   value={requestType}
                   onChange={(e) => setRequestType(e.target.value)}
-                  className="bg-[#292524] border border-zinc-700/50 rounded-lg p-3 text-zinc-200 text-sm focus:ring-1 focus:ring-[#f2ca50]/30 focus:border-[#f2ca50]/30 outline-none transition-all appearance-none cursor-pointer"
+                  className="bg-[#292524] border border-zinc-700/50 rounded-lg p-3 text-zinc-200 text-sm focus:ring-1 focus:ring-[#B8B8B8]/30 focus:border-[#B8B8B8]/30 outline-none transition-all appearance-none cursor-pointer"
                 >
                   <option value="NDA">NDA</option>
                   <option value="Master Service Agreement">Master Service Agreement</option>
@@ -226,7 +226,7 @@ export default function IntakePortal() {
                   value={counterparty}
                   onChange={(e) => setCounterparty(e.target.value)}
                   required
-                  className="bg-[#292524] border border-zinc-700/50 rounded-lg p-3 text-zinc-200 text-sm placeholder:text-zinc-600 focus:ring-1 focus:ring-[#f2ca50]/30 focus:border-[#f2ca50]/30 outline-none transition-all" 
+                  className="bg-[#292524] border border-zinc-700/50 rounded-lg p-3 text-zinc-200 text-sm placeholder:text-zinc-600 focus:ring-1 focus:ring-[#B8B8B8]/30 focus:border-[#B8B8B8]/30 outline-none transition-all"
                   placeholder="E.g., PT Teknologi Nusantara" 
                   type="text"
                 />
@@ -272,7 +272,7 @@ export default function IntakePortal() {
                 required
                 value={businessContext}
                 onChange={(e) => setBusinessContext(e.target.value)}
-                className="bg-[#292524] border border-zinc-700/50 rounded-lg p-3 text-zinc-200 text-sm placeholder:text-zinc-600 focus:ring-1 focus:ring-[#f2ca50]/30 focus:border-[#f2ca50]/30 outline-none transition-all resize-none" 
+                className="bg-[#292524] border border-zinc-700/50 rounded-lg p-3 text-zinc-200 text-sm placeholder:text-zinc-600 focus:ring-1 focus:ring-[#B8B8B8]/30 focus:border-[#B8B8B8]/30 outline-none transition-all resize-none"
                 placeholder="Briefly describe the commercial objective and any deal-specific constraints..." 
                 rows={4}
               ></textarea>
@@ -282,7 +282,7 @@ export default function IntakePortal() {
             <button 
               disabled={isLoading}
               type="submit" 
-              className={`w-full bg-[#D4AF37]/10 border border-[#D4AF37]/30 text-[#D4AF37] hover:bg-[#D4AF37]/20 py-4 rounded-xl font-medium tracking-widest uppercase text-xs flex items-center justify-center gap-2 transition-all duration-500 group ${isLoading ? 'opacity-50 cursor-not-allowed' : 'hover:gap-4'}`}
+              className={`w-full bg-[#B8B8B8]/10 border border-[#B8B8B8]/30 text-[#B8B8B8] hover:bg-[#B8B8B8]/20 py-4 rounded-xl font-medium tracking-widest uppercase text-xs flex items-center justify-center gap-2 transition-all duration-500 group ${isLoading ? 'opacity-50 cursor-not-allowed' : 'hover:gap-4'}`}
             >
               {isLoading ? 'Submitting...' : 'Submit to Legal H.Q.'}
               {!isLoading && <span className="material-symbols-outlined text-sm transition-transform group-hover:translate-x-1" data-icon="arrow_forward">arrow_forward</span>}
@@ -294,7 +294,7 @@ export default function IntakePortal() {
         <section className="mt-16">
           <div className="flex items-center justify-between mb-8">
             <h2 className="text-[10px] font-bold tracking-[0.2em] text-[#99907c] uppercase">Recent Activity</h2>
-            <a className="text-[10px] font-medium tracking-widest text-[#f2ca50]/70 hover:text-[#f2ca50] uppercase transition-colors" href="#">View All Archive</a>
+            <a className="text-[10px] font-medium tracking-widest text-[#B8B8B8]/70 hover:text-[#B8B8B8] uppercase transition-colors" href="#">View All Archive</a>
           </div>
           
           <div className="overflow-x-auto">
@@ -329,7 +329,7 @@ export default function IntakePortal() {
                   
                   const statusLower = status.toLowerCase();
                   if (statusLower.includes("progress") || statusLower.includes("review")) {
-                    statusBg = "bg-amber-900/30 text-amber-200/80";
+                    statusBg = "bg-[#1C1C1C] text-[#D4D4D4]/80";
                     icon = "gavel";
                   } else if (statusLower === "done" || statusLower === "completed") {
                     statusBg = "bg-emerald-900/30 text-emerald-200/80";
@@ -373,7 +373,7 @@ export default function IntakePortal() {
 
       {/* BottomNavBar - Anchored Shared Component */}
       <nav className="fixed bottom-0 left-0 w-full flex justify-around items-center px-6 pb-8 pt-4 bg-[#131313]/80 backdrop-blur-xl border-t border-white/5 shadow-[0_-4px_20px_rgba(0,0,0,0.5)] z-50">
-        <a className="flex flex-col items-center justify-center text-[#D4AF37] transition-all duration-300 active:scale-90 group" href="#">
+        <a className="flex flex-col items-center justify-center text-[#B8B8B8] transition-all duration-300 active:scale-90 group" href="#">
           <span className="material-symbols-outlined mb-1" style={{ fontVariationSettings: "'FILL' 1" }} data-icon="add_circle">add_circle</span>
           <span className="font-['Manrope'] text-[10px] font-medium tracking-widest uppercase">New Request</span>
         </a>

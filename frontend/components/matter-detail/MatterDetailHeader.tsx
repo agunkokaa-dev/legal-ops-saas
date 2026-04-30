@@ -5,8 +5,8 @@ export default function MatterDetailHeader({ matter }: { matter: any }) {
         const lower = area?.toLowerCase() || '';
         if (lower.includes('litigation')) return 'bg-red-500/10 text-red-500 border-red-500/20';
         if (lower.includes('m&a') || lower.includes('merger')) return 'bg-purple-500/10 text-purple-400 border-purple-500/20';
-        if (lower.includes('ip') || lower.includes('intellectual')) return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
-        return 'bg-amber-500/10 text-amber-500 border-amber-500/20'; // Default / Corporate
+        if (lower.includes('ip') || lower.includes('intellectual')) return 'bg-[#1C1C1C] text-[#B8B8B8] border-[#2A2A2A]';
+        return 'bg-zinc-800/70 text-zinc-300 border-zinc-700'; // Default / Corporate
     }
 
     const matterIdShort = matter.id?.split('-')[0]?.toUpperCase() || '0000';

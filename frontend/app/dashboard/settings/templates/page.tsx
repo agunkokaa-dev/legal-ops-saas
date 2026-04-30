@@ -79,7 +79,7 @@ export default function TemplateBuilder() {
 
             toast.success("Template Saved Successfully!", {
                 description: `SOP "${name}" is now available for new tasks.`,
-                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#c5a059' }
+                style: { background: '#1a1a1a', border: '1px solid #B8B8B8', color: '#B8B8B8' }
             });
 
             // Reset form
@@ -98,21 +98,21 @@ export default function TemplateBuilder() {
         <div className="h-full overflow-y-auto p-8 pb-32 max-w-5xl mx-auto text-white">
 
             {/* Back Button */}
-            <Link href="/dashboard/settings" className="inline-flex items-center gap-2 text-sm text-gray-400 hover:text-clause-gold transition-colors mb-6">
+            <Link href="/dashboard/settings" className="inline-flex items-center gap-2 text-sm text-gray-400 hover:text-[#B8B8B8] transition-colors mb-6">
                 <ArrowLeft size={16} /> Back to Settings
             </Link>
 
-            <h1 className="text-2xl font-bold text-clause-gold mb-6">Create Task Template (SOP)</h1>
+            <h1 className="text-2xl font-bold text-[#B8B8B8] mb-6">Create Task Template (SOP)</h1>
 
             {/* Header Form */}
             <div className="bg-white/5 border border-white/10 p-6 rounded-xl mb-6 space-y-4 shadow-lg">
                 <div>
                     <label className="block text-sm text-gray-400 mb-1">Template Name (e.g., standard M&A Due Diligence)</label>
-                    <input type="text" value={name} onChange={e => setName(e.target.value)} className="w-full bg-black/50 border border-white/10 rounded-lg p-3 outline-none focus:border-clause-gold transition-colors" />
+                    <input type="text" value={name} onChange={e => setName(e.target.value)} className="w-full bg-black/50 border border-white/10 rounded-lg p-3 outline-none focus:border-[#3A3A3A] transition-colors" />
                 </div>
                 <div>
                     <label className="block text-sm text-gray-400 mb-1">Matter Type Category</label>
-                    <input type="text" value={matterType} onChange={e => setMatterType(e.target.value)} className="w-full bg-black/50 border border-white/10 rounded-lg p-3 outline-none focus:border-clause-gold transition-colors" />
+                    <input type="text" value={matterType} onChange={e => setMatterType(e.target.value)} className="w-full bg-black/50 border border-white/10 rounded-lg p-3 outline-none focus:border-[#3A3A3A] transition-colors" />
                 </div>
             </div>
 
@@ -124,7 +124,7 @@ export default function TemplateBuilder() {
                         <div key={index} className="flex gap-4 items-start bg-white/5 p-5 rounded-xl border border-white/10 shadow-sm transition-all hover:border-white/20 relative group">
 
                             {/* Number Bubble */}
-                            <div className="w-8 h-8 rounded-full bg-clause-gold/20 text-clause-gold flex items-center justify-center font-bold shrink-0 mt-1 shadow-[0_0_10px_rgba(197,160,89,0.2)]">
+                            <div className="w-8 h-8 rounded-full bg-[#B8B8B8]/20 text-[#B8B8B8] flex items-center justify-center font-bold shrink-0 mt-1 shadow-[0_0_10px_rgba(184, 184, 184,0.2)]">
                                 {index + 1}
                             </div>
 
@@ -132,22 +132,22 @@ export default function TemplateBuilder() {
                                 <div className="flex gap-4">
                                     <div className="flex-1">
                                         <label className="text-[10px] text-gray-500 uppercase tracking-wider mb-1 block">Task Title (Kanban Card)</label>
-                                        <input type="text" placeholder="e.g., Conduct Initial Kick-off Meeting" value={item.title} onChange={e => handleItemChange(index, 'title', e.target.value)} className="w-full bg-black/50 border border-white/10 rounded-lg p-2 outline-none focus:border-clause-gold text-sm text-white" />
+                                        <input type="text" placeholder="e.g., Conduct Initial Kick-off Meeting" value={item.title} onChange={e => handleItemChange(index, 'title', e.target.value)} className="w-full bg-black/50 border border-white/10 rounded-lg p-2 outline-none focus:border-[#3A3A3A] text-sm text-white" />
                                     </div>
                                     <div className="w-32">
                                         <label className="text-[10px] text-gray-500 uppercase tracking-wider mb-1 block">Days Offset</label>
-                                        <input type="number" placeholder="0" value={item.days_offset} onChange={e => handleItemChange(index, 'days_offset', parseInt(e.target.value) || 0)} className="w-full bg-black/50 border border-white/10 rounded-lg p-2 outline-none focus:border-clause-gold text-sm text-white" />
+                                        <input type="number" placeholder="0" value={item.days_offset} onChange={e => handleItemChange(index, 'days_offset', parseInt(e.target.value) || 0)} className="w-full bg-black/50 border border-white/10 rounded-lg p-2 outline-none focus:border-[#3A3A3A] text-sm text-white" />
                                     </div>
                                 </div>
 
                                 <div>
                                     <label className="text-[10px] text-gray-500 uppercase tracking-wider mb-1 block">Description / Notes</label>
-                                    <input type="text" placeholder="Optional details..." value={item.description} onChange={e => handleItemChange(index, 'description', e.target.value)} className="w-full bg-black/50 border border-white/10 rounded-lg p-2 outline-none focus:border-clause-gold text-sm text-white" />
+                                    <input type="text" placeholder="Optional details..." value={item.description} onChange={e => handleItemChange(index, 'description', e.target.value)} className="w-full bg-black/50 border border-white/10 rounded-lg p-2 outline-none focus:border-[#3A3A3A] text-sm text-white" />
                                 </div>
 
                                 {/* NESTED PROCEDURAL STEPS (CHECKLISTS) */}
                                 <div className="mt-4 pt-4 border-t border-white/5">
-                                    <label className="text-[10px] text-clause-gold uppercase tracking-wider mb-2 block">Procedural Steps (Checklists inside this Task)</label>
+                                    <label className="text-[10px] text-[#B8B8B8] uppercase tracking-wider mb-2 block">Procedural Steps (Checklists inside this Task)</label>
 
                                     {item.procedural_steps.length > 0 && (
                                         <ul className="space-y-2 mb-3">
@@ -165,7 +165,7 @@ export default function TemplateBuilder() {
                                             type="text"
                                             id={`step-input-${index}`}
                                             placeholder="Add a procedural step..."
-                                            className="flex-1 bg-black/50 border border-white/10 rounded p-2 outline-none focus:border-clause-gold text-xs text-white"
+                                            className="flex-1 bg-black/50 border border-white/10 rounded p-2 outline-none focus:border-[#3A3A3A] text-xs text-white"
                                             onKeyDown={(e) => {
                                                 if (e.key === 'Enter') {
                                                     e.preventDefault();
@@ -181,7 +181,7 @@ export default function TemplateBuilder() {
                                                 handleAddStep(index, input.value);
                                                 input.value = '';
                                             }}
-                                            className="bg-clause-gold/20 text-clause-gold px-3 rounded text-xs font-bold hover:bg-clause-gold/30"
+                                            className="bg-[#B8B8B8]/20 text-[#B8B8B8] px-3 rounded text-xs font-bold hover:bg-[#B8B8B8]/30"
                                         >
                                             Add
                                         </button>
@@ -200,10 +200,10 @@ export default function TemplateBuilder() {
 
             {/* ACTION FOOTER */}
             <div className="flex justify-between items-center bg-transparent mt-6 pt-6 border-t border-white/10">
-                <button onClick={handleAddItem} className="flex items-center gap-2 text-sm text-clause-gold hover:text-white transition-colors px-4 py-2 bg-clause-gold/10 rounded-lg">
+                <button onClick={handleAddItem} className="flex items-center gap-2 text-sm text-[#B8B8B8] hover:text-white transition-colors px-4 py-2 bg-[#B8B8B8]/10 rounded-lg">
                     <Plus size={16} /> + Add Task
                 </button>
-                <button onClick={handleSaveTemplate} className="flex items-center gap-2 px-8 py-3 bg-clause-gold text-black font-bold rounded-lg hover:bg-yellow-500 transition-colors shadow-lg shadow-clause-gold/20">
+                <button onClick={handleSaveTemplate} className="flex items-center gap-2 px-8 py-3 bg-[#B8B8B8] text-[#0A0A0A] font-bold rounded-lg hover:bg-[#D4D4D4] transition-colors shadow-lg shadow-[#888888]/20">
                     <Save size={18} /> Save Template
                 </button>
             </div>

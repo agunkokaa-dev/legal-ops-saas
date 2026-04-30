@@ -126,9 +126,9 @@ export default function LawSearchModal({
                 </button>
               </div>
               {citationHint?.isCompleteCitation ? (
-                <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-amber-500/10 px-3 py-1 text-[10px] uppercase tracking-[0.22em] text-amber-300">
+                <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-[#1C1C1C] px-3 py-1 text-[10px] uppercase tracking-[0.22em] text-[#B8B8B8]">
                   Citation Mode Detected
-                  <span className="rounded-full bg-amber-500/20 px-2 py-0.5 text-[9px]">
+                  <span className="rounded-full bg-[#1C1C1C] px-2 py-0.5 text-[9px]">
                     {citationHint.rawText}
                   </span>
                 </div>
@@ -145,7 +145,7 @@ export default function LawSearchModal({
                       }))}
                       className={`rounded-full border px-3 py-1.5 text-[11px] uppercase tracking-[0.18em] transition ${
                         active
-                          ? 'border-[#d4af37]/40 bg-[#d4af37]/10 text-[#f4d884]'
+                          ? 'border-[#B8B8B8]/40 bg-[#B8B8B8]/10 text-[#D4D4D4]'
                           : 'border-white/10 text-zinc-400 hover:border-white/20 hover:text-white'
                       }`}
                     >
@@ -158,8 +158,8 @@ export default function LawSearchModal({
 
             <div className="flex-1 overflow-y-auto px-5 py-5 md:px-6 md:py-6">
               {coverageCopy ? (
-                <div className="mb-5 rounded-2xl border border-[#d4af37]/15 bg-[linear-gradient(135deg,rgba(212,175,55,0.12),rgba(17,17,17,0.7))] p-4">
-                  <p className="text-[11px] uppercase tracking-[0.22em] text-[#d4af37]">Coverage</p>
+                <div className="mb-5 rounded-2xl border border-[#B8B8B8]/15 bg-[linear-gradient(135deg,rgba(184, 184, 184,0.12),rgba(17,17,17,0.7))] p-4">
+                  <p className="text-[11px] uppercase tracking-[0.22em] text-[#B8B8B8]">Coverage</p>
                   <p className="mt-2 text-sm text-white">{coverageCopy.summary}</p>
                   <p className="mt-1 text-xs leading-relaxed text-zinc-400">{coverageCopy.note}</p>
                 </div>

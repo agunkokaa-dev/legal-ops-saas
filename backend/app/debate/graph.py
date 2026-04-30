@@ -10,7 +10,7 @@ from typing import Annotated, Any, Optional, TypedDict
 from langgraph.graph import END, START, StateGraph
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue
 
-from app.config import ANTHROPIC_API_KEY, NATIONAL_LAWS_COLLECTION, openai_client, qdrant
+from app.config import ANTHROPIC_API_KEY, NATIONAL_LAWS_COLLECTION, OUTPUT_TOKEN_CAPS, openai_client, qdrant
 from app.debate.prompts import (
     DEFENDER_SYSTEM,
     JUDGE_SYSTEM,
@@ -27,6 +27,7 @@ from app.debate.schemas import (
     JudgeVerdict,
     ProsecutorOutput,
 )
+from app.ai_usage import log_ai_usage_sync
 from app.dependencies import TenantQdrantClient, get_tenant_admin_supabase
 from app.event_bus import SSEEvent, event_bus
 
@@ -107,6 +108,34 @@ def _increment_model_breakdown(
     return next_counts
 
 
+def _log_debate_usage(
+    state: DebateState,
+    *,
+    workflow: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    duration_ms: int,
+) -> None:
+    tenant_id = state.get("tenant_id")
+    if not tenant_id:
+        return
+    log_ai_usage_sync(
+        get_tenant_admin_supabase(tenant_id),
+        tenant_id,
+        workflow,
+        model,
+        input_tokens,
+        output_tokens,
+        duration_ms,
+        contract_id=state.get("contract_id"),
+        metadata={
+            "debate_session_id": state.get("debate_session_id"),
+            "issue_id": state.get("issue_id"),
+        },
+    )
+
+
 def _extract_anthropic_tool_input(response: Any, tool_name: str) -> dict[str, Any]:
     for block in getattr(response, "content", []) or []:
         if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == tool_name:
@@ -124,6 +153,7 @@ async def _call_openai_agent(
     response = await asyncio.to_thread(
         openai_client.beta.chat.completions.parse,
         model=model,
+        max_tokens=OUTPUT_TOKEN_CAPS["debate_turn"],
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -149,7 +179,7 @@ async def _call_judge_agent(
     response = await asyncio.to_thread(
         client.messages.create,
         model=model,
-        max_tokens=2_500,
+        max_tokens=OUTPUT_TOKEN_CAPS["debate_judge"],
         system=system_prompt,
         messages=[{"role": "user", "content": user_message}],
         tools=[{
@@ -354,6 +384,14 @@ async def prosecutor_turn_1(state: DebateState) -> dict[str, Any]:
     total_input_tokens = state.get("total_input_tokens", 0) + input_tokens
     total_output_tokens = state.get("total_output_tokens", 0) + output_tokens
     model_breakdown = _increment_model_breakdown(state.get("model_breakdown"), OPENAI_DEBATE_MODEL)
+    _log_debate_usage(
+        state,
+        workflow="debate_turn",
+        model=OPENAI_DEBATE_MODEL,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+    )
     await _persist_turn_progress(
         session_id=state["debate_session_id"],
         tenant_id=state["tenant_id"],
@@ -416,6 +454,14 @@ async def defender_turn_1(state: DebateState) -> dict[str, Any]:
     total_input_tokens = state.get("total_input_tokens", 0) + input_tokens
     total_output_tokens = state.get("total_output_tokens", 0) + output_tokens
     model_breakdown = _increment_model_breakdown(state.get("model_breakdown"), OPENAI_DEBATE_MODEL)
+    _log_debate_usage(
+        state,
+        workflow="debate_turn",
+        model=OPENAI_DEBATE_MODEL,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+    )
     await _persist_turn_progress(
         session_id=state["debate_session_id"],
         tenant_id=state["tenant_id"],
@@ -478,6 +524,14 @@ async def prosecutor_rebuttal(state: DebateState) -> dict[str, Any]:
     total_input_tokens = state.get("total_input_tokens", 0) + input_tokens
     total_output_tokens = state.get("total_output_tokens", 0) + output_tokens
     model_breakdown = _increment_model_breakdown(state.get("model_breakdown"), OPENAI_DEBATE_MODEL)
+    _log_debate_usage(
+        state,
+        workflow="debate_turn",
+        model=OPENAI_DEBATE_MODEL,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+    )
     await _persist_turn_progress(
         session_id=state["debate_session_id"],
         tenant_id=state["tenant_id"],
@@ -540,6 +594,14 @@ async def defender_rebuttal(state: DebateState) -> dict[str, Any]:
     total_input_tokens = state.get("total_input_tokens", 0) + input_tokens
     total_output_tokens = state.get("total_output_tokens", 0) + output_tokens
     model_breakdown = _increment_model_breakdown(state.get("model_breakdown"), OPENAI_DEBATE_MODEL)
+    _log_debate_usage(
+        state,
+        workflow="debate_turn",
+        model=OPENAI_DEBATE_MODEL,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+    )
     await _persist_turn_progress(
         session_id=state["debate_session_id"],
         tenant_id=state["tenant_id"],
@@ -570,6 +632,7 @@ async def defender_rebuttal(state: DebateState) -> dict[str, Any]:
 
 
 async def judge_verdict(state: DebateState) -> dict[str, Any]:
+    start = time.perf_counter()
     system_prompt = JUDGE_SYSTEM.format(
         language_instruction=LANGUAGE_MIRROR_INSTRUCTION
     )
@@ -586,6 +649,14 @@ async def judge_verdict(state: DebateState) -> dict[str, Any]:
     total_input_tokens = state.get("total_input_tokens", 0) + input_tokens
     total_output_tokens = state.get("total_output_tokens", 0) + output_tokens
     model_breakdown = _increment_model_breakdown(state.get("model_breakdown"), ANTHROPIC_JUDGE_MODEL)
+    _log_debate_usage(
+        state,
+        workflow="debate_judge",
+        model=ANTHROPIC_JUDGE_MODEL,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        duration_ms=int((time.perf_counter() - start) * 1000),
+    )
     await _persist_turn_progress(
         session_id=state["debate_session_id"],
         tenant_id=state["tenant_id"],

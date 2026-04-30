@@ -207,7 +207,7 @@ export default function ContractDetailClient({
             });
             if (error) throw new Error(error);
             toast.success('Note saved!', {
-                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+                style: { background: '#1a1a1a', border: '1px solid #B8B8B8', color: '#fff' }
             });
             setSelectedText('');
             setPendingStartChar(-1);
@@ -326,7 +326,7 @@ export default function ContractDetailClient({
             }
 
             toast.success("AI suggestion applied successfully.", {
-                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+                style: { background: '#1a1a1a', border: '1px solid #B8B8B8', color: '#fff' }
             });
             router.refresh();
         } catch (error: any) {
@@ -359,6 +359,8 @@ export default function ContractDetailClient({
         totalAgents: number
         message: string
     } | null>(null);
+    const [isGeneratingNegotiation, setIsGeneratingNegotiation] = useState(false);
+    const [isGeneratingDrafting, setIsGeneratingDrafting] = useState(false);
 
     useEffect(() => {
         setLiveContract(contract);
@@ -397,6 +399,56 @@ export default function ContractDetailClient({
         }
     }, [getToken, liveContract?.id]);
 
+    const hasNegotiationStrategy = Boolean(
+        liveContract?.counter_proposal && String(liveContract.counter_proposal).trim().length > 0
+    );
+    const hasDraftingSuggestions = useMemo(() => {
+        const draftRevisions = liveContract?.draft_revisions;
+        if (!draftRevisions) return false;
+        if (Array.isArray(draftRevisions)) return draftRevisions.length > 0;
+        if (typeof draftRevisions === 'object') {
+            return Array.isArray(draftRevisions.findings) && draftRevisions.findings.length > 0;
+        }
+        if (typeof draftRevisions === 'string') {
+            try {
+                const parsed = JSON.parse(draftRevisions);
+                return Boolean(Array.isArray(parsed?.findings) && parsed.findings.length > 0);
+            } catch {
+                return false;
+            }
+        }
+        return false;
+    }, [liveContract?.draft_revisions]);
+
+    const handleLazyGeneration = useCallback(async (kind: 'negotiation' | 'drafting') => {
+        if (!liveContract?.id) return;
+        const setLoading = kind === 'negotiation' ? setIsGeneratingNegotiation : setIsGeneratingDrafting;
+        setLoading(true);
+        try {
+            const token = await getToken();
+            if (!token) throw new Error('Authentication required');
+            const apiUrl = getPublicApiBase();
+            const res = await fetch(`${apiUrl}/api/v1/contracts/${liveContract.id}/generate-${kind}`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${token}` },
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || `Failed to generate ${kind}`);
+            }
+            await fetchLatestContract();
+            toast.success(kind === 'negotiation' ? 'Negotiation strategy generated.' : 'Drafting suggestions generated.', {
+                style: { background: '#1a1a1a', border: '1px solid #B8B8B8', color: '#fff' }
+            });
+            router.refresh();
+        } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : `Failed to generate ${kind}.`;
+            toast.error(message);
+        } finally {
+            setLoading(false);
+        }
+    }, [fetchLatestContract, getToken, liveContract?.id, router]);
+
     const pollContractStatus = useCallback(async () => {
         const data = await fetchLatestContract();
         if (!data) return;
@@ -417,7 +469,7 @@ export default function ContractDetailClient({
         if (newStatus.startsWith('retrying')) {
             toast.loading(`Retrying analysis... (${data.status})`, {
                 id: 'retry-toast',
-                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+                style: { background: '#1a1a1a', border: '1px solid #B8B8B8', color: '#fff' }
             });
             return;
         }
@@ -463,7 +515,7 @@ export default function ContractDetailClient({
         onPipelineCompleted: () => {
             setPipelineProgress(null);
             toast.success('AI Analysis Complete. The War Room is ready.', {
-                style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+                style: { background: '#1a1a1a', border: '1px solid #B8B8B8', color: '#fff' }
             });
             router.refresh();
         },
@@ -488,7 +540,7 @@ export default function ContractDetailClient({
             if (newStatus.startsWith('retrying')) {
                 toast.loading(`Retrying analysis... (${String(event.data.new_status || '')})`, {
                     id: 'retry-toast',
-                    style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+                    style: { background: '#1a1a1a', border: '1px solid #B8B8B8', color: '#fff' }
                 });
             }
 
@@ -501,7 +553,7 @@ export default function ContractDetailClient({
         onSigningUpdate: (event) => {
             if (event.data.message) {
                 toast.info(String(event.data.message), {
-                    style: { background: '#1a1a1a', border: '1px solid #c5a059', color: '#fff' }
+                    style: { background: '#1a1a1a', border: '1px solid #B8B8B8', color: '#fff' }
                 });
             }
             router.refresh();
@@ -617,7 +669,7 @@ export default function ContractDetailClient({
                                     <span className={`w-2 h-2 rounded-full flex-shrink-0 ${
                                         step.status === 'completed' ? 'bg-green-500' :
                                         step.status === 'failed' || step.status === 'failed_with_fallback' ? 'bg-red-500' :
-                                        step.status === 'running' ? 'bg-yellow-500 animate-pulse' : 'bg-neutral-600'
+                                        step.status === 'running' ? 'bg-[#B8B8B8] animate-pulse' : 'bg-neutral-600'
                                     }`} />
                                     <span className="text-neutral-400 capitalize">{step.agent.replace(/_/g, ' ')}</span>
                                     {step.duration_ms && <span className="text-neutral-600 ml-auto">{(step.duration_ms / 1000).toFixed(1)}s</span>}
@@ -784,7 +836,7 @@ export default function ContractDetailClient({
                             return (
                                 <button
                                     onClick={() => router.push(`/dashboard/contracts/${liveContract.id}/signing`)}
-                                    className="flex items-center gap-1.5 text-[11px] text-[#fbbf24] border border-[#fbbf24]/30 bg-[#fbbf24]/5 hover:bg-[#fbbf24]/10 rounded-lg px-3 py-1.5 transition-colors"
+                                    className="flex items-center gap-1.5 text-[11px] text-[#B8B8B8] border border-[#3A3A3A] bg-[#1C1C1C] hover:bg-[#1C1C1C] rounded-lg px-3 py-1.5 transition-colors"
                                 >
                                     <span className="material-symbols-outlined text-sm">draw</span>
                                     {label} — View
@@ -795,7 +847,7 @@ export default function ContractDetailClient({
                             return (
                                 <button
                                     onClick={() => router.push(`/dashboard/contracts/${liveContract.id}/signing`)}
-                                    className="flex items-center gap-1.5 text-[11px] font-bold text-black bg-[#fbbf24] hover:bg-[#f59e0b] rounded-lg px-4 py-1.5 transition-colors"
+                                    className="flex items-center gap-1.5 text-[11px] font-bold text-[#0A0A0A] bg-[#B8B8B8] hover:bg-[#D4D4D4] rounded-lg px-4 py-1.5 transition-colors"
                                 >
                                     <span className="material-symbols-outlined text-sm">draw</span>
                                     Initiate Signing
@@ -808,12 +860,12 @@ export default function ContractDetailClient({
             </ContractHeader>
 
             {shouldShowPipelineProgress && (
-                <div className="border-b border-[#d4af37]/10 bg-[#111] px-6 py-3">
+                <div className="border-b border-[#B8B8B8]/10 bg-[#111] px-6 py-3">
                     <div className="flex items-center justify-between gap-4">
                         <div className="min-w-0 flex-1">
                             <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-neutral-800">
                                 <div
-                                    className="h-full bg-[#d4af37] transition-all duration-500"
+                                    className="h-full bg-[#B8B8B8] transition-all duration-500"
                                     style={{
                                         width: `${pipelineProgress
                                             ? Math.max(8, (pipelineProgress.agentIndex / Math.max(1, pipelineProgress.totalAgents)) * 100)
@@ -825,7 +877,7 @@ export default function ContractDetailClient({
                             <p className="text-[11px] uppercase tracking-widest text-neutral-400">
                                 {pipelineProgress?.message || 'Waiting for AI pipeline updates...'}
                                 {pipelineProgress && (
-                                    <span className="ml-2 text-[#d4af37]">
+                                    <span className="ml-2 text-[#B8B8B8]">
                                         ({pipelineProgress.agentIndex}/{pipelineProgress.totalAgents})
                                     </span>
                                 )}
@@ -846,11 +898,11 @@ export default function ContractDetailClient({
                     ) : isLockedForReview ? (
                         <div
                             ref={markdownContainerRef}
-                            className="w-full h-full overflow-y-auto p-12 bg-[#121212] flex justify-center custom-scrollbar items-start relative [&_::selection]:bg-yellow-200 [&_::selection]:text-black"
+                            className="w-full h-full overflow-y-auto p-12 bg-[#121212] flex justify-center custom-scrollbar items-start relative [&_::selection]:bg-[#D4D4D4] [&_::selection]:text-[#0A0A0A]"
                             style={{ userSelect: 'text' }}
                             onMouseUp={handleTextSelection}
                         >
-                            <div className="max-w-4xl w-full h-fit min-h-full bg-white text-black p-12 shadow-2xl rounded-sm">
+                            <div className="max-w-4xl w-full h-fit min-h-full bg-white text-[#0A0A0A] p-12 shadow-2xl rounded-sm">
                                 <div className="prose prose-sm max-w-none">
                                     <ReactMarkdown
                                         remarkPlugins={[remarkGfm]}
@@ -872,12 +924,12 @@ export default function ContractDetailClient({
                                         top: Math.max(selectionPos.y - 180, 20)
                                     }}
                                 >
-                                    <div className="bg-[#1a1a1a] border border-[#d4af37]/30 p-3 rounded-lg shadow-2xl min-w-[280px]">
+                                    <div className="bg-[#1a1a1a] border border-[#B8B8B8]/30 p-3 rounded-lg shadow-2xl min-w-[280px]">
                                         <h4 className="text-xs font-bold text-white mb-2 font-serif flex items-center gap-1.5">
-                                            <span className="material-symbols-outlined text-[#d4af37] text-sm">edit_note</span>
+                                            <span className="material-symbols-outlined text-[#B8B8B8] text-sm">edit_note</span>
                                             Create Note from Selection
                                         </h4>
-                                        <div className="text-[10px] text-zinc-400 mb-2 p-2 bg-white/5 rounded border-l-2 border-[#d4af37]/50 italic max-h-16 overflow-y-auto">
+                                        <div className="text-[10px] text-zinc-400 mb-2 p-2 bg-white/5 rounded border-l-2 border-[#B8B8B8]/50 italic max-h-16 overflow-y-auto">
                                             &ldquo;{selectedText.length > 120 ? selectedText.substring(0, 120) + '...' : selectedText}&rdquo;
                                         </div>
                                         <textarea
@@ -885,7 +937,7 @@ export default function ContractDetailClient({
                                             autoFocus
                                             onChange={(e) => setNoteComment(e.target.value)}
                                             placeholder="Add a comment (optional)..."
-                                            className="w-full bg-[#0e0e0e] border border-white/10 rounded p-2 text-xs text-white placeholder-zinc-600 focus:ring-1 focus:ring-[#d4af37] focus:border-[#d4af37] resize-none h-16 mb-2"
+                                            className="w-full bg-[#0e0e0e] border border-white/10 rounded p-2 text-xs text-white placeholder-zinc-600 focus:ring-1 focus:ring-[#B8B8B8] focus:border-[#B8B8B8] resize-none h-16 mb-2"
                                         />
                                         <div className="flex items-center justify-end gap-2">
                                             <button
@@ -897,7 +949,7 @@ export default function ContractDetailClient({
                                             <button
                                                 onClick={handleSaveNote}
                                                 disabled={isSavingNote}
-                                                className="px-3 py-1.5 text-xs bg-[#d4af37] text-black font-bold rounded hover:bg-[#c5a059] transition-colors disabled:opacity-50"
+                                                className="px-3 py-1.5 text-xs bg-[#B8B8B8] text-[#0A0A0A] font-bold rounded hover:bg-[#D4D4D4] transition-colors disabled:opacity-50"
                                             >
                                                 {isSavingNote ? 'Saving...' : 'Save Note'}
                                             </button>
@@ -930,6 +982,12 @@ export default function ContractDetailClient({
                         isLocked={isLockedForReview}
                         currentDraftVersion={currentDraftVersion}
                         onApplySuggestion={handleApplySuggestion}
+                        hasDraftingSuggestions={hasDraftingSuggestions}
+                        hasNegotiationStrategy={hasNegotiationStrategy}
+                        isGeneratingDrafting={isGeneratingDrafting}
+                        isGeneratingNegotiation={isGeneratingNegotiation}
+                        onGenerateDrafting={() => handleLazyGeneration('drafting')}
+                        onGenerateNegotiation={() => handleLazyGeneration('negotiation')}
                     />
                 </div>
             </div>

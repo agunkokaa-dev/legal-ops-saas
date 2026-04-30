@@ -142,7 +142,7 @@ export default function DocumentsTab({ matterId }: { matterId: string }) {
                                             </span>
                                             <Link
                                                 href={`/dashboard/contracts/${doc.id}`}
-                                                className="font-medium text-white hover:text-lux-gold transition-colors hover:underline cursor-pointer"
+                                                className="font-medium text-white hover:text-[#B8B8B8] transition-colors hover:underline cursor-pointer"
                                                 title={doc.title}
                                             >
                                                 {doc.title.length > 40 ? doc.title.substring(0, 40) + '...' : doc.title}

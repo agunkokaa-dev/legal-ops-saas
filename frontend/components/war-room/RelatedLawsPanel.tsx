@@ -27,7 +27,7 @@ export default function RelatedLawsPanel({
         <aside className="w-[360px] bg-[#0a0a0a] border-l border-zinc-800/40 flex flex-col shrink-0 overflow-hidden">
             <div className="flex items-center justify-between border-b border-zinc-800/40 px-5 py-4">
                 <div>
-                    <p className="text-[10px] uppercase tracking-[0.24em] text-[#D4AF37]">Related Regulations</p>
+                    <p className="text-[10px] uppercase tracking-[0.24em] text-[#B8B8B8]">Related Regulations</p>
                     <p className="mt-1 text-xs text-zinc-500">Top 3 articles derived from the selected deviation.</p>
                 </div>
                 <button
@@ -62,7 +62,7 @@ export default function RelatedLawsPanel({
                         </button>
                     ))
                 ) : coverageNote ? (
-                    <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 p-4 text-sm text-sky-100">
+                    <div className="rounded-xl border border-[#2A2A2A] bg-[#1C1C1C] p-4 text-sm text-[#E8E8E8]">
                         {coverageNote}
                     </div>
                 ) : (

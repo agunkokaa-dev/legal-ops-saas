@@ -47,7 +47,7 @@ export default function FinancialExposure({
                     </div>
                     {/* Progress bar visual for claim value (static max width look) */}
                     <div className="w-full h-1 bg-surface-border mt-2 rounded-full overflow-hidden">
-                        <div className="h-full bg-primary w-full shadow-[0_0_10px_rgba(197,159,89,0.5)]"></div>
+                        <div className="h-full bg-primary w-full shadow-[0_0_10px_rgba(184, 184, 184,0.5)]"></div>
                     </div>
                 </div>
 

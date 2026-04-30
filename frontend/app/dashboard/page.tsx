@@ -24,10 +24,7 @@ export default async function DashboardPage() {
     let mediumRiskCount = 0
     let lowRiskCount = 0
 
-    // Practice Area aggregations for Active Matters
-    const practiceAreas = { CORP: 0, IP: 0, LITIG: 0, RE: 0, OTHER: 0 }
-    let maxPracticeAreaCount = 0;
-
+    let activeMattersData: { id: string; name: string; count: number; delta: number }[] = []
 
     if (orgId && token && email) {
         // Sync profile to Supabase silently in the background
@@ -76,26 +73,38 @@ export default async function DashboardPage() {
                 // Fetch Matters for the Active Matters Chart
                 const { data: mattersData, error: mattersError } = await supabaseAdmin
                     .from('matters')
-                    .select('practice_area')
+                    .select('practice_area, created_at')
                     .eq('tenant_id', tenantId)
                     .neq('status', 'Closed')
 
                 if (!mattersError && mattersData) {
+                    const counts = { CORP: 0, IP: 0, LITIG: 0, RE: 0, OTHER: 0 }
+                    const recentCounts = { CORP: 0, IP: 0, LITIG: 0, RE: 0, OTHER: 0 }
+                    const now = new Date()
+                    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+
                     mattersData.forEach(matter => {
                         const area = matter.practice_area ? matter.practice_area.toUpperCase().trim() : 'OTHER'
+                        let key: keyof typeof counts = 'OTHER'
 
-                        // Map specific keys or dump to OTHER if not matched
-                        if (area.includes('CORP')) practiceAreas.CORP++
-                        else if (area.includes('IP') || area.includes('INTELLECTUAL')) practiceAreas.IP++
-                        else if (area.includes('LITIG')) practiceAreas.LITIG++
-                        else if (area.includes('RE') || area.includes('REAL ESTATE')) practiceAreas.RE++
-                        else practiceAreas.OTHER++
+                        if (area.includes('CORP')) key = 'CORP'
+                        else if (area.includes('IP') || area.includes('INTELLECTUAL')) key = 'IP'
+                        else if (area.includes('LITIG')) key = 'LITIG'
+                        else if (area.includes('RE') || area.includes('REAL ESTATE')) key = 'RE'
+
+                        counts[key]++
+                        
+                        if (matter.created_at && new Date(matter.created_at) > thirtyDaysAgo) {
+                            recentCounts[key]++ // Using new matters as positive delta
+                        }
                     })
 
-                    // Find the max to calculate relative percentage heights. 
-                    maxPracticeAreaCount = Math.max(
-                        practiceAreas.CORP, practiceAreas.IP, practiceAreas.LITIG, practiceAreas.RE, 1
-                    ) // Ensure we never divide by 0
+                    activeMattersData = [
+                        { id: 'CORP', name: 'Corporate', count: counts.CORP, delta: recentCounts.CORP },
+                        { id: 'IP', name: 'Intellectual Property', count: counts.IP, delta: recentCounts.IP },
+                        { id: 'LITIG', name: 'Litigation', count: counts.LITIG, delta: recentCounts.LITIG },
+                        { id: 'RE', name: 'Real Estate', count: counts.RE, delta: recentCounts.RE }
+                    ].sort((a, b) => b.count - a.count)
                 } else if (mattersError) {
                     console.error("Error fetching matters:", mattersError.message)
                 }
@@ -202,51 +211,97 @@ export default async function DashboardPage() {
 
                     {/* Breakdowns */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-surface border border-surface-border p-6 rounded flex flex-col h-[320px]">
-                            <div className="flex justify-between items-center mb-6">
+                        <div className="bg-surface border border-surface-border p-6 rounded flex flex-col h-[320px] relative">
+                            {/* Grid Lines Overlay */}
+                            <div className="absolute inset-0 pt-[88px] pb-10 px-6 pointer-events-none flex flex-col justify-between">
+                                <div className="border-t border-white/5 w-full"></div>
+                                <div className="border-t border-white/5 w-full"></div>
+                                <div className="border-t border-white/5 w-full"></div>
+                                <div className="border-t border-white/5 w-full"></div>
+                            </div>
+                            
+                            <div className="flex justify-between items-center mb-6 relative z-10">
                                 <div>
-                                    <h3 className="font-display text-xl text-white">Active Matters</h3>
+                                    <h3 className="font-display text-xl text-[#F3EDE4]">Active Matters</h3>
                                     <p className="text-xs text-text-muted">By Practice Area</p>
                                 </div>
                                 <button suppressHydrationWarning className="text-xs text-primary border border-primary/30 px-2 py-1 rounded hover:bg-primary/10">View All</button>
                             </div>
-                            <div className="flex-1 flex items-end justify-between gap-4 px-2 pb-2">
-                                <div className="flex flex-col items-center gap-2 flex-1 group" title={`Corp: ${practiceAreas.CORP}`}>
-                                    <div className="w-full bg-surface-border relative h-40 rounded-t-sm overflow-hidden">
-                                        <div
-                                            className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-primary/80 to-primary/40 group-hover:to-primary/60 transition-all duration-1000"
-                                            style={{ height: `${(practiceAreas.CORP / maxPracticeAreaCount) * 100}%` }}
-                                        ></div>
-                                    </div>
-                                    <span className="text-[10px] uppercase tracking-wide text-text-muted">Corp</span>
-                                </div>
-                                <div className="flex flex-col items-center gap-2 flex-1 group" title={`IP: ${practiceAreas.IP}`}>
-                                    <div className="w-full bg-surface-border relative h-40 rounded-t-sm overflow-hidden">
-                                        <div
-                                            className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-primary/80 to-primary/40 group-hover:to-primary/60 transition-all duration-1000"
-                                            style={{ height: `${(practiceAreas.IP / maxPracticeAreaCount) * 100}%` }}
-                                        ></div>
-                                    </div>
-                                    <span className="text-[10px] uppercase tracking-wide text-text-muted">IP</span>
-                                </div>
-                                <div className="flex flex-col items-center gap-2 flex-1 group" title={`Litigation: ${practiceAreas.LITIG}`}>
-                                    <div className="w-full bg-surface-border relative h-40 rounded-t-sm overflow-hidden">
-                                        <div
-                                            className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-primary/80 to-primary/40 group-hover:to-primary/60 transition-all duration-1000"
-                                            style={{ height: `${(practiceAreas.LITIG / maxPracticeAreaCount) * 100}%` }}
-                                        ></div>
-                                    </div>
-                                    <span className="text-[10px] uppercase tracking-wide text-text-muted">Litig</span>
-                                </div>
-                                <div className="flex flex-col items-center gap-2 flex-1 group" title={`Real Estate: ${practiceAreas.RE}`}>
-                                    <div className="w-full bg-surface-border relative h-40 rounded-t-sm overflow-hidden">
-                                        <div
-                                            className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-primary/80 to-primary/40 group-hover:to-primary/60 transition-all duration-1000"
-                                            style={{ height: `${(practiceAreas.RE / maxPracticeAreaCount) * 100}%` }}
-                                        ></div>
-                                    </div>
-                                    <span className="text-[10px] uppercase tracking-wide text-text-muted">RE</span>
-                                </div>
+
+                            <div className="flex-1 flex items-end justify-between gap-4 px-2 pb-2 relative z-10">
+                                {(() => {
+                                    const displayData = activeMattersData.length > 0 ? activeMattersData : [
+                                        { id: 'CORP', name: 'Corporate', count: 0, delta: 0 },
+                                        { id: 'IP', name: 'Intellectual Property', count: 0, delta: 0 },
+                                        { id: 'LITIG', name: 'Litigation', count: 0, delta: 0 },
+                                        { id: 'RE', name: 'Real Estate', count: 0, delta: 0 }
+                                    ];
+
+                                    const maxCount = Math.max(...displayData.map(m => m.count), 1);
+                                    const totalCount = displayData.reduce((acc, m) => acc + m.count, 0) || 1;
+
+                                    return displayData.map((matter, index) => {
+                                        const isHighest = index === 0 && matter.count > 0;
+                                        const percentage = Math.round((matter.count / totalCount) * 100);
+                                        
+                                        return (
+                                            <div key={matter.id} className="flex flex-col items-center gap-2 flex-1 group relative cursor-pointer">
+                                                <span className="text-sm font-medium text-[#F3EDE4] mb-1">{matter.count}</span>
+                                                <div className="w-full relative h-32 rounded-t-sm flex items-end justify-center">
+                                                    <div
+                                                        className={`w-full rounded-t-sm transition-all duration-500 ease-out group-hover:brightness-110`}
+                                                        style={{ 
+                                                            height: `${(matter.count / maxCount) * 100}%`,
+                                                            backgroundColor: isHighest ? '#D6B36A' : '#3A3A3F'
+                                                        }}
+                                                    ></div>
+                                                </div>
+                                                <div className="flex flex-col items-center">
+                                                    <span className="text-[10px] uppercase tracking-wide text-[#F3EDE4]">{matter.id}</span>
+                                                    <div className="flex items-center gap-0.5 mt-0.5">
+                                                        {matter.delta > 0 ? (
+                                                            <>
+                                                                <span className="material-symbols-outlined text-[10px]" style={{ color: '#3FAE7A' }}>arrow_upward</span>
+                                                                <span className="text-[10px] font-medium" style={{ color: '#3FAE7A' }}>{matter.delta}</span>
+                                                            </>
+                                                        ) : matter.delta < 0 ? (
+                                                            <>
+                                                                <span className="material-symbols-outlined text-[10px]" style={{ color: '#D95763' }}>arrow_downward</span>
+                                                                <span className="text-[10px] font-medium" style={{ color: '#D95763' }}>{Math.abs(matter.delta)}</span>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <span className="text-[10px] text-zinc-500">-</span>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                </div>
+
+                                                {/* Tooltip */}
+                                                <div className="absolute bottom-[calc(100%+8px)] hidden group-hover:flex flex-col items-center z-50 pointer-events-none">
+                                                    <div className="bg-zinc-800 text-[#F3EDE4] text-xs rounded py-2 px-3 shadow-xl border border-zinc-700 whitespace-nowrap">
+                                                        <div className="font-medium text-sm mb-1">{matter.name}</div>
+                                                        <div className="flex justify-between gap-4 mb-0.5">
+                                                            <span className="text-zinc-400">Total:</span>
+                                                            <span className="font-semibold">{matter.count}</span>
+                                                        </div>
+                                                        <div className="flex justify-between gap-4 mb-0.5">
+                                                            <span className="text-zinc-400">Share:</span>
+                                                            <span>{percentage}%</span>
+                                                        </div>
+                                                        <div className="flex justify-between gap-4">
+                                                            <span className="text-zinc-400">Trend:</span>
+                                                            <span style={{ color: matter.delta > 0 ? '#3FAE7A' : matter.delta < 0 ? '#D95763' : '#a1a1aa' }}>
+                                                                {matter.delta > 0 ? `+${matter.delta}` : matter.delta}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                    <div className="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[6px] border-t-zinc-800"></div>
+                                                </div>
+                                            </div>
+                                        );
+                                    });
+                                })()}
                             </div>
                         </div>
                         <div className="bg-surface border border-surface-border p-6 rounded flex flex-col h-[320px]">

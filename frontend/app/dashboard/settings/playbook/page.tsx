@@ -178,7 +178,7 @@ export default function CompanyPlaybookPage() {
                                 <textarea
                                     value={standardPosition}
                                     onChange={(e) => setStandardPosition(e.target.value)}
-                                    placeholder="The required gold-standard clause..."
+                                    placeholder="The required approved clause..."
                                     className="w-full h-24 bg-[#1a1a1a] border border-neutral-700 text-white placeholder:text-neutral-500 rounded-lg p-3 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary resize-none transition-all"
                                     disabled={isSubmitting}
                                     required
@@ -226,9 +226,9 @@ export default function CompanyPlaybookPage() {
                                 <button
                                     type="submit"
                                     disabled={!standardPosition.trim() || isSubmitting}
-                                    className="flex items-center gap-2 px-6 py-2.5 bg-[#d4af37] hover:bg-[#c4a137] text-black font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    className="flex items-center gap-2 px-6 py-2.5 bg-[#B8B8B8] hover:bg-[#D4D4D4] text-[#0A0A0A] font-semibold rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                 >
-                                    {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin text-black" /> : <Plus className="w-4 h-4 text-black" />}
+                                    {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin text-[#0A0A0A]" /> : <Plus className="w-4 h-4 text-[#0A0A0A]" />}
                                     Save Rule
                                 </button>
                             </div>
@@ -259,7 +259,7 @@ export default function CompanyPlaybookPage() {
                                     key={rule.id}
                                     className="p-5 bg-[#121212] border border-neutral-800 rounded-xl hover:border-neutral-700 transition-colors shadow-sm group relative overflow-hidden"
                                 >
-                                    <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#d4af37]"></div>
+                                    <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#B8B8B8]"></div>
                                     <div className="flex gap-4 pl-3">
                                         <div className="flex-1">
                                             {rule.standard_position ? (

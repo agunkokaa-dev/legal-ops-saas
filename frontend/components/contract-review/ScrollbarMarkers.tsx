@@ -23,7 +23,7 @@ interface ReviewFinding {
 const SEVERITY_DOT_COLORS: Record<string, string> = {
     critical: '#ef4444',
     warning: '#f59e0b',
-    info: '#3b82f6',
+    info: '#888888',
 }
 
 export default function ScrollbarMarkers({

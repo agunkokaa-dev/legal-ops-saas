@@ -9,12 +9,14 @@ This router is completely isolated from the existing contracts/upload flow.
 """
 import asyncio
 import json
+import time
 import uuid
 
 from fastapi import APIRouter, HTTPException, Depends, Request
 from supabase import Client
 
-from app.config import openai_client
+from app.ai_usage import extract_openai_usage, log_ai_usage_sync, log_openai_response_sync
+from app.config import OUTPUT_TOKEN_CAPS, admin_supabase, openai_client
 from app.rate_limiter import limiter
 from app.dependencies import TenantQdrantClient, get_tenant_qdrant, get_tenant_supabase, verify_clerk_token
 from app.schemas import DraftGenerateRequest, DraftAuditRequest, DraftChatRequest, DraftSaveRequest
@@ -59,13 +61,23 @@ async def generate_draft(
         if payload.instructions:
             user_prompt += f"Special Instructions: {payload.instructions}\n"
 
+        started_at = time.time()
         response = await asyncio.to_thread(
             openai_client.chat.completions.create,
             model="gpt-4o-mini",
+            max_tokens=OUTPUT_TOKEN_CAPS["draft_generate"],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+        )
+        log_ai_usage_sync(
+            admin_supabase,
+            tenant_id,
+            "draft_generate",
+            "gpt-4o-mini",
+            *extract_openai_usage(response),
+            int((time.time() - started_at) * 1000),
         )
 
         draft_text = response.choices[0].message.content
@@ -217,7 +229,16 @@ def get_clause_search_tool(qdrant_client: TenantQdrantClient):
             from app.config import openai_client
             
             # Embed query
+            started_at = time.time()
             response = openai_client.embeddings.create(input=query, model="text-embedding-3-small")
+            log_openai_response_sync(
+                admin_supabase,
+                getattr(qdrant_client, "tenant_id", None),
+                "clause_assistant_embedding",
+                "text-embedding-3-small",
+                response,
+                int((time.time() - started_at) * 1000),
+            )
             
             # Search Qdrant through the tenant-scoped facade so tenant filtering cannot be bypassed.
             hits = qdrant_client.search(
@@ -273,7 +294,7 @@ async def draft_chat(
         clause_tool = get_clause_search_tool(qdrant_client)
         
         # 2. Initialize LLM
-        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=OUTPUT_TOKEN_CAPS["clause_assistant_simple"])
         llm_with_tools = llm.bind_tools([clause_tool])
 
         system_prompt = (
@@ -305,7 +326,7 @@ async def draft_chat(
                     messages.append(ToolMessage(content=str(tool_result), tool_call_id=tool_call["id"]))
             
             # Second Pass: Force JSON Object Output
-            llm_json = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind(response_format={"type": "json_object"})
+            llm_json = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=OUTPUT_TOKEN_CAPS["clause_assistant_synthesis"]).bind(response_format={"type": "json_object"})
             final_response = await llm_json.ainvoke(messages)
             content = json.loads(final_response.content)
         else:
@@ -313,7 +334,7 @@ async def draft_chat(
             try:
                 content = json.loads(response.content)
             except json.JSONDecodeError:
-                llm_json = ChatOpenAI(model="gpt-4o-mini", temperature=0).bind(response_format={"type": "json_object"})
+                llm_json = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_tokens=OUTPUT_TOKEN_CAPS["clause_assistant_synthesis"]).bind(response_format={"type": "json_object"})
                 final_response = await llm_json.ainvoke(messages)
                 content = json.loads(final_response.content)
 
@@ -530,14 +551,25 @@ async def apply_suggestion(
             f"CURRENT DOCUMENT TEXT:\n{current_text}"
         )
 
+        started_at = time.time()
         response = await asyncio.to_thread(
             openai_client.chat.completions.create,
             model="gpt-4o-mini",
+            max_tokens=OUTPUT_TOKEN_CAPS["draft_apply_suggestion"],
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.0
+        )
+        log_ai_usage_sync(
+            admin_supabase,
+            tenant_id,
+            "draft_apply_suggestion",
+            "gpt-4o-mini",
+            *extract_openai_usage(response),
+            int((time.time() - started_at) * 1000),
+            contract_id=payload.contract_id,
         )
 
         updated_text = response.choices[0].message.content.strip()

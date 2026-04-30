@@ -8,6 +8,7 @@ Both endpoints require Clerk authentication but do NOT apply tenant_id filtering
 since id_national_laws is a global corpus shared across all tenants.
 """
 import asyncio
+import time
 import traceback
 from typing import Optional
 
@@ -15,7 +16,8 @@ from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
-from app.config import openai_client, qdrant, NATIONAL_LAWS_COLLECTION
+from app.ai_usage import log_openai_response_sync
+from app.config import admin_supabase, openai_client, qdrant, NATIONAL_LAWS_COLLECTION
 from app.dependencies import verify_clerk_token
 from app.rate_limiter import limiter
 
@@ -59,11 +61,20 @@ class LawStatsResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-async def async_embed(text: str) -> list[float]:
+async def async_embed(text: str, *, tenant_id: str | None = None) -> list[float]:
+    started_at = time.perf_counter()
     response = await asyncio.to_thread(
         openai_client.embeddings.create,
         input=text[:8000],
         model="text-embedding-3-small",
+    )
+    log_openai_response_sync(
+        admin_supabase,
+        tenant_id,
+        "national_law_search_embedding",
+        "text-embedding-3-small",
+        response,
+        int((time.perf_counter() - started_at) * 1000),
     )
     return response.data[0].embedding
 
@@ -155,7 +166,7 @@ async def search_national_laws(
         query_filter = Filter(must=must_conditions) if must_conditions else None
 
         # Embed query
-        vector = await async_embed(body.query)
+        vector = await async_embed(body.query, tenant_id=claims.get("verified_tenant_id"))
 
         # Search Qdrant
         results = await asyncio.to_thread(
