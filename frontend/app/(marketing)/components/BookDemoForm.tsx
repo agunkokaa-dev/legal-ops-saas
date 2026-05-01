@@ -108,6 +108,7 @@ export function BookDemoForm() {
             placeholder="Budi Santoso"
             autoComplete="name"
             required
+            suppressHydrationWarning
             className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white placeholder:text-white/25 transition focus:border-white/30 focus:outline-none"
           />
         </div>
@@ -123,6 +124,7 @@ export function BookDemoForm() {
             placeholder="PT Maju Bersama / Law Firm X"
             autoComplete="organization"
             required
+            suppressHydrationWarning
             className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white placeholder:text-white/25 transition focus:border-white/30 focus:outline-none"
           />
         </div>
@@ -142,6 +144,7 @@ export function BookDemoForm() {
             placeholder="budi@perusahaan.com"
             autoComplete="email"
             required
+            suppressHydrationWarning
             className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white placeholder:text-white/25 transition focus:border-white/30 focus:outline-none"
           />
         </div>
@@ -156,6 +159,7 @@ export function BookDemoForm() {
             onChange={handleChange}
             placeholder="+62 812 xxxx xxxx"
             autoComplete="tel"
+            suppressHydrationWarning
             className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white placeholder:text-white/25 transition focus:border-white/30 focus:outline-none"
           />
         </div>
@@ -171,6 +175,7 @@ export function BookDemoForm() {
             name="team_size"
             value={form.team_size}
             onChange={handleChange}
+            suppressHydrationWarning
             className="w-full rounded-xl border border-white/10 bg-[#0d0f13] px-4 py-3 text-sm text-white/80 transition focus:border-white/30 focus:outline-none"
           >
             <option value="">Pilih ukuran tim</option>
@@ -189,6 +194,7 @@ export function BookDemoForm() {
             name="use_case"
             value={form.use_case}
             onChange={handleChange}
+            suppressHydrationWarning
             className="w-full rounded-xl border border-white/10 bg-[#0d0f13] px-4 py-3 text-sm text-white/80 transition focus:border-white/30 focus:outline-none"
           >
             <option value="">Pilih use case</option>
@@ -204,6 +210,7 @@ export function BookDemoForm() {
       <button
         type="submit"
         disabled={status === 'loading' || !form.name || !form.email || !form.company}
+        suppressHydrationWarning
         className="w-full rounded-xl bg-white px-6 py-3.5 text-sm font-semibold text-[#08090b] transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-40"
       >
         {status === 'loading' ? 'Mengirim...' : 'Jadwalkan Demo'}

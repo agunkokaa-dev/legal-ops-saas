@@ -27,6 +27,7 @@ export function FAQ() {
                   type="button"
                   onClick={() => setOpenIndex(isOpen ? -1 : index)}
                   className="flex w-full items-center justify-between gap-5 px-5 py-4 text-left"
+                  suppressHydrationWarning
                 >
                   <span className="text-sm font-medium text-white">{question}</span>
                   <Icon name={isOpen ? 'x' : 'spark'} className="shrink-0 text-[16px] text-white/40" />

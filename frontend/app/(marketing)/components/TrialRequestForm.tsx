@@ -113,6 +113,7 @@ export function TrialRequestForm() {
             placeholder="Nama Anda"
             autoComplete="name"
             required
+            suppressHydrationWarning
             className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white placeholder:text-white/25 transition focus:border-white/30 focus:outline-none"
           />
         </div>
@@ -128,6 +129,7 @@ export function TrialRequestForm() {
             placeholder="Nama perusahaan"
             autoComplete="organization"
             required
+            suppressHydrationWarning
             className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white placeholder:text-white/25 transition focus:border-white/30 focus:outline-none"
           />
         </div>
@@ -147,6 +149,7 @@ export function TrialRequestForm() {
             placeholder="email@perusahaan.com"
             autoComplete="email"
             required
+            suppressHydrationWarning
             className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white placeholder:text-white/25 transition focus:border-white/30 focus:outline-none"
           />
         </div>
@@ -161,6 +164,7 @@ export function TrialRequestForm() {
             onChange={handleChange}
             placeholder="+62 812 xxxx xxxx"
             autoComplete="tel"
+            suppressHydrationWarning
             className="w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white placeholder:text-white/25 transition focus:border-white/30 focus:outline-none"
           />
         </div>
@@ -175,6 +179,7 @@ export function TrialRequestForm() {
           name="role"
           value={form.role}
           onChange={handleChange}
+          suppressHydrationWarning
           className="w-full rounded-xl border border-white/10 bg-[#0d0f13] px-4 py-3 text-sm text-white/80 transition focus:border-white/30 focus:outline-none"
         >
           <option value="">Pilih role</option>
@@ -189,6 +194,7 @@ export function TrialRequestForm() {
       <button
         type="submit"
         disabled={status === 'loading' || !form.name || !form.email || !form.company}
+        suppressHydrationWarning
         className="w-full rounded-xl border border-white/15 bg-white/[0.05] px-6 py-3.5 text-sm font-semibold text-white transition hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
       >
         {status === 'loading' ? 'Mengirim...' : 'Minta Akses Trial'}

@@ -5,6 +5,7 @@ import { pillars } from '@/lib/landing-data';
 import { GlassCard } from './ui/GlassCard';
 import { SectionHeader } from './ui/SectionHeader';
 import { Tag } from './ui/Tag';
+import { AIReviewDemo } from './AIReviewDemo';
 
 function EmptyDemoPlaceholder({ label }: { label: string }) {
   return (
@@ -80,7 +81,7 @@ function IndonesiaDemo() {
 }
 
 function MiniDemo({ index }: { index: number }) {
-  if (index === 0) return <EmptyDemoPlaceholder label="AI Review Preview" />;
+  if (index === 0) return <AIReviewDemo />;
   if (index === 1) return <WarRoomDemo />;
   if (index === 2) return <EmptyDemoPlaceholder label="Clause Assistant Preview" />;
   if (index === 3) return <EmptyDemoPlaceholder label="Document Genealogy Preview" />;

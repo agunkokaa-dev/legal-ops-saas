@@ -52,6 +52,7 @@ export function DemoAndTrial() {
             type="button"
             onClick={() => selectTab('demo')}
             aria-pressed={activeTab === 'demo'}
+            suppressHydrationWarning
             className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition ${
               activeTab === 'demo'
                 ? 'bg-white text-[#08090b]'
@@ -64,6 +65,7 @@ export function DemoAndTrial() {
             type="button"
             onClick={() => selectTab('trial')}
             aria-pressed={activeTab === 'trial'}
+            suppressHydrationWarning
             className={`flex-1 rounded-xl py-2.5 text-sm font-medium transition ${
               activeTab === 'trial'
                 ? 'bg-white text-[#08090b]'
